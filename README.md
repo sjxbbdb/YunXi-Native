@@ -20,6 +20,8 @@ YunXi Native 明确引用了 **Shorin（SHORiN-KiWATA）开发的 [Miyu Agent](h
 
 Miyu 的完整固定源码快照保存在 [`references/miyu-agent/`](references/miyu-agent/)，当前参考版本为 `0.6.2`、commit `04a23ccbfc1ee081ec8e2d82090edfa553552456`。Miyu 的 MIT License 和版权信息一并保留。我们采用“参考源码 → YunXi 适配层 → 独立行为测试”的方式吸收这些成果，不直接覆盖 YunXi 的 Persona、Soul、记忆、审批、沙盒或数据边界。
 
+完整的 Linux 升级路线见 [`docs/YUNXI-NATIVE-UPGRADE-PLAN.md`](docs/YUNXI-NATIVE-UPGRADE-PLAN.md)。计划把 Linux 终端命令作为第一批知识域，同时预留 project/private 知识空间，后续可接入用户授权的私有化知识，并通过 RAG、空间权限、来源追踪和 generation 回滚保持可控。
+
 > 当前状态：Linux-native foundation / experimental。Arch Linux 是第一目标平台；daemon、fish 接管和 IPC 正在按验收门推进，尚未宣称生产级稳定。
 
 ## 这解决什么问题
@@ -168,6 +170,7 @@ Windows 版继续保留 Web、语音、微信/iLink、PowerShell、Windows 凭�
 - [参考来源与许可证说明](references/REFERENCE-SOURCES.md)
 - [Miyu 源码审计报告](yunxi-agent-linux/MIYU-SOURCE-AUDIT.md)
 - [能力边界矩阵](yunxi-agent-linux/CAPABILITY-MATRIX.md)
+- [Linux 升级总计划](docs/YUNXI-NATIVE-UPGRADE-PLAN.md)
 
 Miyu Agent 以 MIT License 发布；其原始许可证保留在 `references/miyu-agent/LICENSE`。任何未来的实质性改写都必须保留来源说明、许可证和行为测试。
 
