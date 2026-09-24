@@ -6,6 +6,20 @@
 
 YunXi Native 是 YunXi Agent 的 Linux 产品线。它不是把 Windows/Web 版本缩小后重新打包，也不是把 Miyu 代码拼在一起，而是重新设计 Linux 的交互入口：TUI 和 fish 终端是第一界面，YunXi Runtime 是理解、规划、授权和执行的核心。
 
+## 特别鸣谢与技术来源
+
+YunXi Native 明确引用了 **Shorin（SHORiN-KiWATA）开发的 [Miyu Agent](https://github.com/SHORiN-KiWATA/miyu-agent)** 的部分 Linux 原生架构与源码实现。感谢 Shorin 对 Linux Agent 交互方式的探索与开源贡献；Miyu 为我们重新思考“让 Agent 接管终端”提供了重要的工程参照。
+
+当前重点参考与适配的部分包括：
+
+- fish 接管、首词分类、普通命令放行与自然语言兜底；
+- `fish_command_not_found` 的第二道转发路径；
+- 用户级 daemon、Unix socket、单例生命周期与事件回放模型；
+- XDG runtime/state 路径、权限收紧、断线与会话生命周期设计；
+- 与上述机制直接相关的源码组织方式和行为测试思路。
+
+Miyu 的完整固定源码快照保存在 [`references/miyu-agent/`](references/miyu-agent/)，当前参考版本为 `0.6.2`、commit `04a23ccbfc1ee081ec8e2d82090edfa553552456`。Miyu 的 MIT License 和版权信息一并保留。我们采用“参考源码 → YunXi 适配层 → 独立行为测试”的方式吸收这些成果，不直接覆盖 YunXi 的 Persona、Soul、记忆、审批、沙盒或数据边界。
+
 > 当前状态：Linux-native foundation / experimental。Arch Linux 是第一目标平台；daemon、fish 接管和 IPC 正在按验收门推进，尚未宣称生产级稳定。
 
 ## 这解决什么问题
