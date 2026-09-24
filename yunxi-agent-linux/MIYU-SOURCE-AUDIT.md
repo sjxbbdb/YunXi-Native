@@ -1,12 +1,12 @@
-# Miyu Agent 源码全量审计（融合前冻结报告）
+# Miyu Agent 源码全量审计（适配前冻结报告）
 
 > 审计对象：`SHORiN-KiWATA/miyu-agent`
 >
 > 固定版本：`0.6.2` / commit `04a23ccbfc1ee081ec8e2d82090edfa553552456`
 >
-> 审计目的：在继续把 Miyu 能力并入 YunXi Linux 版之前，先建立可复核的文件覆盖、依赖边界、运行语义和安全门槛。
+> 审计目的：在继续把 Miyu 能力通过适配层接入 YunXi Native 之前，先建立可复核的文件覆盖、依赖边界、运行语义和安全门槛。
 >
-> 当前结论：**冻结直接融合；不能以“能编译”或“基础 fish 能跑”作为迁移完成。**
+> 当前结论：**冻结全量拼接；不能以“能编译”或“基础 fish 能跑”作为适配完成。**
 
 ## 1. 结论先行
 
@@ -15,7 +15,7 @@
 因此当前采用以下硬边界：
 
 1. YunXi Runtime 仍是人格、灵魂、记忆、陪伴、工具授权、工作区和隐私的唯一真相源。
-2. Miyu 的 fish/daemon 思路只能通过适配层迁入；不复制 Miyu 数据库、人格、Web 路由或平台凭证。
+2. Miyu 的 fish/daemon 思路只能通过适配层接入；不复制 Miyu 数据库、人格、Web 路由或平台凭证。
 3. 在协议、锁、断线语义、会话持久化和 PTY 回归测试通过前，不扩展第二批 Miyu 工具，也不声称 Arch 版与 Miyu 等价。
 4. 发现的问题分为“上游行为事实”“YunXi 实验实现风险”“待验证假设”，三者不混写。
 
@@ -83,7 +83,7 @@ miyu (CLI/TUI entry)
 - [hosts/daemon.rs（固定版本）](https://github.com/SHORiN-KiWATA/miyu-agent/blob/04a23ccbfc1ee081ec8e2d82090edfa553552456/crates/miyu-hosts/src/daemon.rs#L5-L46)
 - [hosts/web/server.rs（固定版本）](https://github.com/SHORiN-KiWATA/miyu-agent/blob/04a23ccbfc1ee081ec8e2d82090edfa553552456/crates/miyu-hosts/src/web/server.rs#L10-L82)
 
-因此“只把 `daemon.rs` 拿过来”不是可行的融合方案；需要先定义 YunXi 的 headless host facade，再接入协议、运行时和会话存储。
+因此“只把 `daemon.rs` 拿过来”不是可行的适配方案；需要先定义 YunXi 的 headless host facade，再接入协议、运行时和会话存储。
 
 ## 4. 关键路径审查结果
 
@@ -129,7 +129,7 @@ IPC server 在 [`web/ipc_server.rs`](https://github.com/SHORiN-KiWATA/miyu-agent
 
 ### 4.4 事件流与会话
 
-Miyu 的 EventHub 维护单调递增 event id、broadcast + 有界回放队列，并在游标过旧时返回 resync_required；事件队列有记录数和约 4 MiB 字节目标，但单个超大事件可能暂时超过目标。融合时不能只复制一个 `mpsc` channel：必须保留事件顺序、游标、重同步和尾事件排空语义。
+Miyu 的 EventHub 维护单调递增 event id、broadcast + 有界回放队列，并在游标过旧时返回 resync_required；事件队列有记录数和约 4 MiB 字节目标，但单个超大事件可能暂时超过目标。适配时不能只复制一个 `mpsc` channel：必须保留事件顺序、游标、重同步和尾事件排空语义。
 
 ### 4.5 路径、锁和 sandbox
 
@@ -141,7 +141,7 @@ Miyu 的 Landlock sandbox 是宿主后端，不等于工具授权策略：unsupp
 
 Miyu memory 有 SQLite facts/episodes/diary、访问主体/可见性、FTS/分词、向量候选、RRF/余弦、衰减、去重和后台 organizer；测试覆盖访问隔离、敏感边界、reset generation 和语义召回。
 
-YunXi 已有 JSONL 权威台账 + SQLite 向量索引的分层设计：profile/高敏感/agent identity 不进入向量索引，向量只用于候选排序，最终必须回查权威状态。融合可吸收 Miyu 的后台批处理、FTS+semantic 融合和 generation barrier，但不能搬 Miyu schema，也不能绕过 YunXi 的敏感度、审批和失效链。
+YunXi 已有 JSONL 权威台账 + SQLite 向量索引的分层设计：profile/高敏感/agent identity 不进入向量索引，向量只用于候选排序，最终必须回查权威状态。适配可吸收 Miyu 的后台批处理、FTS+semantic 召回和 generation barrier，但不能搬 Miyu schema，也不能绕过 YunXi 的敏感度、审批和失效链。
 
 ### 4.7 工具、脚本与资源闭包
 
@@ -186,7 +186,7 @@ YunXi 后续若需要迁移，只允许做显式、版本化、带 digest/大小
 | export/import | 暂缓 | 先做 YunXi 专用格式 | digest、secret、配额、回滚、symlink/hardlink 测试 |
 | voice/Web/Weixin/Windows-only | 当前排除 | 不从 Miyu 搬到 Arch 首版 | 用户重新确认范围后单独设计 |
 
-## 6. 融合前必须通过的验收门
+## 6. 适配前必须通过的验收门
 
 1. **协议门**：旧/新版本握手、坏长度、超大 frame、半包、EOF、Ping、能力协商。
 2. **daemon 门**：两个终端并发启动只留一个；socket 权限；锁释放；PID 复用；崩溃后 stale socket 清理。
@@ -202,4 +202,4 @@ YunXi 后续若需要迁移，只允许做显式、版本化、带 digest/大小
 
 - 本轮只新增审计脚本、文件清单和本报告；没有把 Miyu 核心源码复制进 YunXi。
 - 现有 YunXi Arch 实验代码保持不动，报告中明确记录其风险，不用文档掩盖问题。
-- `MIYU-FUSION-PLAN.md` 已按“审计冻结”更新；后续实现必须以本报告的验收门为入口。
+- `MIYU-ADAPTER-ROADMAP.md` 已按“审计门”更新；后续实现必须以本报告的验收门为入口。

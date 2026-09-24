@@ -72,7 +72,7 @@ yunxi-agent-linux/           # Linux 原生入口
 ├─ src/shell.rs              # fish 接管、daemon 与 socket 原型
 ├─ README.md                 # Linux 子项目说明
 ├─ audit/                    # Miyu 源码审计工具与文件清单
-└─ MIYU-SOURCE-AUDIT.md      # 融合前审计与验收门
+└─ MIYU-SOURCE-AUDIT.md      # 适配前审计与验收门
 
 references/
 ├─ yunxi-agent-windows/      # Windows YunXi 源码只读快照

@@ -1,6 +1,6 @@
-# YunXi Agent · Arch Linux 能力边界矩阵
+# YunXi Native · Linux 能力边界矩阵
 
-这份矩阵用于比较 [Miyu Agent](https://github.com/SHORiN-KiWATA/miyu-agent) 与 YunXi Agent，并决定 Linux 版哪些能力直接复用、哪些能力重新实现、哪些能力明确不纳入。
+这份矩阵用于比较 [Miyu Agent](https://github.com/SHORiN-KiWATA/miyu-agent) 与 YunXi Agent，并决定 YunXi Native 哪些能力可参考、哪些能力必须通过适配层重写、哪些能力明确不纳入。
 
 状态含义：
 
@@ -12,7 +12,7 @@
 
 ## 1. 入口与交互
 
-| 能力 | Miyu | YunXi | Arch Linux 决策 |
+| 能力 | Miyu | YunXi | Linux 决策 |
 |---|---|---|---|
 | TUI 对话 | 已有，普通模式与 Dev 模式 | 已有，统一 Runtime 事件流 | 已接入，保留 YunXi TUI |
 | fish 接管 | 已有，完整 Enter hook、原始首词判断、多行、兜底 | 主项目此前没有 Linux 原生 fish 宿主 | 已有实验实现；行为等价待真实 fish PTY 验收 |
@@ -42,7 +42,7 @@
 
 ## 3. 人格、记忆与陪伴
 
-| 能力 | Miyu | YunXi | Arch Linux 决策 |
+| 能力 | Miyu | YunXi | Linux 决策 |
 |---|---|---|---|
 | 默认人格 | 二次元角色人格 | YunXi Agent / 云熙人格与灵魂 | 保留 YunXi，不替换成 Miyu 人格 |
 | 人格编辑 | 可创建人格、选择功能插件 | profile、soul、voice、boundary 等结构化层 | 复用 YunXi Persona |
@@ -56,7 +56,7 @@
 
 ## 4. 工具、插件与 Linux 能力
 
-| 能力 | Miyu | YunXi | Arch Linux 决策 |
+| 能力 | Miyu | YunXi | Linux 决策 |
 |---|---|---|---|
 | Shell 执行 | Linux 原生工具与插件 | Shell Tool Runtime | 保留 YunXi 审批与 workspace 边界 |
 | 文件操作 | 读写、搜索、查找、删除 | 文件工具、补丁和变更事件 | 保留 YunXi 工具模型 |
@@ -71,7 +71,7 @@
 
 ## 5. 安全、存储与运行方式
 
-| 能力 | Miyu | YunXi | Arch Linux 决策 |
+| 能力 | Miyu | YunXi | Linux 决策 |
 |---|---|---|---|
 | 工具授权 | 插件开关、会话沙盒和交互确认 | Approval-first，默认 `on-request` | 以 YunXi 审批为权威 |
 | 沙盒 | Linux Landlock 等宿主能力 | WorkspaceWrite、sandbox policy、exec runner | 可吸收 Miyu 的 Landlock 宿主层，但不改变 YunXi 策略语义 |
@@ -117,4 +117,4 @@
 - daemon 断线续跑、Follow/Cancel、协议版本与持久化会话映射：待实现。
 - Miyu Linux 专用 Skills：待评估，不在核心 Runtime 中硬编码。
 
-这份矩阵不是把两个项目合并成一个产品，而是明确宿主层、Runtime 层和能力边界，避免 Linux 版在后续扩展时失去 YunXi 的人格与安全一致性。
+这份矩阵不是把两个项目合并成一个产品，而是定义 YunXi Native 的适配边界：宿主层可以借鉴成熟实现，Runtime、人格、记忆和安全语义仍由 YunXi 负责，避免 Linux 版在扩展时失去一致性。

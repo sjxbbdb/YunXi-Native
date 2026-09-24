@@ -35,7 +35,7 @@ Linux 版不是“只有一个聊天框”的裁剪版。共享 Runtime 中与 L
 这些能力通过同一个 `yunxi-agent-runtime` 进入 TUI 或 fish daemon，不会为 Linux 复制一套人格、记忆或会话逻辑。TUI 中输入 `/capabilities` 可以查看同一份边界摘要。
 
 完整的 Miyu/YunXi 能力差距与迁移边界见 [`CAPABILITY-MATRIX.md`](./CAPABILITY-MATRIX.md)。
-大融合的分层迁移与冲突裁决见 [`MIYU-FUSION-PLAN.md`](./MIYU-FUSION-PLAN.md)，源码许可与来源记录见 [`MIYU-LICENSE-NOTICE.md`](./MIYU-LICENSE-NOTICE.md)。
+Miyu 参考实现的分层适配与裁决见 [`MIYU-ADAPTER-ROADMAP.md`](./MIYU-ADAPTER-ROADMAP.md)，源码许可与来源记录见 [`MIYU-LICENSE-NOTICE.md`](./MIYU-LICENSE-NOTICE.md)。
 在继续迁移前，必须先阅读 [`MIYU-SOURCE-AUDIT.md`](./MIYU-SOURCE-AUDIT.md)；该报告记录固定版本、全文件清单、关键路径风险和验收门。当前 fish/daemon 仍是实验实现，不代表已经达到 Miyu 的完整行为等价。
 
 ## Linux 前置条件
