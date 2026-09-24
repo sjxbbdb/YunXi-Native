@@ -154,6 +154,7 @@ git status                     → 交给 fish
 - 普通 Shell 命令仍由 Shell 执行，YunXi 不替换 Shell 的最终语义。
 - 文件、进程、安装和网络操作必须经过 YunXi Tool/Approval/Sandbox。
 - Persona、Soul、长期记忆和向量索引不由 Miyu 数据库覆盖。
+- 长期记忆向量库与知识库向量库始终分离，不能共用数据库、表、索引命名空间或写入路径。
 - AUR、sudo、系统服务和公开网络动作需要额外的人工确认与审计记录。
 - daemon 断线语义必须区分可重连客户端与一次性 shell hook，不能统一“断线继续”。
 
