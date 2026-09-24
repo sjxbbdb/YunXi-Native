@@ -1,0 +1,36 @@
+{
+  "name": "web_fetch",
+  "trust": "external",
+  "display_name": "读取网页",
+  "description": "Fetch a url and return markdown, text or html. When your reply draws on the page, end it with the source as `title (url)`.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "url": {
+        "type": "string",
+        "description": "Fully-qualified http or https."
+      },
+      "format": {
+        "type": "string",
+        "enum": [
+          "markdown",
+          "text",
+          "html"
+        ]
+      },
+      "max_chars": {
+        "type": "integer",
+        "description": "Default 40000, max 200000."
+      }
+    },
+    "required": [
+      "url"
+    ]
+  },
+  "permission": "readonly",
+  "always_loaded": true,
+  "load_policy": "summary",
+  "groups": [
+    "web"
+  ]
+}

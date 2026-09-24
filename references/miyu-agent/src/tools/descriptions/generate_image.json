@@ -1,0 +1,54 @@
+{
+  "name": "generate_image",
+  "trust": "external",
+  "display_name": "生成图片",
+  "description": "Generate an image from a text prompt, or pass reference_images for image-to-image. Returns the local path of the result. Delivery differs by host: follow the assistant_instruction field in the result — local sessions show the image automatically, messaging platforms need send_message_to_user. On messaging platforms a reference must be an image attached this turn, a context_image_N from the history, or a trusted avatar URL.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "prompt": {
+        "type": "string"
+      },
+      "reference_images": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "description": "Same forms as vision_analyze's image: a local path, an http(s) image url, or a context_image_N."
+      },
+      "aspect_ratio": {
+        "type": "string",
+        "enum": [
+          "自动",
+          "1:1",
+          "2:3",
+          "3:2",
+          "3:4",
+          "4:3",
+          "4:5",
+          "5:4",
+          "9:16",
+          "16:9",
+          "21:9"
+        ]
+      },
+      "resolution": {
+        "type": "string",
+        "enum": [
+          "1K",
+          "2K",
+          "4K"
+        ]
+      }
+    },
+    "required": [
+      "prompt"
+    ]
+  },
+  "permission": "writes",
+  "always_loaded": false,
+  "load_policy": "summary",
+  "groups": [
+    "images"
+  ]
+}

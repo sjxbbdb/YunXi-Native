@@ -1,0 +1,27 @@
+[package]
+name = "yunxi-agent-storage"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[dependencies]
+async-trait.workspace = true
+base64.workspace = true
+chacha20poly1305.workspace = true
+getrandom.workspace = true
+rusqlite.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+yunxi-agent-companion = { path = "../yunxi-agent-companion" }
+yunxi-agent-core = { path = "../yunxi-agent-core" }
+yunxi-agent-multi-agent = { path = "../yunxi-agent-multi-agent" }
+yunxi-agent-persona = { path = "../yunxi-agent-persona" }
+yunxi-agent-protocol = { path = "../yunxi-agent-protocol" }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+tokio.workspace = true

@@ -1,0 +1,34 @@
+{
+  "name": "grep",
+  "display_name": "搜索内容",
+  "description": "Search contents in a directory or one file with ripgrep.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "path": {
+        "type": "string",
+        "description": "Defaults to the workspace; ~ or /home for user files, / for a protected global search."
+      },
+      "pattern": {
+        "type": "string",
+        "description": "Regex."
+      },
+      "include": {
+        "type": "string",
+        "description": "Case-insensitive file glob filter."
+      },
+      "max_results": {
+        "type": "integer"
+      }
+    },
+    "required": [
+      "pattern"
+    ]
+  },
+  "permission": "readonly",
+  "always_loaded": true,
+  "load_policy": "summary",
+  "groups": [
+    "dev-read"
+  ]
+}

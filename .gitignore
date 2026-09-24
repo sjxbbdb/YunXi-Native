@@ -1,0 +1,17 @@
+/target/
+/.yunxi/
+/.tmp/
+/.worktrees/
+/.codegraph/
+*.log
+*.tmp
+*.bak
+*.swp
+*.swo
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Reference snapshots are intentionally committed, but local extraction artifacts are not.
+/references/miyu-agent-tar-extract/
+/crates/yunxi-agent-runtime/.yunxi/

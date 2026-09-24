@@ -1,0 +1,90 @@
+{
+  "name": "ledger",
+  "display_name": "记账",
+  "description": "Record and query personal income and expenses. Amounts are number strings like \"35.50\". A foreign currency is converted into the book's currency and the rate is frozen on the entry. add returns a budget field when a monthly budget is near or past its limit. Books, accounts, categories and budgets belong to manage_ledger.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "action": {
+        "type": "string",
+        "enum": [
+          "add",
+          "list",
+          "summary",
+          "update",
+          "delete"
+        ]
+      },
+      "amount": {
+        "type": "string",
+        "description": "add/update: a number string like 35.50."
+      },
+      "kind": {
+        "type": "string",
+        "enum": [
+          "expense",
+          "income",
+          "transfer"
+        ],
+        "description": "add/list, default expense. A transfer moves money between two accounts."
+      },
+      "currency": {
+        "type": "string",
+        "description": "add: ISO code, default the book's."
+      },
+      "category": {
+        "type": "string",
+        "description": "An unknown name is created on add/update and the result says so; list never creates one."
+      },
+      "account": {
+        "type": "string",
+        "description": "add/list: where the money came from, the source for a transfer. An unknown name is refused and the error lists this book's real accounts."
+      },
+      "to_account": {
+        "type": "string",
+        "description": "kind=transfer: the destination."
+      },
+      "note": {
+        "type": "string",
+        "description": "add/update: what it was for, including the shop."
+      },
+      "date": {
+        "type": "string",
+        "description": "add/update: 2026-09-08, default today."
+      },
+      "period": {
+        "type": "string",
+        "description": "list/summary: a month like 2026-09 or a range like 2026-09-01..2026-09-15, default this month. summary takes a month only."
+      },
+      "query": {
+        "type": "string",
+        "description": "list: match text in notes."
+      },
+      "limit": {
+        "type": "integer",
+        "description": "list: 1 to 100, default 20."
+      },
+      "book": {
+        "type": "string",
+        "description": "Only needed when more than one exists."
+      },
+      "id": {
+        "type": "string",
+        "description": "update/delete: the entry id or a unique prefix of it."
+      },
+      "force": {
+        "type": "boolean",
+        "description": "add: record even when an identical entry exists from minutes ago."
+      }
+    },
+    "required": [
+      "action"
+    ]
+  },
+  "permission": "writes",
+  "always_loaded": false,
+  "load_policy": "summary",
+  "groups": [
+    "ledger"
+  ]
+}

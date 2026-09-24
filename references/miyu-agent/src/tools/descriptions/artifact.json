@@ -1,0 +1,22 @@
+{
+  "name": "artifact",
+  "display_name": "编辑预览文件",
+  "description": "Create or edit deliverable files in the WebUI Artifact workspace with a patch (*** Begin Patch / *** End Patch). Paths are plain artifact file names. Use it for reports, documents and standalone files the user should look at, not for routine source edits; publish an existing local file with present_artifact and read entries with read using artifact: paths. HTML runs in a sandboxed frame with no network: external CDNs, fetch and remote images are blocked, but ECharts at /vendor/echarts/echarts.min.js, KaTeX at /vendor/katex/katex.min.js and Prism at /vendor/prism/prism.min.js work.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "patchText": {
+        "type": "string",
+        "description": "Full patch text wrapped in *** Begin Patch / *** End Patch."
+      }
+    },
+    "required": [
+      "patchText"
+    ],
+    "additionalProperties": false
+  },
+  "permission": "presentation",
+  "always_loaded": true,
+  "load_policy": "summary",
+  "groups": []
+}

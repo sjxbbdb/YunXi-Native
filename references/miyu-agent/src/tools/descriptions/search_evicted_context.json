@@ -1,0 +1,27 @@
+{
+  "name": "search_evicted_context",
+  "display_name": "搜索旧上下文",
+  "description": "Search conversation turns evicted from the context window. Use when earlier discussion is clearly missing.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "query": {
+        "type": "string",
+        "description": "Search keywords or a question."
+      },
+      "max_results": {
+        "type": "integer",
+        "description": "Optional limit on the number of results."
+      }
+    },
+    "required": [
+      "query"
+    ]
+  },
+  "permission": "readonly",
+  "always_loaded": false,
+  "load_policy": "summary",
+  "groups": [
+    "memory"
+  ]
+}

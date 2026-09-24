@@ -1,0 +1,220 @@
+//! `miyu embed`：语义检索的诊断与维护。
+//!
+//! `status` 一眼看出为什么语义检索没生效（没启用/没模型/没运行库/worker 起不来），
+//! `reindex` 把当前人格记忆、当前表情库、知识库缺的向量一次补齐。
+
+use anyhow::Result;
+use clap::{Args, Subcommand};
+use miyu_base::config::{AppConfig, EmbeddingBackend};
+use miyu_base::embedding::{installed_local_models, runtime_library, shutdown_worker, Embedder};
+use miyu_base::paths::MiyuPaths;
+use miyu_core::memory::MemoryStore;
+use miyu_engine::tools;
+use std::time::Instant;
+
+#[derive(Debug, Args)]
+pub struct EmbedArgs {
+    #[command(subcommand)]
+    pub command: EmbedCommand,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum EmbedCommand {
+    /// Show the configured backend, runtime library and a live probe.
+    Status,
+    /// List local models found along the search chain.
+    Models,
+    /// Build missing vectors for memory, memes and the knowledge base.
+    Reindex(EmbedReindexArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct EmbedReindexArgs {
+    #[arg(long)]
+    pub quiet: bool,
+}
+
+pub(in crate::cli) async fn run_embed(paths: &MiyuPaths, args: EmbedArgs) -> Result<()> {
+    let config = AppConfig::load(paths)?;
+    match args.command {
+        EmbedCommand::Status => status(&config, paths).await,
+        EmbedCommand::Models => {
+            let models = installed_local_models();
+            if models.is_empty() {
+                println!("no local embedding models found");
+            }
+            for model in models {
+                println!(
+                    "{}  {} dims  {}",
+                    model.manifest.id,
+                    model.manifest.dims,
+                    model.dir.display()
+                );
+            }
+            Ok(())
+        }
+        EmbedCommand::Reindex(args) => reindex(&config, paths, args.quiet).await,
+    }
+}
+
+async fn status(config: &AppConfig, paths: &MiyuPaths) -> Result<()> {
+    let embedding = &config.embedding;
+    let backend = match embedding.resolved_backend() {
+        EmbeddingBackend::Local => "local",
+        EmbeddingBackend::Remote => "remote",
+        EmbeddingBackend::Auto => "auto",
+    };
+    println!(
+        "enabled: {}  backend: {backend}  local_model: {}  remote: {}",
+        embedding.enabled,
+        embedding.local_model,
+        if embedding.remote_is_configured() {
+            format!("{}/{}", embedding.provider_id, embedding.model)
+        } else {
+            "-".to_string()
+        }
+    );
+    let Some(embedder) = Embedder::from_config(config) else {
+        println!(
+            "semantic search: unavailable ({})",
+            if !embedding.enabled {
+                "disabled in config".to_string()
+            } else {
+                match miyu_base::embedding::resolve_local_model(&embedding.local_model) {
+                    Ok(_) => "remote provider/model not found".to_string(),
+                    Err(error) => format!("{error:#}"),
+                }
+            }
+        );
+        return Ok(());
+    };
+    println!("model: {}", embedder.describe());
+    if embedder.is_local() {
+        match runtime_library() {
+            Ok(path) => println!("runtime library: {}", path.display()),
+            Err(error) => {
+                println!("runtime library: missing\n  {error:#}");
+                println!("semantic search: unavailable (keyword search still works)");
+                return Ok(());
+            }
+        }
+    }
+    let started = Instant::now();
+    match embedder.embed_query("你好，世界").await {
+        Ok(vector) => {
+            let cold = started.elapsed();
+            let warm_started = Instant::now();
+            let warm = embedder
+                .embed_query("hello again")
+                .await
+                .map(|_| warm_started.elapsed());
+            println!(
+                "probe: {} dims, cold {} ms, warm {}",
+                vector.len(),
+                cold.as_millis(),
+                warm.map(|d| format!("{:.1} ms", d.as_secs_f64() * 1000.0))
+                    .unwrap_or_else(|e| format!("failed: {e:#}"))
+            );
+            println!("semantic search: available");
+        }
+        Err(error) => {
+            println!("probe: failed\n  {error:#}");
+            println!("semantic search: unavailable (keyword search still works)");
+        }
+    }
+    let store = MemoryStore::new(config, paths);
+    match store.embedding_coverage(embedder.model_id()) {
+        Ok((done, missing)) => {
+            println!("memory vectors (current persona): {done} current, {missing} missing")
+        }
+        Err(error) => println!("memory vectors: {error:#}"),
+    }
+    println!(
+        "knowledge base: {}",
+        if config.plugins.knowledge_base.embedding_enabled {
+            "semantic enabled"
+        } else {
+            "semantic disabled (plugins.knowledge_base.embedding_enabled)"
+        }
+    );
+    // 后台那趟重建是子进程,失败了以前谁也看不见。`embed status` 的活儿正是
+    // 「一眼看出为什么语义检索没生效」,所以把上一趟的结局也报出来。
+    if let Ok(kb) = tools::knowledge_base::KnowledgeBase::new(config.clone(), paths.clone()) {
+        if let Ok(status) = kb.dashboard_reindex_status() {
+            let phase = status["phase"].as_str().unwrap_or("idle");
+            let progress = format!(
+                "{}/{} files, {} chunks",
+                status["done"], status["total"], status["indexed"]
+            );
+            println!("last knowledge base reindex: {phase} ({progress})");
+            for (label, key) in [
+                ("  error", "last_error"),
+                ("  file error", "last_file_error"),
+            ] {
+                let message = status[key].as_str().unwrap_or("").trim();
+                if !message.is_empty() {
+                    println!("{label}: {message}");
+                }
+            }
+            if phase == "failed" {
+                println!("  log: {}", status["log_path"].as_str().unwrap_or(""));
+            }
+        }
+    }
+    shutdown_worker().await;
+    Ok(())
+}
+
+async fn reindex(config: &AppConfig, paths: &MiyuPaths, quiet: bool) -> Result<()> {
+    let Some(embedder) = Embedder::from_config(config) else {
+        println!("embedding is disabled or no model is available; nothing to do");
+        return Ok(());
+    };
+    // 看板的「重建语义索引」按钮起的正是这个命令,并经 MIYU_KB_ROOT 指定了
+    // 某一个库(成员的 home/<user>/kb 或管理员的默认库)。那是一次**定向**重建,
+    // 只该碰那个库;顺手把记忆/表情包也重嵌等于让成员触发管理员库的嵌入,
+    // 既越权又浪费。裸 `miyu kb embed reindex`(不带这个变量)仍三样全建。
+    let kb_only = std::env::var_os("MIYU_KB_ROOT").is_some_and(|value| !value.is_empty());
+    if kb_only {
+        if config.plugins.knowledge_base.enabled && config.plugins.knowledge_base.embedding_enabled
+        {
+            let kb = tools::knowledge_base::KnowledgeBase::new(config.clone(), paths.clone())?;
+            let count = kb.reindex_embeddings(quiet).await?;
+            if !quiet {
+                println!("knowledge base: embedded {count} chunks");
+            }
+        }
+        shutdown_worker().await;
+        return Ok(());
+    }
+    let store = MemoryStore::new(config, paths);
+    // 三样各建各的:记忆那步失败不该顺手把知识库那趟也带走。原来这里是 `?`,
+    // 一条记忆库报错就让整条命令提前退出,而知识库那半连开始都没开始——后台
+    // 重建正是这条命令的另一个形态,静默早退在界面上等于「什么都没发生」。
+    match store.backfill_embeddings(embedder.model_id()).await {
+        Ok(count) => {
+            if !quiet {
+                println!("memory: embedded {count} rows");
+            }
+        }
+        Err(error) => println!("memory: {error:#}"),
+    }
+    let library = tools::memes::current_persona_library(config);
+    match tools::memes::reindex_library(config, paths, &library).await {
+        Ok(count) => {
+            if !quiet {
+                println!("memes ({library}): embedded {count} items");
+            }
+        }
+        Err(error) => println!("memes ({library}): {error:#}"),
+    }
+    if config.plugins.knowledge_base.enabled && config.plugins.knowledge_base.embedding_enabled {
+        let kb = tools::knowledge_base::KnowledgeBase::new(config.clone(), paths.clone())?;
+        let count = kb.reindex_embeddings(quiet).await?;
+        if !quiet {
+            println!("knowledge base: embedded {count} chunks");
+        }
+    }
+    shutdown_worker().await;
+    Ok(())
+}

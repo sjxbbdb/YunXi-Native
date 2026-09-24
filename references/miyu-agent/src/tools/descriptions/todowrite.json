@@ -1,0 +1,101 @@
+{
+  "name": "todowrite",
+  "display_name": "任务列表",
+  "description": "Maintain this session's task list. todos replaces the whole list; updates applies incremental changes in order. Prefer updates once the list exists.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "todos": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "content": {
+              "type": "string",
+              "description": "Short task description."
+            },
+            "status": {
+              "type": "string",
+              "enum": [
+                "pending",
+                "in_progress",
+                "completed",
+                "cancelled"
+              ]
+            },
+            "priority": {
+              "type": "string",
+              "enum": [
+                "high",
+                "medium",
+                "low"
+              ]
+            }
+          },
+          "required": [
+            "content",
+            "status",
+            "priority"
+          ]
+        },
+        "description": "Replaces the entire list."
+      },
+      "updates": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "action": {
+              "type": "string",
+              "enum": [
+                "add",
+                "update",
+                "remove",
+                "clear"
+              ]
+            },
+            "index": {
+              "type": "integer",
+              "description": "Task number, 1-based. For add the insertion point; omit to append."
+            },
+            "match_content": {
+              "type": "string",
+              "description": "Without index, the full content that locates the task."
+            },
+            "content": {
+              "type": "string",
+              "description": "Content to add, or the content after the change."
+            },
+            "status": {
+              "type": "string",
+              "enum": [
+                "pending",
+                "in_progress",
+                "completed",
+                "cancelled"
+              ]
+            },
+            "priority": {
+              "type": "string",
+              "enum": [
+                "high",
+                "medium",
+                "low"
+              ]
+            }
+          },
+          "required": [
+            "action"
+          ]
+        },
+        "description": "Applied atomically, in order."
+      }
+    }
+  },
+  "permission": "writes",
+  "always_loaded": false,
+  "load_policy": "summary",
+  "groups": [
+    "planning"
+  ]
+}

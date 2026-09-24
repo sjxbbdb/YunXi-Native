@@ -1,0 +1,115 @@
+# Maintainer: SHORiN <shorin@users.noreply.github.com>
+#
+# 发布资产构建器：从 v${pkgver} 标签源码构建预编译包，上传到 GitHub Release
+# 作为资产。AUR 的包装包（packaging/arch/miyu、packaging/arch/miyu-voice）
+# 下载这些资产重新打包。
+#
+# 拆成两个包：
+#   miyu        主程序（不含任何语音识别代码）
+#   miyu-voice  语音前端 `miyu-voice`（唤醒词 + 本地识别，链接 sherpa-onnx
+#               静态库 ≈30MB），可选安装；daemon 在主程序同目录找到它才启用。
+#
+# 用法（在干净目录中）：
+#   PACKAGER='Miyu Release <noreply@example.com>' makepkg -Cf
+# 字体(Noto CJK / Noto Emoji / JetBrains Mono)自 0.4.4 起 vendor 在源码树
+# assets/fonts 下并随资产打包；另含 MIT LICENSE、内置表情、系统脚本与
+# 默认知识库（本仓库 kb/ + Shorin Wiki）。
+
+pkgbase=miyu
+pkgname=('miyu' 'miyu-voice')
+pkgver=0.6.2
+pkgrel=1
+pkgdesc='一个活在终端里的二次元少女。开箱即用的开源 AI 助手，支持接入通讯平台。'
+arch=('x86_64')
+url='https://github.com/SHORiN-KiWATA/miyu-agent'
+license=('MIT' 'OFL-1.1')
+options=('!lto' '!debug')
+export LC_ALL=C.UTF-8
+depends=('alsa-lib' 'chafa' 'gcc-libs' 'glibc' 'onnxruntime' 'python' 'ripgrep')
+makedepends=('cargo' 'git' 'pkgconf' 'python' 'clang' 'cmake')
+optdepends=(
+  'git: update default Shorin Wiki knowledge base'
+  'libnotify: 桌面通知(kitty 以外的终端由它弹)'
+  'libcanberra: 通知提示音(没有时退到 pw-play/paplay)'
+  'fish: fish shell integration support'
+  'bash: bash shell integration support'
+  'zsh: zsh shell integration support'
+  'python-playwright: 网页检索脚本(小红书/知乎/闲鱼/酒店比价)'
+  'xorg-server-xvfb: 网页检索脚本后台运行所需的虚拟显示'
+  'chromium: 网页检索脚本的浏览器(或改装 google-chrome)'
+  'python-qrcode: 扫码登录时在终端里画二维码'
+)
+# sherpa-onnx 预编译静态库：由 sherpa-onnx-sys 的 build.rs 在编译期读取
+# （SHERPA_ONNX_ARCHIVE_DIR），放进 source 让 makepkg 负责下载与校验，
+# 构建阶段无需联网。版本号必须与 Cargo.lock 里的 sherpa-onnx-sys 一致。
+_sherpa_ver=1.13.7
+_sherpa_archive="sherpa-onnx-v${_sherpa_ver}-linux-x64-static-lib.tar.bz2"
+# Ordinary releases use the version tag. A controlled patch must declare its
+# exact source commit and reason instead of silently building another branch.
+_source_ref="tag=v${pkgver}"
+_source_commit="${MIYU_RELEASE_SOURCE_COMMIT:-}"
+_wiki_commit="${MIYU_RELEASE_WIKI_COMMIT:-af99c4ac22a1be849206639807577a51b9e12061}"
+if [[ ! "${_wiki_commit}" =~ ^[0-9a-f]{40}$ ]]; then
+  printf 'MIYU_RELEASE_WIKI_COMMIT must be a full commit hash.\n' >&2
+  return 1
+fi
+if [[ -n "${_source_commit}" ]]; then
+  if [[ ! "${_source_commit}" =~ ^[0-9a-f]{40}$ || -z "${MIYU_RELEASE_PATCH_REASON:-}" ]]; then
+    printf 'A patched release requires a full source commit and explicit patch reason.\n' >&2
+    return 1
+  fi
+  _source_ref="commit=${_source_commit}"
+fi
+source=(
+  "miyu::git+${url}.git#${_source_ref}"
+  "shorinwiki::git+https://github.com/SHORiN-KiWATA/Shorin-ArchLinux-Guide.git#commit=${_wiki_commit}"
+  "${_sherpa_archive}::https://github.com/k2-fsa/sherpa-onnx/releases/download/v${_sherpa_ver}/${_sherpa_archive}"
+  'sherpa-onnx.LICENSE::https://raw.githubusercontent.com/k2-fsa/sherpa-onnx/917bed95c8e5c7c18aa4d69fea42e9ef8ef0a60e/LICENSE'
+)
+noextract=("${_sherpa_archive}")
+sha256sums=(
+  'SKIP'
+  'SKIP'
+  'd1be7a69ac2b30120058d8302e624239a3064085383cfa47994a14fdc44c32d6'
+  'cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30'
+)
+
+prepare() {
+  cd miyu
+  local actual
+  actual="$(git rev-parse HEAD)"
+  if [[ -n "${_source_commit}" && "${actual}" != "${_source_commit}" ]]; then
+    printf 'Source checkout does not match the declared patch commit.\n' >&2
+    return 1
+  fi
+  [[ "$(git -C "${srcdir}/shorinwiki" rev-parse HEAD)" == "${_wiki_commit}" ]] || return 1
+  cargo fetch --locked --target "${CARCH}-unknown-linux-gnu"
+}
+
+build() {
+  cd miyu
+  SHERPA_ONNX_ARCHIVE_DIR="${srcdir}" cargo build --release --locked --features voice --target "${CARCH}-unknown-linux-gnu"
+}
+
+package_miyu() {
+  depends=('alsa-lib' 'chafa' 'gcc-libs' 'glibc' 'onnxruntime' 'python' 'ripgrep')
+  optdepends=('miyu-voice: voice front end' 'git: update default Shorin Wiki knowledge base'
+    'libnotify: 桌面通知(kitty 以外的终端由它弹)'
+    'libcanberra: 通知提示音(没有时退到 pw-play/paplay)')
+  cd miyu
+  python packaging/ci/lib/arch_package.py source-install \
+    --source "${srcdir}/miyu" --wiki "${srcdir}/shorinwiki" \
+    --wiki-commit "${_wiki_commit}" --component core --destination "${pkgdir}/usr"
+}
+
+package_miyu-voice() {
+  license=('MIT' 'Apache-2.0')
+  pkgdesc='Miyu voice wake word and speech recognition front end'
+  depends=("miyu=${pkgver}-${pkgrel}" 'alsa-lib' 'bzip2' 'gcc-libs' 'glibc')
+  optdepends=('libnotify: desktop notifications when Miyu hears you')
+  cd miyu
+  python packaging/ci/lib/arch_package.py source-install \
+    --source "${srcdir}/miyu" --wiki "${srcdir}/shorinwiki" \
+    --wiki-commit "${_wiki_commit}" --component voice --destination "${pkgdir}/usr" \
+    --sherpa-license "${srcdir}/sherpa-onnx.LICENSE"
+}

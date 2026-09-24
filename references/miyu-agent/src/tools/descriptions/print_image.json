@@ -1,0 +1,30 @@
+{
+  "name": "print_image",
+  "display_name": "显示图片",
+  "description": "Print or render local images in the terminal. Takes several at once.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "image": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "description": "Local image paths, in display order."
+      },
+      "size": {
+        "type": "string",
+        "description": "Optional chafa size, e.g. 80x40, to keep the output from getting too large."
+      }
+    },
+    "required": [
+      "image"
+    ]
+  },
+  "permission": "readonly",
+  "always_loaded": false,
+  "load_policy": "group",
+  "groups": [
+    "images"
+  ]
+}

@@ -1,0 +1,27 @@
+{
+  "name": "remember_fact",
+  "display_name": "记录记忆",
+  "description": "Remember a fact or useful knowledge long-term in Miyu's memory.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "content": {
+        "type": "string",
+        "description": "Concise fact or knowledge point to remember."
+      },
+      "source": {
+        "type": "string",
+        "description": "Optional source label."
+      }
+    },
+    "required": [
+      "content"
+    ]
+  },
+  "permission": "writes",
+  "always_loaded": true,
+  "load_policy": "summary",
+  "groups": [
+    "memory"
+  ]
+}

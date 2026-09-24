@@ -1,0 +1,124 @@
+# YunXi Agent 微信接入边界
+
+## v2.3.3-hotfix.32 微信语音输入
+
+微信私聊语音现按一轮一答接入，不实现实时全双工：
+
+1. `getupdates` 将 `type=3` 的 `voice_item` 识别为语音输入，只把 CDN 引用、AES key、编码、采样率和时长放入现有认证加密 pending payload；微信侧附带的转写文本不作为本地识别结果。
+2. runtime worker 仅允许访问 `https://novac2c.cdn.weixin.qq.com/c2c/`，有界下载密文，兼容 raw 16-byte 与 base64(hex) AES key，执行 AES-128-ECB/PKCS#7 解密，再用纯 Rust SILK 解码器生成 WAV。原始音频只进入内存或自动清理的临时目录。
+3. SenseVoiceSmall 返回的中文转写使用 `AgentInput::voice` 进入原有 `Agent::run_with_backend_stream`；微信文字与语音继续复用同一 account/peer/dm 会话链、Provider、人格、记忆、陪伴、工具和审批边界。
+4. 无论输入是文字还是语音，最终公开回复都进入同一加密文字 delivery spool，并通过 iLink `text_item` 发回。微信路径不调用 CosyVoice3，不上传合成音频，也不尝试发送原生语音或音频附件。
+5. 审批、追问和 slash control 同样只使用文字；语音输入不会改变任何权限边界。
+
+微信私聊通过 `AgentInputChannel::Weixin` 注入渠道级对话约束。日常交流默认一到两句短句，不输出功能菜单、工作汇报或内部机制说明；明确的技术问题仍可正常展开。delivery spool 会优先按 `。！？；` 和换行拆成独立气泡，只有超长单句才按 grapheme 上限切分，不破坏 emoji 或组合字符。
+
+该能力要求 `YunXi Voice Runtime` 已在本机运行，但微信只使用其中的 SenseVoiceSmall 转写接口。CosyVoice3 继续服务本地 CLI/TUI 语音对话，不属于微信回复链路。公开 iLink 当前只按“语音可输入、回复为文字”的能力边界使用。
+
+## v2.2.0 合并开发线当前状态
+
+当前代码正在执行 `v2.2.0` 合并开发线。2026-07-31 17:40 代码整改报告点名的 P1 项已进入代码侧整改收口：远程控制 outbound、注册失败显式终态、delivery 结果分类、分段 manifest、AgentEvent `final_text_only` 观察策略，以及后台 runtime dispatch lease/退出等待/异常恢复均已补入实现和测试。该状态仍是开发整改结果，等待统一验证、真实 iLink/Provider/ConPTY 脱敏证据和重新审核；不得提前创建 `v2.2.0` tag 或写成已发布、已审核通过。
+
+- 会话连续性：`WeixinConversationBinding` 现在保留 `root_session_id`、`active_session_id`、`last_completed_session_id` 和兼容镜像 `session_id`；每条 pending runtime turn 持久化稳定 `turn_session_id` 与 `parent_session_id`。第一轮没有 parent，后续轮使用上一轮成功完成的 session 作为 parent，并通过既有 `Agent::run_with_backend_stream` 与 `AgentInput::text` 恢复历史。
+- QueueFull 与后台恢复：`yunxi weixin serve` 在启动/轮询前后 drain Ready pending；同一 pending 的 QueueFull 不标失败，只记录脱敏诊断、重试次数和下次重试时间。后台 dispatch 使用 `lease_owner`、attempt token、started/expires 时间、退出等待和异常恢复；服务退出超时或后台 task panic 只恢复当前进程 lease owner 的 pending，不抢占其他进程任务。
+- 远程文字控制：已配对私聊中的 `/status`、`/stop`、`/approve <id>`、`/deny <id> [reason]`、`/answer <id> <text>` 只桥接既有 `AgentRunControl`；request ID 不透明并绑定 account、peer、dm、turn 和用途，状态写入 `WeixinStateStore`，自然语言不会触发审批。
+- 可靠最终文本回信：微信路径采用 `final_text_only` 策略。`AgentEvent` 流会被消费并记录公开 Message 白名单、重复事件、非公开事件和不安全文本计数，但 reasoning、tool event、provider wire、路径、环境变量和秘密不会进入微信 outbound；只有 Runtime `final_response` 进入认证加密 delivery spool。delivery 按 Unicode grapheme 安全分段，使用 manifest/batch 提交，`weixin serve` 通过 iLink `sendmessage` drain 待投递分段，并区分确定失败、结果不明和已验证幂等重试。
+- 会话 reset：`yunxi weixin session reset --account ... --peer peer#... --confirm` 只归档指定 account/peer 的微信绑定 session，不静默删除长期记忆或其他会话。
+
+完整 `v2.2.0` 仍必须等待全量回归、真实 iLink/Provider 联调、ConPTY 验证、证据脱敏、文档同步和统一审核。逐 token 微信流式输出、群聊、公网回调、后台守护进程、联系人抓取、自动加好友、群发和未验证主动推送不属于当前完成能力。
+
+## v2.2.0 开发实现范围
+
+v2.2.0 在 v2.1.x 状态持久化、诊断、安全账户生命周期和旧登录账户 metadata 到 `WeixinStateStore` 安全初始化基础上，保留前台私聊长轮询接纳层、认证加密 pending inbound、stale lock 恢复和既有 YunXi Runtime session binding，并继续扩展可靠回信与远程控制：
+
+- yunxi weixin login --account <name> 获取二维码、显示安全终端文本、轮询等待/扫码/确认，并明确处理过期、取消、超时、redirect、验证码和验证码阻断。
+- 登录确认后，token 和数据加密密钥只写入 Windows Credential Manager；系统凭证不可用、权限失败或写入失败时登录失败，不降级到明文文件。
+- .yunxi/weixin/ 只保存脱敏账户哈希、官方 endpoint、连接状态、凭证引用、workspace 标识、schema version 和创建/更新时间。
+- yunxi weixin status --json 与 doctor --json 读取脱敏登录元数据和凭证可用性；不会输出 token、二维码 payload、加密密钥或原始用户标识。
+- yunxi weixin logout --confirm 只删除指定微信账户的系统凭证和微信元数据，不触碰 YunXi session、persona memory、工作区其他账户或 Git 状态。
+- CLI 私有登录执行 helper 已覆盖 Mock 成功、过期、取消、凭证不可用、metadata 写失败回滚和输出脱敏；生产 CLI 不暴露 mock endpoint 或 fake store 参数。
+- 2026-07-27 真实验证使用 `default` 账户完成扫码确认，`status --json` 返回 `state=ready`、`credential_state=present`、`credential_backend=windows-credential-manager`，`doctor --json` 返回 `credential_store=present`、`credentials_configured=true`，新进程重读仍为 ready。
+- `crates/yunxi-agent-storage` 提供独立版本化 `WeixinStateStore`，状态文件使用同目录临时文件、文件级 sync 和同卷替换更新；启动诊断会识别未完成临时文件候选，但不会把半成品当作有效状态。
+- 状态 store 记录脱敏账户、workspace hash、官方 endpoint、Credential Manager 引用、游标占位、回执、`WeixinConversationBinding`、reply context 引用、待投递元数据、pair request 和认证加密 pending inbound；pending inbound 保存 `encrypted_payload_ref`、`payload_kind`、算法名、算法版本、AAD 版本、随机 nonce 和 ciphertext，不保存原文。
+- `status --json` 与 `doctor --json` 增加 state schema、account lock state、pending inbound/delivery count、pair request count 和最后一次脱敏错误；不输出完整本地路径。
+- Windows 默认 process probe 在 `OpenProcess` 失败时区分 `ERROR_INVALID_PARAMETER` 与权限不足/未知错误；已退出 PID 的锁会标记为 stale 并由 `try_acquire_account_lock` 回收，`ERROR_ACCESS_DENIED` 或未知错误仍保守视为 active。
+- 已有旧账户 metadata 且 state 文件缺失时，`status --json` 和 `doctor --json` 会用旧 metadata 中的非机密字段与凭证引用一次性创建当前 schema 的最小状态；首次 JSON 输出 `state_store_migration="initialized_from_legacy_metadata"`，后续新进程重读输出 `state_store_migration="already_current"`。
+- 初始化不会读取、复制或输出 token、二维码 payload、原始 user ID、原始 peer ID、data key、context token 或系统凭证明文。
+- 已存在当前 state 时不会覆盖 pair、pending inbound、delivery、cursor、last error 等运行状态；遇到未来 schema 或损坏 state 时拒绝覆盖并返回脱敏诊断；遇到损坏 metadata 时 `doctor --json` 返回结构化安全错误且不创建错误 state。
+- 凭证引用存在但系统凭证不可用时，state 仍可由非机密 metadata 初始化；`doctor --json` 会标记凭证不可用或缺失，不写明文回退。
+- `yunxi weixin serve` 是前台服务入口，启动前复用 workspace/provider 解析、旧 metadata 初始化、系统凭证检查、数据密钥/加密 pending queue 检查和账户锁。
+- 直接运行交互式 `yunxi` 时，若默认账户已有微信登录 metadata，CLI 会在后台自动拉起同一 workspace 的微信 gateway；已有活动账户锁时不会重复启动，未登录时静默跳过。CLI 会等待本次子进程 PID 获取账户锁后再报告 `gateway ready`；提前退出或超时会显示明确诊断和日志路径，但不会阻止本地 CLI 继续启动。可用 `--no-weixin-autostart` 或 `YUNXI_WEIXIN_AUTOSTART=0` 关闭；等待上限可用 `YUNXI_WEIXIN_AUTOSTART_READY_TIMEOUT_MS` 配置（100–30000ms，默认 4000ms）。后台 stdout/stderr 写入 `.yunxi/weixin/logs/autostart-*.{stdout,stderr}.log`。显式 `--companion` 会透传给微信 gateway。
+- serve 循环调用 iLink `getupdates`，使用 `WeixinStateStore` 中的 `get_updates_buf` 游标，尊重服务端 timeout hint，并对空轮询、网络错误和服务端错误执行带 jitter 的有界退避。
+- 入站消息先归一化为只含 account hash、peer hash、message id hash、direct-message key、时间、secret reference 和 kind 的 `WeixinInboundEnvelope`；stdout、stderr、JSON、状态和日志不输出原始账号、peer、message id、context token、正文、附件 URL、本地绝对 workspace 或系统凭证 target。
+- 已准入 peer 的私聊文本和语音元数据在进入 state store 前用 `chacha20-poly1305` 认证加密；AAD 绑定 account hash、peer hash、message hash、item id 和 AAD 版本；陌生私聊只生成短时、不透明 pair request；群消息、自消息、其他附件和未知消息只进入脱敏跳过计数。
+- 每个 getupdates 批次把新游标、receipt、encrypted pending inbound、pair request、连接状态和最后一次脱敏错误写入同一次 state-store 原子提交；data key 缺失、key 格式错误、加密失败、密文元数据校验失败或保存失败时游标不推进。
+- 同一 account、peer hash、message id hash 已存在 receipt 或 pending inbound 时幂等跳过，不创建第二个 pending inbound。
+- `FileWeixinStateStore::load_pending_inbound` 和 `WeixinPayloadCipher::decrypt_pending_inbound` 提供最小重启恢复入口；新进程可重新从 Windows Credential Manager 读取同一 data key，再用 state 中的 ciphertext、nonce、算法版本和 AAD 版本恢复最小入站 envelope/body。错误 key、篡改/截断 ciphertext、未知算法版本、未知 AAD 版本或 AAD 绑定不一致会安全失败。
+- `WeixinConversationBinding` 用 `account_id + peer_id_hash + direct_message_key` 映射到既有 YunXi `SessionId`；绑定独立保存在微信 state 中，不向 `SessionRecord` 塞微信字段。
+- `WeixinTurnSupervisor` 处理已配对、已解密、非终态私聊文本或语音 pending inbound，分别转换为 `AgentInput::text` 或 `AgentInput::voice`，并通过唯一 Runtime 入口 `Agent::run_with_backend_stream` 执行。
+- `yunxi run` 与 `yunxi weixin serve` 复用同一 Provider、model、cwd、sandbox、approval、context window 和 companion 配置构造路径；微信自然语言不会隐式提高权限。
+- 同一 `account + peer + dm` 会话使用有界队列串行执行，避免交叉 turn 或交叉 session/memory 写入；不同已准入私聊可以独立调度。
+- Runtime `final_response` 写入加密 delivery spool；生产 `weixin serve` 使用 iLink `sendmessage` 投递最终文本分段。AgentEvent 流只用于 final-only 策略下的安全观察和过滤计数，不投递 reasoning、tool event、provider wire、路径、环境变量、秘密或隐藏 trace，也不开放逐 token 微信流式回信。
+- token 过期或凭证失效时，serve 写入 `suspended`/`credential_expired` 等脱敏健康状态并停止轮询，不自动删除账户或凭证。
+- `pair list|approve|deny` 只处理本地状态 store 中的不透明 pair request ID、脱敏账户、peer hash、过期时间和状态；Agent 远程审批/追问/取消只在前台 `weixin serve` 中通过已配对私聊 slash 命令桥接既有 `AgentRunControl`。
+- `logout --confirm` 遇到活动账户锁会拒绝；服务停止后只删除指定账户微信凭证引用、微信状态和微信 metadata，不删除 YunXi session、persona memory、工作区文件、其他账户或历史报告。
+
+二维码文本只在交互终端显示，且会先移除 ANSI 控制序列；不会写入普通日志、JSON/JSONL、错误链、Markdown 证据或账户 JSON。
+
+## 当前不能做什么
+
+当前开发实现仍不能：
+
+- 通过微信文字隐式提高权限、修改 cwd、Provider、模型、sandbox 或 approval mode；
+- 逐 token 发送或流式合并微信回复；
+- 支持群聊、主动推送、图片/视频/文件附件解析、联系人抓取、Hook、逆向协议或第二套 Agent；
+- 通过公开 iLink 发送机器人原生语音气泡或音频附件回复；微信输出统一为文字。
+- 在统一审核和真实验证前宣称 `v2.2.0` 已发布或创建 `v2.2.0` tag。
+
+weixin serve 的开发路径已覆盖私聊长轮询、准入、认证加密 pending、Runtime session binding、同会话串行、slash control 和最终文本 delivery spool；最终发布仍取决于统一验证、真实 iLink/Provider 联调和审核结论。
+
+## 真实登录验证门禁
+
+发布或复审材料只能记录脱敏状态，不得记录二维码 payload、token、原始用户 ID、数据密钥、原始响应 body 或系统凭证明文。真实验证需要在 Windows 上完成以下步骤：
+
+1. 运行 `target\release\yunxi.exe weixin login --account <test-name>`，只在交互终端展示二维码。
+2. 使用真实微信账号扫码并确认。
+3. 核对 `.yunxi/weixin/` 只出现非机密 metadata。
+4. 运行 `target\release\yunxi.exe weixin status --account <test-name> --json`，确认账户、workspace 和凭证状态均为脱敏字段。
+5. 运行 `target\release\yunxi.exe weixin doctor --account <test-name> --json`，确认系统凭证引用可读且 `secrets_included=false`。
+6. 重新打开 shell 或重新执行 release 二进制，再次读取 status/doctor，确认凭证引用仍可诊断。
+
+`v2.2.0` 复审材料仍只能记录脱敏账户 hash、状态、计数、退出码和是否触发网络；不得保存二维码、token、原始账号、联系人、消息正文、context token、data key 或系统凭证明文。真实回信、审批、取消和重启恢复证据必须先脱敏再归档。
+
+## 命令
+
+~~~text
+yunxi weixin login --account <name>
+yunxi weixin status [--account default] [--json]
+yunxi weixin doctor [--account default] [--json]
+yunxi weixin serve [--account default] [--workspace <path>]
+yunxi weixin pair list|approve|deny ...
+yunxi weixin session reset --account default --peer peer#... --confirm
+yunxi weixin logout [--account default] --confirm
+yunxi [--no-weixin-autostart]
+yunxi bot start --channels weixin [--account default]
+yunxi eval weixin [--json|--jsonl]
+~~~
+
+Provider、模型、sandbox、approval、context window、companion 和根 --cwd 继续由现有 YunXi CLI 配置路径解析，并被 `yunxi run` 与 `yunxi weixin serve` 共享。登录只使用固定官方 endpoint https://ilinkai.weixin.qq.com/；CLI 不接受任意 base URL。
+
+## 安全凭证与元数据
+
+- WeixinSecretStore 是窄化 trait；生产实现为 Windows Credential Manager，fake store 只用于测试。
+- token 与数据加密密钥不进入 .yunxi/weixin/*.json；JSON 中只有哈希账户、凭证引用和非机密状态。
+- Debug、Display、错误、诊断 snapshot、JSON/JSONL 和项目日志都经过脱敏边界。
+- 安全凭证不可用时，登录必须失败；不写明文 token，不把二维码 payload 放入日志。
+- 回滚通过选择旧 tag 完成，不重写、移动或覆盖 v2.1.6、v2.1.5-hotfix.2、v2.1.5、v2.1.4-hotfix.1、v2.1.3-hotfix.1、v2.1.3、v2.1.2 或任何历史 tag。
+
+## 参考快照
+
+- D:\源码\openclaw-weixin：remote https://github.com/Tencent/openclaw-weixin.git，HEAD cef0bfc390393f716903e16d50408118047f87e0。
+- D:\源码\reasonix\internal\bot\weixin：参考二维码状态、超时、字段容错和 Mock 边界。
+
+实现只复刻协议行为和测试思路，没有复制 TypeScript 或 Go 源码。
+
+署名：开发报告撰写者

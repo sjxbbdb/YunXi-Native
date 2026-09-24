@@ -1,0 +1,24 @@
+{
+  "name": "load_skill",
+  "trust": "external",
+  "display_name": "加载技能",
+  "description": "",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "name": {
+        "type": "string",
+        "description": "Skill name from the available-skills list."
+      }
+    },
+    "required": [
+      "name"
+    ]
+  },
+  "permission": "readonly",
+  "always_loaded": true,
+  "load_policy": "summary",
+  "groups": [
+    "skills"
+  ]
+}

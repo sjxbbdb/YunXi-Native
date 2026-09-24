@@ -1,0 +1,1138 @@
+use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
+use std::path::PathBuf;
+use std::process::Stdio;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::process::Command;
+use tokio::time::sleep;
+use yunxi_agent_core::{AgentCancellationToken, AgentError, AgentResult};
+pub use yunxi_agent_core::{DecodedExecOutput, OutputIntegrity};
+use yunxi_agent_sandbox::{
+    ApprovalRequirement, ExecutionPolicy, NetworkPolicy, SandboxRequirement,
+    SandboxRunnerDiagnostic,
+};
+
+#[cfg(target_os = "linux")]
+pub mod linux_runner;
+#[cfg(windows)]
+pub mod windows_runner;
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ExecCommand {
+    pub id: Option<String>,
+    pub cwd: PathBuf,
+    pub command: String,
+    pub argv: Vec<String>,
+    pub stdin: Option<String>,
+    pub env: BTreeMap<String, String>,
+    pub timeout_millis: Option<u64>,
+    pub policy: ExecutionPolicy,
+}
+
+impl ExecCommand {
+    pub fn shell(
+        cwd: impl Into<PathBuf>,
+        command: impl Into<String>,
+        policy: ExecutionPolicy,
+    ) -> Self {
+        let command = command.into();
+        Self {
+            id: None,
+            cwd: cwd.into(),
+            argv: platform_shell_argv(&command),
+            command,
+            stdin: None,
+            env: BTreeMap::new(),
+            timeout_millis: Some(DEFAULT_EXEC_COMMAND_TIMEOUT_MILLIS),
+            policy,
+        }
+    }
+
+    pub fn canonical_command(&self) -> String {
+        canonicalize_shell_command(&self.command)
+    }
+
+    pub fn observed_shell(cwd: impl Into<PathBuf>, command: impl Into<String>) -> Self {
+        let cwd = cwd.into();
+        Self::shell(
+            cwd.clone(),
+            command,
+            ExecutionPolicy {
+                approval: ApprovalRequirement::PreApproved,
+                sandbox: SandboxRequirement::DangerFullAccess,
+                network: NetworkPolicy::Inherit,
+                workspace_root: cwd,
+            },
+        )
+    }
+
+    pub fn with_id(mut self, id: Option<String>) -> Self {
+        self.id = id;
+        self
+    }
+}
+
+pub const DEFAULT_EXEC_COMMAND_TIMEOUT_MILLIS: u64 = 10_000;
+
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ExecOutput {
+    pub stdout: String,
+    pub stderr: String,
+    pub exit_code: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stdout_decoded: Option<DecodedExecOutput>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stderr_decoded: Option<DecodedExecOutput>,
+}
+
+impl ExecOutput {
+    pub fn combined(&self) -> String {
+        combine_output(&self.stdout, &self.stderr)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExecOutputStream {
+    Stdout,
+    Stderr,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ExecLifecycleEvent {
+    RunnerDiagnostic {
+        id: Option<String>,
+        diagnostic: SandboxRunnerDiagnostic,
+    },
+    Started {
+        id: Option<String>,
+        command: String,
+        cwd: PathBuf,
+    },
+    OutputDelta {
+        id: Option<String>,
+        stream: ExecOutputStream,
+        chunk: String,
+    },
+    StdinWritten {
+        id: Option<String>,
+        bytes: usize,
+    },
+    Completed {
+        id: Option<String>,
+        output: ExecOutput,
+        duration_millis: Option<u64>,
+        timed_out: bool,
+    },
+    Cancelled {
+        id: Option<String>,
+    },
+    Failed {
+        id: Option<String>,
+        message: String,
+    },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct UnifiedExecRequest {
+    pub id: Option<String>,
+    pub command: String,
+    pub cwd: PathBuf,
+    pub stdin_bytes: usize,
+    pub output_limit_bytes: Option<usize>,
+    pub long_running: bool,
+    pub shell_snapshot: ShellSnapshot,
+}
+
+impl UnifiedExecRequest {
+    pub fn from_command(command: &ExecCommand, output_limit_bytes: Option<usize>) -> Self {
+        Self {
+            id: command.id.clone(),
+            command: command.canonical_command(),
+            cwd: command.cwd.clone(),
+            stdin_bytes: command.stdin.as_ref().map(|stdin| stdin.len()).unwrap_or(0),
+            output_limit_bytes,
+            long_running: command.timeout_millis.is_none(),
+            shell_snapshot: ShellSnapshot::current(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct UnifiedExecAttempt {
+    pub request_id: Option<String>,
+    pub attempt: usize,
+    pub backend: ExecBackend,
+    pub status: ExecAttemptStatus,
+    pub pollable: bool,
+    pub cancellable: bool,
+    pub diagnostic: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExecBackend {
+    DirectProcess,
+    ExecServer,
+    PlatformSandboxRunner,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExecAttemptStatus {
+    Planned,
+    Started,
+    Polling,
+    Completed,
+    Cancelled,
+    TimedOut,
+    Failed,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ExecServerSession {
+    pub session_id: String,
+    pub handle_id: String,
+    pub status: ExecAttemptStatus,
+    pub stdin_open: bool,
+    pub last_poll_millis: Option<u128>,
+    pub output_limit_bytes: Option<usize>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ShellSnapshot {
+    pub platform: String,
+    pub shell: String,
+}
+
+impl ShellSnapshot {
+    pub fn current() -> Self {
+        Self {
+            platform: std::env::consts::OS.to_string(),
+            shell: default_shell_name(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ExecSummary {
+    pub id: Option<String>,
+    pub command: String,
+    pub aggregated_output: String,
+    pub exit_code: Option<i32>,
+    pub timed_out: bool,
+}
+
+fn default_shell_name() -> String {
+    #[cfg(windows)]
+    {
+        "powershell".to_string()
+    }
+    #[cfg(not(windows))]
+    {
+        "sh".to_string()
+    }
+}
+
+impl ExecSummary {
+    pub fn from_output(command: &ExecCommand, output: ExecOutput, timed_out: bool) -> Self {
+        Self {
+            id: command.id.clone(),
+            command: command.canonical_command(),
+            aggregated_output: output.combined(),
+            exit_code: output.exit_code,
+            timed_out,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ExecTrace {
+    pub events: Vec<ExecLifecycleEvent>,
+    pub summary: ExecSummary,
+}
+
+impl ExecTrace {
+    pub fn from_completed_output(
+        command: &ExecCommand,
+        output: ExecOutput,
+        duration: Option<Duration>,
+        timed_out: bool,
+    ) -> Self {
+        let mut events = vec![ExecLifecycleEvent::Started {
+            id: command.id.clone(),
+            command: command.canonical_command(),
+            cwd: command.cwd.clone(),
+        }];
+        if !output.stdout.is_empty() {
+            events.push(ExecLifecycleEvent::OutputDelta {
+                id: command.id.clone(),
+                stream: ExecOutputStream::Stdout,
+                chunk: output.stdout.clone(),
+            });
+        }
+        if !output.stderr.is_empty() {
+            events.push(ExecLifecycleEvent::OutputDelta {
+                id: command.id.clone(),
+                stream: ExecOutputStream::Stderr,
+                chunk: output.stderr.clone(),
+            });
+        }
+        events.push(ExecLifecycleEvent::Completed {
+            id: command.id.clone(),
+            output: output.clone(),
+            duration_millis: duration.map(|duration| duration.as_millis() as u64),
+            timed_out,
+        });
+        Self {
+            summary: ExecSummary::from_output(command, output, timed_out),
+            events,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ExecManager {
+    pub output_limits: OutputLimits,
+}
+
+impl Default for ExecManager {
+    fn default() -> Self {
+        Self {
+            output_limits: OutputLimits::default(),
+        }
+    }
+}
+
+impl ExecManager {
+    pub async fn run(&self, command: ExecCommand) -> AgentResult<ExecTrace> {
+        self.run_with_cancellation(command, AgentCancellationToken::new())
+            .await
+    }
+
+    pub async fn run_with_cancellation(
+        &self,
+        command: ExecCommand,
+        cancellation_token: AgentCancellationToken,
+    ) -> AgentResult<ExecTrace> {
+        if command.argv.is_empty() {
+            return Err(AgentError::Execution {
+                message: "exec command argv is empty".to_string(),
+            });
+        }
+
+        let runner = DirectProcessRunner;
+        let runner_diagnostic = runner.diagnostic(&command);
+
+        let started_at = std::time::Instant::now();
+        let mut events = vec![
+            ExecLifecycleEvent::RunnerDiagnostic {
+                id: command.id.clone(),
+                diagnostic: runner_diagnostic,
+            },
+            ExecLifecycleEvent::Started {
+                id: command.id.clone(),
+                command: command.canonical_command(),
+                cwd: command.cwd.clone(),
+            },
+        ];
+
+        if cancellation_token.is_cancelled() {
+            events.push(ExecLifecycleEvent::Cancelled {
+                id: command.id.clone(),
+            });
+            let output = ExecOutput {
+                stdout: String::new(),
+                stderr: "exec command cancelled before spawn".to_string(),
+                exit_code: None,
+                ..ExecOutput::default()
+            };
+            events.push(ExecLifecycleEvent::Completed {
+                id: command.id.clone(),
+                output: output.clone(),
+                duration_millis: Some(started_at.elapsed().as_millis() as u64),
+                timed_out: false,
+            });
+            return Ok(ExecTrace {
+                summary: ExecSummary::from_output(&command, output, false),
+                events,
+            });
+        }
+
+        let mut child = runner.spawn(&command)?;
+
+        if let Some(stdin) = command.stdin.as_ref() {
+            let mut child_stdin = child.stdin.take().ok_or_else(|| AgentError::Execution {
+                message: "exec stdin pipe was not available".to_string(),
+            })?;
+            child_stdin
+                .write_all(stdin.as_bytes())
+                .await
+                .map_err(|error| AgentError::Execution {
+                    message: format!("failed to write exec stdin: {error}"),
+                })?;
+            child_stdin
+                .shutdown()
+                .await
+                .map_err(|error| AgentError::Execution {
+                    message: format!("failed to close exec stdin: {error}"),
+                })?;
+            events.push(ExecLifecycleEvent::StdinWritten {
+                id: command.id.clone(),
+                bytes: stdin.len(),
+            });
+        }
+
+        let stdout = child.stdout.take();
+        let stderr = child.stderr.take();
+        let stdout_task = tokio::spawn(read_pipe(stdout));
+        let stderr_task = tokio::spawn(read_pipe(stderr));
+
+        let mut timed_out = false;
+        let mut cancelled = false;
+        let status = match command.timeout_millis {
+            Some(timeout_millis) => {
+                tokio::select! {
+                    result = child.wait() => result.map_err(|error| AgentError::Execution {
+                        message: format!("failed while waiting for exec command: {error}"),
+                    })?,
+                    _ = sleep(Duration::from_millis(timeout_millis)) => {
+                        timed_out = true;
+                        let _ = child.kill().await;
+                        events.push(ExecLifecycleEvent::Cancelled {
+                            id: command.id.clone(),
+                        });
+                        child.wait().await.map_err(|error| AgentError::Execution {
+                            message: format!("failed while waiting after exec timeout: {error}"),
+                        })?
+                    },
+                    _ = wait_for_cancellation(cancellation_token.clone()) => {
+                        cancelled = true;
+                        let _ = child.kill().await;
+                        events.push(ExecLifecycleEvent::Cancelled {
+                            id: command.id.clone(),
+                        });
+                        child.wait().await.map_err(|error| AgentError::Execution {
+                            message: format!("failed while waiting after exec cancellation: {error}"),
+                        })?
+                    }
+                }
+            }
+            None => {
+                tokio::select! {
+                    result = child.wait() => result.map_err(|error| AgentError::Execution {
+                        message: format!("failed while waiting for exec command: {error}"),
+                    })?,
+                    _ = wait_for_cancellation(cancellation_token.clone()) => {
+                        cancelled = true;
+                        let _ = child.kill().await;
+                        events.push(ExecLifecycleEvent::Cancelled {
+                            id: command.id.clone(),
+                        });
+                        child.wait().await.map_err(|error| AgentError::Execution {
+                            message: format!("failed while waiting after exec cancellation: {error}"),
+                        })?
+                    }
+                }
+            }
+        };
+
+        let decoder = ExecOutputDecoder::new(self.output_limits);
+        let stdout_decoded = decoder.decode(join_pipe(stdout_task).await?);
+        let stderr_decoded = decoder.decode(join_pipe(stderr_task).await?);
+        let stdout = stdout_decoded.display_text.clone();
+        let stderr = stderr_decoded.display_text.clone();
+        if !stdout.is_empty() {
+            events.push(ExecLifecycleEvent::OutputDelta {
+                id: command.id.clone(),
+                stream: ExecOutputStream::Stdout,
+                chunk: stdout.clone(),
+            });
+        }
+        if !stderr.is_empty() {
+            events.push(ExecLifecycleEvent::OutputDelta {
+                id: command.id.clone(),
+                stream: ExecOutputStream::Stderr,
+                chunk: stderr.clone(),
+            });
+        }
+
+        let output = ExecOutput {
+            stdout,
+            stderr,
+            exit_code: status.code(),
+            stdout_decoded: Some(stdout_decoded),
+            stderr_decoded: Some(stderr_decoded),
+        };
+        events.push(ExecLifecycleEvent::Completed {
+            id: command.id.clone(),
+            output: output.clone(),
+            duration_millis: Some(started_at.elapsed().as_millis() as u64),
+            timed_out: timed_out || cancelled,
+        });
+        Ok(ExecTrace {
+            summary: ExecSummary::from_output(&command, output, timed_out || cancelled),
+            events,
+        })
+    }
+}
+
+pub trait PlatformSandboxRunner {
+    fn diagnostic(&self, command: &ExecCommand) -> SandboxRunnerDiagnostic;
+    fn spawn(&self, command: &ExecCommand) -> AgentResult<tokio::process::Child>;
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct DirectProcessRunner;
+
+impl PlatformSandboxRunner for DirectProcessRunner {
+    fn diagnostic(&self, command: &ExecCommand) -> SandboxRunnerDiagnostic {
+        yunxi_agent_sandbox::SandboxRunner.diagnostic(
+            &command.policy,
+            &command.cwd,
+            Some(command.command.as_str()),
+        )
+    }
+
+    fn spawn(&self, command: &ExecCommand) -> AgentResult<tokio::process::Child> {
+        let mut process = Command::new(&command.argv[0]);
+        process
+            .args(&command.argv[1..])
+            .current_dir(&command.cwd)
+            .envs(&command.env)
+            .stdin(if command.stdin.is_some() {
+                Stdio::piped()
+            } else {
+                Stdio::null()
+            })
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+
+        process.spawn().map_err(|error| AgentError::Execution {
+            message: format!("failed to spawn exec command {}: {error}", command.command),
+        })
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ExecHandle {
+    pub id: String,
+    pub command: String,
+    pub cwd: PathBuf,
+    pub status: ExecHandleStatus,
+    pub buffered_output: String,
+}
+
+impl ExecHandle {
+    pub fn new(id: impl Into<String>, command: &ExecCommand) -> Self {
+        Self {
+            id: id.into(),
+            command: command.canonical_command(),
+            cwd: command.cwd.clone(),
+            status: ExecHandleStatus::Running,
+            buffered_output: String::new(),
+        }
+    }
+
+    pub fn mark_completed(mut self, output: impl Into<String>) -> Self {
+        self.status = ExecHandleStatus::Completed;
+        self.buffered_output = output.into();
+        self
+    }
+
+    pub fn request_cancel(mut self) -> Self {
+        self.status = ExecHandleStatus::CancelRequested;
+        self
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExecHandleStatus {
+    Running,
+    CancelRequested,
+    Completed,
+    Failed,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct ExecHandleRegistry {
+    handles: Arc<Mutex<BTreeMap<String, ExecHandle>>>,
+}
+
+impl ExecHandleRegistry {
+    pub fn register(
+        &self,
+        id: impl Into<String>,
+        command: &ExecCommand,
+    ) -> AgentResult<ExecHandle> {
+        let id = id.into();
+        let handle = ExecHandle::new(id.clone(), command);
+        self.lock_handles()?.insert(id, handle.clone());
+        Ok(handle)
+    }
+
+    pub fn update_output(
+        &self,
+        id: &str,
+        output: impl Into<String>,
+        status: ExecHandleStatus,
+    ) -> AgentResult<ExecHandle> {
+        let mut handles = self.lock_handles()?;
+        let handle = handles.get_mut(id).ok_or_else(|| AgentError::Execution {
+            message: format!("exec handle not found: {id}"),
+        })?;
+        handle.buffered_output = output.into();
+        handle.status = status;
+        Ok(handle.clone())
+    }
+
+    pub fn request_cancel(&self, id: &str) -> AgentResult<ExecHandle> {
+        let mut handles = self.lock_handles()?;
+        let handle = handles.get_mut(id).ok_or_else(|| AgentError::Execution {
+            message: format!("exec handle not found: {id}"),
+        })?;
+        handle.status = ExecHandleStatus::CancelRequested;
+        Ok(handle.clone())
+    }
+
+    pub fn status(&self, id: &str) -> AgentResult<Option<ExecHandle>> {
+        Ok(self.lock_handles()?.get(id).cloned())
+    }
+
+    pub fn poll_output(&self, id: &str, limits: OutputLimits) -> AgentResult<Option<String>> {
+        Ok(self
+            .lock_handles()?
+            .get(id)
+            .map(|handle| truncate_output(&handle.buffered_output, limits)))
+    }
+
+    pub fn list(&self) -> AgentResult<Vec<ExecHandle>> {
+        Ok(self.lock_handles()?.values().cloned().collect())
+    }
+
+    fn lock_handles(&self) -> AgentResult<std::sync::MutexGuard<'_, BTreeMap<String, ExecHandle>>> {
+        self.handles.lock().map_err(|_| AgentError::Execution {
+            message: "exec handle registry lock was poisoned".to_string(),
+        })
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct OutputLimits {
+    pub max_bytes: usize,
+    pub max_lines: Option<usize>,
+    pub tail_lines: Option<usize>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ExecOutputDecoder {
+    limits: OutputLimits,
+}
+
+impl ExecOutputDecoder {
+    pub const fn new(limits: OutputLimits) -> Self {
+        Self { limits }
+    }
+
+    pub fn decode(self, bytes: Vec<u8>) -> DecodedExecOutput {
+        let original_bytes = bytes.len();
+        if bytes.is_empty() {
+            return DecodedExecOutput::default();
+        }
+
+        let binary = is_probably_binary(&bytes);
+        let (lossy_text, replacement_count) = decode_lossy_utf8(&bytes);
+        let (display_text, truncated) = if binary {
+            let truncated = bytes.len() > self.limits.max_bytes;
+            (
+                format!(
+                    "[binary output omitted: {original_bytes} bytes, {replacement_count} invalid UTF-8 sequence(s)]"
+                ),
+                truncated,
+            )
+        } else {
+            truncate_text(&lossy_text, self.limits)
+        };
+        let integrity = if truncated {
+            OutputIntegrity::Partial
+        } else if binary || replacement_count > 0 {
+            OutputIntegrity::Lossy
+        } else {
+            OutputIntegrity::Clean
+        };
+
+        DecodedExecOutput {
+            displayed_bytes: display_text.len(),
+            display_text,
+            replacement_count,
+            truncated,
+            original_bytes,
+            integrity,
+        }
+    }
+}
+
+impl Default for OutputLimits {
+    fn default() -> Self {
+        Self {
+            max_bytes: 20_000,
+            max_lines: Some(1_000),
+            tail_lines: Some(200),
+        }
+    }
+}
+
+pub fn canonicalize_shell_command(command: &str) -> String {
+    command.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+pub fn platform_shell_argv(command: &str) -> Vec<String> {
+    if cfg!(windows) {
+        vec!["cmd".to_string(), "/C".to_string(), command.to_string()]
+    } else {
+        vec!["sh".to_string(), "-c".to_string(), command.to_string()]
+    }
+}
+
+pub fn combine_output(stdout: &str, stderr: &str) -> String {
+    if stdout.is_empty() {
+        return stderr.to_string();
+    }
+    if stderr.is_empty() {
+        return stdout.to_string();
+    }
+    if stdout.ends_with('\n') {
+        format!("{stdout}{stderr}")
+    } else {
+        format!("{stdout}\n{stderr}")
+    }
+}
+
+pub fn truncate_output(output: &str, limits: OutputLimits) -> String {
+    ExecOutputDecoder::new(limits)
+        .decode(output.as_bytes().to_vec())
+        .display_text
+}
+
+fn truncate_text(output: &str, limits: OutputLimits) -> (String, bool) {
+    let (mut limited, mut truncated) = limit_lines(output, limits);
+    if limited.len() <= limits.max_bytes {
+        return (limited, truncated);
+    }
+    limited = limited
+        .chars()
+        .scan(0usize, |count, ch| {
+            let next = *count + ch.len_utf8();
+            if next > limits.max_bytes {
+                None
+            } else {
+                *count = next;
+                Some(ch)
+            }
+        })
+        .collect::<String>();
+    limited.push_str("\n[output truncated]");
+    truncated = true;
+    (limited, truncated)
+}
+
+fn limit_lines(output: &str, limits: OutputLimits) -> (String, bool) {
+    let Some(max_lines) = limits.max_lines else {
+        return (output.to_string(), false);
+    };
+    let lines = output.lines().collect::<Vec<_>>();
+    if lines.len() <= max_lines {
+        return (output.to_string(), false);
+    }
+    let tail_lines = limits.tail_lines.unwrap_or(max_lines).min(max_lines);
+    let head_lines = max_lines.saturating_sub(tail_lines);
+    let mut limited = String::new();
+    for line in lines.iter().take(head_lines) {
+        limited.push_str(line);
+        limited.push('\n');
+    }
+    limited.push_str("[output truncated]\n");
+    for line in lines.iter().skip(lines.len().saturating_sub(tail_lines)) {
+        limited.push_str(line);
+        limited.push('\n');
+    }
+    (limited, true)
+}
+
+fn is_probably_binary(bytes: &[u8]) -> bool {
+    if bytes.contains(&0) {
+        return true;
+    }
+    let control_bytes = bytes
+        .iter()
+        .filter(|byte| matches!(**byte, 0x01..=0x08 | 0x0b..=0x0c | 0x0e..=0x1f))
+        .count();
+    control_bytes.saturating_mul(10) > bytes.len()
+}
+
+fn decode_lossy_utf8(bytes: &[u8]) -> (String, usize) {
+    let mut remaining = bytes;
+    let mut replacement_count = 0usize;
+    while let Err(error) = std::str::from_utf8(remaining) {
+        replacement_count = replacement_count.saturating_add(1);
+        let invalid_start = error.valid_up_to();
+        let invalid_len = error
+            .error_len()
+            .unwrap_or_else(|| remaining.len().saturating_sub(invalid_start));
+        let next = invalid_start
+            .saturating_add(invalid_len)
+            .min(remaining.len());
+        remaining = &remaining[next..];
+        if remaining.is_empty() {
+            break;
+        }
+    }
+    (
+        String::from_utf8_lossy(bytes).into_owned(),
+        replacement_count,
+    )
+}
+
+async fn read_pipe<T>(pipe: Option<T>) -> Result<Vec<u8>, std::io::Error>
+where
+    T: tokio::io::AsyncRead + Unpin + Send + 'static,
+{
+    let mut output = Vec::new();
+    if let Some(mut pipe) = pipe {
+        pipe.read_to_end(&mut output).await?;
+    }
+    Ok(output)
+}
+
+async fn join_pipe(
+    task: tokio::task::JoinHandle<Result<Vec<u8>, std::io::Error>>,
+) -> AgentResult<Vec<u8>> {
+    task.await
+        .map_err(|error| AgentError::Execution {
+            message: format!("failed to join exec output task: {error}"),
+        })?
+        .map_err(|error| AgentError::Execution {
+            message: format!("failed to read exec output: {error}"),
+        })
+}
+
+async fn wait_for_cancellation(token: AgentCancellationToken) {
+    while !token.is_cancelled() {
+        sleep(Duration::from_millis(50)).await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[cfg(windows)]
+    fn stdin_echo_command() -> &'static str {
+        "findstr ."
+    }
+
+    #[cfg(not(windows))]
+    fn stdin_echo_command() -> &'static str {
+        "cat"
+    }
+
+    #[cfg(windows)]
+    fn sleep_command() -> &'static str {
+        "timeout /t 2 /nobreak >nul"
+    }
+
+    #[cfg(not(windows))]
+    fn sleep_command() -> &'static str {
+        "sleep 2"
+    }
+
+    #[cfg(windows)]
+    fn cancellable_sleep_command() -> &'static str {
+        "ping -n 6 127.0.0.1 > nul"
+    }
+
+    #[cfg(not(windows))]
+    fn cancellable_sleep_command() -> &'static str {
+        "sleep 5"
+    }
+
+    #[test]
+    fn canonicalizes_shell_spacing() {
+        assert_eq!(canonicalize_shell_command(" echo   yunxi  "), "echo yunxi");
+    }
+
+    #[test]
+    fn shell_command_carries_argv_timeout_and_policy() {
+        let policy = ExecutionPolicy {
+            approval: yunxi_agent_sandbox::ApprovalRequirement::PreApproved,
+            sandbox: yunxi_agent_sandbox::SandboxRequirement::DangerFullAccess,
+            network: yunxi_agent_sandbox::NetworkPolicy::Inherit,
+            workspace_root: PathBuf::from("."),
+        };
+        let command = ExecCommand::shell(".", "echo yunxi", policy);
+
+        assert_eq!(command.canonical_command(), "echo yunxi");
+        assert_eq!(
+            command.timeout_millis,
+            Some(DEFAULT_EXEC_COMMAND_TIMEOUT_MILLIS)
+        );
+        assert!(command.argv.iter().any(|part| part.contains("echo yunxi")));
+    }
+
+    #[test]
+    fn exec_summary_aggregates_output() {
+        let policy = ExecutionPolicy {
+            approval: yunxi_agent_sandbox::ApprovalRequirement::PreApproved,
+            sandbox: yunxi_agent_sandbox::SandboxRequirement::DangerFullAccess,
+            network: yunxi_agent_sandbox::NetworkPolicy::Inherit,
+            workspace_root: PathBuf::from("."),
+        };
+        let command = ExecCommand::shell(".", "echo yunxi", policy);
+        let summary = ExecSummary::from_output(
+            &command,
+            ExecOutput {
+                stdout: "out".to_string(),
+                stderr: "err".to_string(),
+                exit_code: Some(0),
+                ..ExecOutput::default()
+            },
+            false,
+        );
+
+        assert_eq!(summary.aggregated_output, "out\nerr");
+        assert_eq!(summary.exit_code, Some(0));
+    }
+
+    #[test]
+    fn exec_trace_records_started_output_and_completed_events() {
+        let command =
+            ExecCommand::observed_shell(".", "echo yunxi").with_id(Some("exec-1".to_string()));
+        let trace = ExecTrace::from_completed_output(
+            &command,
+            ExecOutput {
+                stdout: "out".to_string(),
+                stderr: "err".to_string(),
+                exit_code: Some(0),
+                ..ExecOutput::default()
+            },
+            Some(Duration::from_millis(12)),
+            false,
+        );
+
+        assert!(matches!(
+            trace.events.first(),
+            Some(ExecLifecycleEvent::Started { id: Some(id), .. }) if id == "exec-1"
+        ));
+        assert!(trace.events.iter().any(|event| matches!(
+            event,
+            ExecLifecycleEvent::OutputDelta {
+                stream: ExecOutputStream::Stdout,
+                chunk,
+                ..
+            } if chunk == "out"
+        )));
+        assert!(trace.events.iter().any(|event| matches!(
+            event,
+            ExecLifecycleEvent::Completed {
+                duration_millis: Some(12),
+                timed_out: false,
+                ..
+            }
+        )));
+        assert_eq!(trace.summary.aggregated_output, "out\nerr");
+    }
+
+    #[test]
+    fn exec_handle_tracks_long_running_status_facade() {
+        let command =
+            ExecCommand::observed_shell(".", "echo yunxi").with_id(Some("exec-handle".to_string()));
+        let handle = ExecHandle::new("handle-1", &command).request_cancel();
+
+        assert_eq!(handle.id, "handle-1");
+        assert_eq!(handle.command, "echo yunxi");
+        assert_eq!(handle.status, ExecHandleStatus::CancelRequested);
+    }
+
+    #[test]
+    fn output_limits_keep_head_and_tail_lines() {
+        let output = (0..10)
+            .map(|index| format!("line-{index}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let limited = truncate_output(
+            &output,
+            OutputLimits {
+                max_bytes: 1_000,
+                max_lines: Some(4),
+                tail_lines: Some(2),
+            },
+        );
+
+        assert!(limited.contains("line-0"));
+        assert!(limited.contains("[output truncated]"));
+        assert!(limited.contains("line-8"));
+        assert!(!limited.contains("line-5"));
+    }
+
+    #[test]
+    fn decoder_replaces_invalid_utf8_without_failing_the_stream() {
+        let decoded =
+            ExecOutputDecoder::new(OutputLimits::default()).decode(b"valid\xfftail".to_vec());
+
+        assert!(decoded.display_text.contains("valid"));
+        assert!(decoded.display_text.contains('\u{fffd}'));
+        assert!(
+            !decoded
+                .display_text
+                .contains("stream did not contain valid UTF-8")
+        );
+        assert_eq!(decoded.replacement_count, 1);
+        assert_eq!(decoded.original_bytes, 10);
+        assert_eq!(decoded.integrity, OutputIntegrity::Lossy);
+        assert!(!decoded.truncated);
+    }
+
+    #[test]
+    fn decoder_omits_binary_bytes_from_display_text() {
+        let decoded = ExecOutputDecoder::new(OutputLimits::default())
+            .decode(vec![0x00, 0x01, 0xfe, 0xff, b'x']);
+
+        assert!(decoded.display_text.contains("binary output omitted"));
+        assert_eq!(decoded.original_bytes, 5);
+        assert_eq!(decoded.integrity, OutputIntegrity::Lossy);
+        assert!(!decoded.display_text.contains('\0'));
+    }
+
+    #[test]
+    fn decoder_records_partial_integrity_and_byte_counts_when_truncated() {
+        let decoded = ExecOutputDecoder::new(OutputLimits {
+            max_bytes: 8,
+            max_lines: None,
+            tail_lines: None,
+        })
+        .decode(b"0123456789abcdef".to_vec());
+
+        assert!(decoded.truncated);
+        assert_eq!(decoded.original_bytes, 16);
+        assert_eq!(decoded.displayed_bytes, decoded.display_text.len());
+        assert_eq!(decoded.integrity, OutputIntegrity::Partial);
+        assert!(decoded.display_text.contains("output truncated"));
+    }
+
+    #[test]
+    fn stdout_and_stderr_share_decoder_contract() {
+        let decoder = ExecOutputDecoder::new(OutputLimits::default());
+        let stdout = decoder.decode(b"stdout\xff".to_vec());
+        let stderr = decoder.decode(b"stderr\xfe".to_vec());
+
+        for decoded in [stdout, stderr] {
+            assert_eq!(decoded.replacement_count, 1);
+            assert_eq!(decoded.integrity, OutputIntegrity::Lossy);
+            assert!(!decoded.truncated);
+        }
+    }
+
+    #[tokio::test]
+    async fn exec_manager_writes_stdin_and_captures_output() {
+        let policy = ExecutionPolicy {
+            approval: yunxi_agent_sandbox::ApprovalRequirement::PreApproved,
+            sandbox: yunxi_agent_sandbox::SandboxRequirement::DangerFullAccess,
+            network: yunxi_agent_sandbox::NetworkPolicy::Inherit,
+            workspace_root: PathBuf::from("."),
+        };
+        let mut command = ExecCommand::shell(".", stdin_echo_command(), policy)
+            .with_id(Some("exec-stdin".to_string()));
+        command.stdin = Some("yunxi\n".to_string());
+
+        let trace = ExecManager::default()
+            .run(command)
+            .await
+            .expect("exec trace");
+
+        assert_eq!(trace.summary.exit_code, Some(0));
+        assert!(!trace.summary.timed_out);
+        assert!(trace.summary.aggregated_output.contains("yunxi"));
+        assert!(trace.events.iter().any(|event| matches!(
+            event,
+            ExecLifecycleEvent::RunnerDiagnostic {
+                id: Some(id),
+                diagnostic
+            } if id == "exec-stdin"
+                && diagnostic.runner == "direct_process_policy_bypass"
+                && !diagnostic.os_isolation
+        )));
+        assert!(trace.events.iter().any(|event| matches!(
+            event,
+            ExecLifecycleEvent::StdinWritten {
+                id: Some(id),
+                bytes
+            } if id == "exec-stdin" && *bytes == "yunxi\n".len()
+        )));
+    }
+
+    #[tokio::test]
+    async fn exec_manager_times_out_and_records_cancelled_trace() {
+        let policy = ExecutionPolicy {
+            approval: yunxi_agent_sandbox::ApprovalRequirement::PreApproved,
+            sandbox: yunxi_agent_sandbox::SandboxRequirement::DangerFullAccess,
+            network: yunxi_agent_sandbox::NetworkPolicy::Inherit,
+            workspace_root: PathBuf::from("."),
+        };
+        let mut command = ExecCommand::shell(".", sleep_command(), policy)
+            .with_id(Some("exec-timeout".to_string()));
+        command.timeout_millis = Some(1);
+
+        let trace = ExecManager::default()
+            .run(command)
+            .await
+            .expect("exec trace");
+
+        assert!(trace.summary.timed_out);
+        assert!(trace.events.iter().any(|event| matches!(
+            event,
+            ExecLifecycleEvent::Cancelled { id: Some(id) } if id == "exec-timeout"
+        )));
+        assert!(trace.events.iter().any(|event| matches!(
+            event,
+            ExecLifecycleEvent::Completed {
+                timed_out: true,
+                ..
+            }
+        )));
+    }
+
+    #[tokio::test]
+    async fn exec_manager_cancellation_token_kills_running_command() {
+        let policy = ExecutionPolicy {
+            approval: yunxi_agent_sandbox::ApprovalRequirement::PreApproved,
+            sandbox: yunxi_agent_sandbox::SandboxRequirement::DangerFullAccess,
+            network: yunxi_agent_sandbox::NetworkPolicy::Inherit,
+            workspace_root: PathBuf::from("."),
+        };
+        let mut command = ExecCommand::shell(".", cancellable_sleep_command(), policy)
+            .with_id(Some("exec-cancel".to_string()));
+        command.timeout_millis = Some(10_000);
+        let token = AgentCancellationToken::new();
+        let cancel_token = token.clone();
+        let cancel_task = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            cancel_token.cancel();
+        });
+
+        let trace = ExecManager::default()
+            .run_with_cancellation(command, token)
+            .await
+            .expect("exec trace");
+        cancel_task.await.expect("cancel task");
+
+        assert!(trace.summary.timed_out);
+        assert!(trace.events.iter().any(|event| matches!(
+            event,
+            ExecLifecycleEvent::Cancelled { id: Some(id) } if id == "exec-cancel"
+        )));
+    }
+}

@@ -1,0 +1,51 @@
+{
+  "name": "manage_skill",
+  "display_name": "管理技能",
+  "description": "Manage and author skills.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "action": {
+        "type": "string",
+        "enum": [
+          "create",
+          "update",
+          "delete",
+          "publish",
+          "list_drafts"
+        ]
+      },
+      "name": {
+        "type": "string",
+        "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$",
+        "description": "Required for create/update/delete."
+      },
+      "description": {
+        "type": "string",
+        "description": "create: what the skill does and when to use it."
+      },
+      "scope": {
+        "type": "string",
+        "enum": [
+          "global",
+          "persona"
+        ],
+        "default": "global",
+        "description": "persona limits it to the current persona. Required for update/delete."
+      },
+      "draft_id": {
+        "type": "string",
+        "description": "publish: the draft id from create or update."
+      }
+    },
+    "required": [
+      "action"
+    ]
+  },
+  "permission": "writes",
+  "always_loaded": false,
+  "load_policy": "group",
+  "groups": [
+    "skills"
+  ]
+}

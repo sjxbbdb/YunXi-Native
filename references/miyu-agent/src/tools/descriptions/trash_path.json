@@ -1,0 +1,27 @@
+{
+  "name": "trash_path",
+  "display_name": "移入回收站",
+  "description": "Move paths to the system Trash instead of deleting them. Pass every path in one call.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "paths": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "minItems": 1,
+        "description": "Absolute, workspace-relative or ~/ paths."
+      }
+    },
+    "required": [
+      "paths"
+    ]
+  },
+  "permission": "writes",
+  "always_loaded": false,
+  "load_policy": "group",
+  "groups": [
+    "dev"
+  ]
+}

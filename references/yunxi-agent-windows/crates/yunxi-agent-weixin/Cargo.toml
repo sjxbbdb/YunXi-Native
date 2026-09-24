@@ -1,0 +1,36 @@
+[package]
+name = "yunxi-agent-weixin"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[dependencies]
+aes.workspace = true
+async-trait.workspace = true
+base64.workspace = true
+chacha20poly1305.workspace = true
+ecb.workspace = true
+futures-util.workspace = true
+getrandom.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+silk-decoder-rs.workspace = true
+tempfile.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+unicode-segmentation.workspace = true
+yunxi-agent-core = { path = "../yunxi-agent-core" }
+yunxi-agent-storage = { path = "../yunxi-agent-storage" }
+yunxi-agent-voice = { path = "../yunxi-agent-voice" }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+wiremock.workspace = true
+yunxi-agent-persona = { path = "../yunxi-agent-persona" }
+yunxi-agent-provider = { path = "../yunxi-agent-provider" }
+yunxi-agent-runtime = { path = "../yunxi-agent-runtime" }
+yunxi-agent-tools = { path = "../yunxi-agent-tools" }

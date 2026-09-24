@@ -1,0 +1,250 @@
+//! 真实感插件（real_context）的设置。
+//!
+//! 这个插件的可调项最多，因为它管的是「像不像人」——回复时机、克制程度、话题
+//! 延续、好感度、身份认知。全部拆成独立小编辑器而不是一个巨型表单，是因为它们
+//! 之间没有依赖，用户通常只想改其中一项。
+//!
+//! `real_context_value` / `real_context_bool` 是统一的读值口子：这些设置存在
+//! 插件的自由 JSON 里，不是强类型字段。
+
+mod affection;
+mod emotion;
+mod identity;
+mod reply;
+pub(in crate::config_tui) use affection::*;
+pub(in crate::config_tui) use emotion::*;
+pub(in crate::config_tui) use identity::*;
+pub(in crate::config_tui) use reply::*;
+
+use crate::config_tui::*;
+use miyu_base::config::{ModelPoolRef, ModelTier};
+
+pub(in crate::config_tui) fn real_context_values(
+    config: &AppConfig,
+) -> Result<(bool, RealContextPluginSettings)> {
+    let Some(instance) = config.platforms.qq.plugins.get(REAL_CONTEXT_PLUGIN_ID) else {
+        return Ok((true, RealContextPluginSettings::default()));
+    };
+    Ok((
+        instance.enabled_or(true),
+        RealContextPluginSettings::from_instance(instance)?,
+    ))
+}
+
+pub(in crate::config_tui) fn apply_real_context_values(
+    config: &mut AppConfig,
+    enabled: bool,
+    settings: &RealContextPluginSettings,
+) {
+    let instance = config
+        .platforms
+        .qq
+        .plugins
+        .entry(REAL_CONTEXT_PLUGIN_ID.to_string())
+        .or_default();
+    instance.enabled = (!enabled).then_some(false);
+    merge_real_context_settings(instance, settings);
+}
+
+pub(in crate::config_tui) fn edit_real_context(
+    ui: &mut Ui,
+    paths: &MiyuPaths,
+    config: &mut AppConfig,
+) -> Result<()> {
+    let (mut enabled, mut settings) = real_context_values(config)?;
+    let mut selected = 0usize;
+    loop {
+        let state = if enabled {
+            t("enabled", "已启用")
+        } else {
+            t("disabled", "未启用")
+        };
+        let options = vec![
+            format!("{}: {state}", t("Plugin", "插件状态")),
+            format!(
+                "{}: {}",
+                t("Reply judge model pool", "回复判定模型池"),
+                pool_ref_summary(
+                    config,
+                    &settings.text_models,
+                    t("inherits conversation pool", "继承会话池")
+                )
+            ),
+            format!(
+                "{}: {}",
+                t("Affection model pool", "好感度模型池"),
+                pool_ref_summary(
+                    config,
+                    &settings.affection_text_models,
+                    t("inherits reply judge", "继承回复判定")
+                )
+            ),
+            format!(
+                "{}: {}",
+                t("Reply context window", "回复上下文消息数"),
+                settings.reply_context_window
+            ),
+            t("Group member information", "群成员信息查询").to_string(),
+            t("Active reply judgement", "主动回复判断").to_string(),
+            t("Quote, mention, and reactions", "引用艾特和贴表情").to_string(),
+            t("Safety checks", "违规判断").to_string(),
+            t("Affection and relationship", "好感度与关系").to_string(),
+            t("Emotion state", "情绪状态").to_string(),
+            t("Identity mappings", "识人映射").to_string(),
+        ];
+        draw_menu(
+            ui,
+            t(" GROUP REAL CONTEXT ", " 群聊真实上下文回复 "),
+            &options,
+            selected,
+            "",
+        )?;
+        match read_key(ui)? {
+            KeyCode::Char('q') | KeyCode::Esc => {
+                settings.normalize();
+                let mut candidate = config.clone();
+                apply_real_context_values(&mut candidate, enabled, &settings);
+                if let Err(error) = candidate.validate() {
+                    message(ui, &error.to_string())?;
+                } else {
+                    apply_real_context_values(config, enabled, &settings);
+                    return Ok(());
+                }
+            }
+            KeyCode::Up | KeyCode::Char('k') => selected = selected.saturating_sub(1),
+            KeyCode::Down | KeyCode::Char('j') => selected = (selected + 1).min(options.len() - 1),
+            KeyCode::Enter => match selected {
+                0 => enabled = select_bool(ui, t("Plugin", "插件状态"), enabled)?,
+                1 => select_plugin_pool_ref(
+                    ui,
+                    config,
+                    t("Reply judge", "回复判定"),
+                    t("inherits conversation pool", "继承会话池"),
+                    ModelPoolRef::tier(ModelTier::Lite),
+                    &mut settings.text_models,
+                )?,
+                2 => select_plugin_pool_ref(
+                    ui,
+                    config,
+                    t("Affection", "好感度"),
+                    t("inherits reply judge", "继承回复判定"),
+                    ModelPoolRef::inherit(),
+                    &mut settings.affection_text_models,
+                )?,
+                3 => edit_real_context_number(
+                    ui,
+                    t("Reply context window", "回复上下文消息数"),
+                    settings.reply_context_window,
+                    &mut settings,
+                    |candidate, value| candidate.reply_context_window = value,
+                )?,
+                4 => edit_real_context_history(ui, &mut settings)?,
+                5 => match StateStore::new(paths) {
+                    Ok(state) => edit_real_context_active_reply(ui, &state, &mut settings)?,
+                    Err(error) => message(
+                        ui,
+                        &format!(
+                            "{}: {error}",
+                            t("Unable to open persistent state", "无法打开持久状态数据库")
+                        ),
+                    )?,
+                },
+                6 => edit_real_context_reply_target(ui, &mut settings)?,
+                7 => edit_real_context_moderation(ui, &mut settings)?,
+                8 => edit_real_context_affection(ui, config, &mut settings)?,
+                9 => edit_real_context_emotion(ui, &mut settings)?,
+                10 => edit_real_context_identities(ui, &mut settings)?,
+                _ => {}
+            },
+            _ => {}
+        }
+    }
+}
+
+pub(in crate::config_tui) fn edit_real_context_history(
+    ui: &mut Ui,
+    settings: &mut RealContextPluginSettings,
+) -> Result<()> {
+    loop {
+        let mut fields = vec![Field::new(
+            t(
+                "Maximum group member search results",
+                "群成员搜索工具最大返回数量",
+            ),
+            settings.group_member_search_max_results.to_string(),
+        )];
+        if !run_form(
+            ui,
+            t(" GROUP MEMBER INFORMATION ", " 群成员信息查询 "),
+            &mut fields,
+        )? {
+            return Ok(());
+        }
+        let mut candidate = settings.clone();
+        let parsed = (|| -> std::result::Result<(), String> {
+            candidate.group_member_search_max_results = real_context_value(&fields, 0)?;
+            candidate.validate().map_err(|error| error.to_string())
+        })();
+        match parsed {
+            Ok(()) => {
+                *settings = candidate;
+                return Ok(());
+            }
+            Err(error) => message(ui, &error)?,
+        }
+    }
+}
+
+pub(in crate::config_tui) fn real_context_bool(
+    fields: &[Field],
+    index: usize,
+) -> std::result::Result<bool, String> {
+    parse_bool_field(&fields[index].value).map_err(|error| error.to_string())
+}
+
+pub(in crate::config_tui) fn real_context_value<T>(
+    fields: &[Field],
+    index: usize,
+) -> std::result::Result<T, String>
+where
+    T: std::str::FromStr,
+{
+    fields[index]
+        .value
+        .trim()
+        .parse()
+        .map_err(|_| t("Invalid value.", "数值无效。").to_string())
+}
+
+pub(in crate::config_tui) fn edit_real_context_number<T>(
+    ui: &mut Ui,
+    label: &'static str,
+    current: T,
+    settings: &mut RealContextPluginSettings,
+    assign: impl Fn(&mut RealContextPluginSettings, T),
+) -> Result<()>
+where
+    T: Copy + ToString + std::str::FromStr,
+{
+    loop {
+        let Some(raw) = edit_inline_value(ui, label, &current.to_string(), false)? else {
+            return Ok(());
+        };
+        let value = match raw.trim().parse() {
+            Ok(value) => value,
+            Err(_) => {
+                message(ui, t("Invalid value.", "数值无效。"))?;
+                continue;
+            }
+        };
+        let mut candidate = settings.clone();
+        assign(&mut candidate, value);
+        match candidate.validate() {
+            Ok(()) => {
+                *settings = candidate;
+                return Ok(());
+            }
+            Err(error) => message(ui, &error.to_string())?,
+        }
+    }
+}

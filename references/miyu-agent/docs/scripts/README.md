@@ -1,0 +1,133 @@
+# Miyu 脚本工具接口
+
+一个脚本工具 = 一个可执行文件。Miyu 从文件开头的注释里读工具契约，用 JSON 传参把它跑起来，再把 stdout 交给模型。本文是编写者（人或 AI）的接口说明；模型侧的同一份契约在内置技能 `script-creator`（`src/personas/default/skills/script-creator/SKILL.md`）里。
+
+## 目录与优先级
+
+| 层 | 目录 | 说明 |
+|---|---|---|
+| 内置 | `/usr/share/miyu/personas/default/scripts/` | 随包安装，只有默认人格看得到（老位置 `/usr/share/miyu/scripts/personas/default/` 仍会被扫描） |
+| 全局 | `~/.miyu/data/scripts/` | 所有人格可见 |
+| 人格 | `~/.miyu/data/scripts/personas/<人格>/` | 只有该人格可见，`manage_script` 默认落在这里 |
+
+同名（同 id）后者覆盖前者。每层目录下可有一个 `index.json`，它是**覆盖层**：条目里显式写了的字段压住脚本头部，没写的从头部补；`disabled` 名单能屏蔽本层和更低层的同名脚本（内置脚本只能这样屏蔽）。
+
+扫描只看各目录的顶层文件。目录内容一变（新增/修改/删除文件），下一个工具回合自动重扫，不用重启。
+
+## 脚本头部
+
+紧跟 shebang 的注释行，`# 键: 值` 格式（`//` 注释也认）。不认识的注释行（coding 声明、许可证）会被跳过，第一个非注释行结束头部。
+
+```
+#!/usr/bin/env python3
+# 显示名称：番组日历
+# Description: Query the Bangumi airing calendar. Use for "what airs today" questions.
+# Timeout: 60
+# Group: research
+# Argv: none
+# Parameters:
+# {
+#   "type": "object",
+#   "properties": {
+#     "action": {"type": "string", "enum": ["calendar", "search"], "description": "calendar (default) or search"},
+#     "query": {"type": "string", "description": "search keyword"}
+#   }
+# }
+```
+
+| 键 | 别名 | 说明 |
+|---|---|---|
+| `Description` | `描述`、`功能介绍` | 模型看的描述。**英文**，首句 ≤60 字符（stub 加载模式下只显示首句）。先说做什么、何时用，再说注意事项 |
+| `显示名称` | `工具名称` | 人看的名字，写中文。**必填**——不写，中文界面只能端出工具 id |
+| `Display name` | | 英文界面的名字，**可选**：工具 id 本来就是英文，不写就按 id 折一个（`xhs_search` → `Xhs search`）。它与 `显示名称` 是两个槽而不是别名，所以别把中文写在这里——那样英文界面反倒会露出中文 |
+| `Id` | | 工具名，`^[a-zA-Z][a-zA-Z0-9_]*$`。不写则用文件名 stem，非字母数字折成 `_`（`battery-care.py` → `battery_care`） |
+| `Parameters` | `params`、`schema`、`参数` | JSON Schema 对象，可单行或多行块；每个属性写 `description`。不写=接受任意 JSON 对象 |
+| `Timeout` | `timeout_seconds`、`超时` | 秒，默认 120，上限 300 |
+| `Group` | `groups`、`分组` | `load_tools` 分组，逗号分隔 |
+| `Argv` | | `none`（默认）或 `flags`，见下 |
+| `Trust` | `信任`、`可见范围` | `owner`（默认）只给属主类入口（终端、本机 WebUI、语音）；`external` 也给不可信入口（QQ 群、远端 WebUI 成员）。注册位置不再是脚本唯一的权限边界，清单自己说能不能出去 |
+| `Permission` | `权限` | `writes`（默认，脚本会跑命令）、`read-only`、`presentation` |
+| `Example` | `stub_example`、`示例` | stub 加载模式下附在桩上的一行调用示例，如 `{"city":"Tokyo"}`。只给「容易猜错、契约又短」的脚本写 |
+| `Hint` | `cross_hint`、`指路`、`指路句` | `Hint: <工具>: <句子>`。被指的工具在同一注册表里时，句子追加到本脚本描述末尾；不在场一个字不加。可写多行 |
+| `Requires` | `requires_prior`、`需先调用`、`前置工具` | 逗号分隔。本回合先调用过其中之一才放行，否则以 tool error 拒（数据驱动的跨工具闸） |
+| `Capabilities` | `capability`、`能力`、`宿主能力` | 逗号分隔，脚本要向宿主查的信息：`host.info`、`providers.read`、`subsystems.read`。只有 `Trust: owner`（缺省）的脚本在 daemon 里跑时才拿到令牌；不认识的 id 记 warn 并忽略。见下「查宿主信息」 |
+
+## 运行时契约
+
+- **传参**：全部参数作为一个 JSON 对象写进 stdin；同一份 JSON 在 64KB 以内时也放在环境变量 `MIYU_ARGS_JSON`。
+- **argv**：默认不传。`Argv: flags` 时额外展开为 `--key=value`：字符串/数字 `--query=x --limit=5`，`true` 只给 `--json`，`false`/`null` 省略，数组和对象给紧凑 JSON 字符串。键按字典序。
+- **无 schema 时**：工具接受任意对象；特殊键 `stdin`（字符串）会替换 stdin 里的 JSON，原文透传。
+- **输出**：结果打到 stdout；退出码 0 成功。失败时非零退出并输出 `{"ok":false,"error":"…","fix":"用户该做什么"}`。Miyu 回给模型的是 `{success, exit_code, stdout, stderr}`。
+- **上限**：单流 8MiB 硬截断，展示 20000 字符软截断。列表类结果要给 `limit` 参数。
+- **缓存目录**：`MIYU_SCRIPT_CACHE_DIR` 指向 Miyu 的缓存目录，登录态、cookie、中间产物放这里；变量不存在（终端直接跑）时退回 XDG 默认。
+- **输出格式**：默认紧凑可读，提供 `format=json` 供逐字段处理。
+- **图片回传**：stdout 里一行 `MIYU-IMAGE: <路径> | <说明>`（说明可省）会被整行摘掉，图片交给投递层（终端内联、WebUI、QQ 各自渲染）。相对路径按 `MIYU_SCRIPT_CACHE_DIR` 解析；文件不存在只记警告。
+- **查宿主信息**（头部写了 `Capabilities:` 才有）：Miyu 拉起脚本时注入一次性令牌 `MIYU_HOST_TOKEN`、授权集 `MIYU_HOST_CAPABILITIES`（逗号分隔）和自身路径 `MIYU_HOST_BIN`；脚本跑 `$MIYU_HOST_BIN host <method> ['{json}']`，stdout 是一行 JSON：成功 `{"ok":true,"data":…}`，失败 `{"ok":false,"error":{"code":"permission_denied|unknown_method|invalid_argument|not_found|unavailable","message":"…"}}`，退出码 1。令牌只在这一次运行内有效，脚本退出即作废。方法：`host.info`（版本、契约版本、授权集、当前人格）、`providers.list`（供应商摘要 + 当前激活选择；**没有** api key、地址、超时）、`providers.get {"provider_id":…}`（加上下文窗口与模态）、`subsystems.enabled`（当前人格的记忆/技能/提醒/语音/情绪开关）。变量不存在（终端直接跑、非 daemon、`Trust: external`）时按「宿主不可用」处理，脚本仍要能工作。
+
+```python
+import json, os, subprocess
+def host(method, params=None):
+    binary, token = os.environ.get("MIYU_HOST_BIN"), os.environ.get("MIYU_HOST_TOKEN")
+    if not binary or not token:
+        return None  # 宿主不可用:退回默认行为
+    out = subprocess.run([binary, "host", method, json.dumps(params or {})], capture_output=True, text=True)
+    reply = json.loads(out.stdout or "{}")
+    return reply["data"] if reply.get("ok") else None
+```
+
+## 用 manage_script 注册
+
+| 动作 | 说明 |
+|---|---|
+| `register` | `path` 给任意绝对路径 → 复制进目标层（默认 persona，`scope=global` 可选）并设可执行位；文件已在某用户层里则就地注册。`id` 可省（头部 `Id:` > 文件名）。`description/parameters/timeout_seconds/display_name` 只在要覆盖头部时传。合并更新：只给的字段才改。同名文件已存在要 `overwrite=true` |
+| `unregister` | 按 id 找用户层条目或自动检测文件，写进 `disabled`；`delete_file=true` 连文件删掉。内置脚本只能屏蔽（记在 persona 层），之后 `register` 只给 `id` 即可恢复 |
+| `list` | 已注册（含所在层）/未注册（缺描述的文件）/disabled |
+
+注册前会校验：有 shebang、能凑出描述（头部或参数）、schema 是 `type: object`。
+
+## 骨架
+
+Python（stdin JSON）：
+
+```python
+#!/usr/bin/env python3
+# 显示名称：示例
+# Description: One sentence under 60 characters. Then when to use it.
+# Parameters: {"type":"object","properties":{"query":{"type":"string","description":"what to look up"}},"required":["query"]}
+import json, os, sys
+
+def fail(error, fix=None, code=2):
+    print(json.dumps({"ok": False, "error": error, "fix": fix}, ensure_ascii=False))
+    sys.exit(code)
+
+def main():
+    raw = os.environ.get("MIYU_ARGS_JSON") or sys.stdin.read() or "{}"
+    args = json.loads(raw)
+    query = args.get("query") or fail("query is required")
+    print(f"result for {query}")
+
+if __name__ == "__main__":
+    main()
+```
+
+Bash（argv flags）：
+
+```bash
+#!/usr/bin/env bash
+# 显示名称：示例
+# Description: One sentence under 60 characters.
+# Argv: flags
+# Parameters: {"type":"object","properties":{"query":{"type":"string","description":"what to look up"}},"required":["query"]}
+set -euo pipefail
+query=""
+for arg in "$@"; do case "$arg" in --query=*) query="${arg#*=}";; esac; done
+[ -n "$query" ] || { echo '{"ok":false,"error":"query is required"}'; exit 2; }
+echo "result for $query"
+```
+
+## 常见问题
+
+- **注册了但工具没出现**：`manage_script action=list` 看它在不在 `unregistered`（缺描述）或 `disabled` 里；id 是否与内建工具重名。
+- **脚本跑起来报 Exec format error**：没有 shebang。
+- **描述在 stub 模式下被截断**：首句太长，把第一句压到 60 字符以内。
+- **同一文件想改 id**：加 `# Id:` 头部，或 register 时传 `id`。

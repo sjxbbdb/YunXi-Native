@@ -1,0 +1,40 @@
+{
+  "name": "share_file",
+  "display_name": "分享文件",
+  "description": "Share a local file through the WebUI. By default the original is served with no copying, so the link breaks if the file moves or changes; snapshot=true copies it into managed storage instead. Also lists shares and removes one.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "path": {
+        "type": "string",
+        "description": "Absolute path, or ~/ relative to home. Required for share."
+      },
+      "title": {
+        "type": "string",
+        "description": "Display title in the WebUI list."
+      },
+      "snapshot": {
+        "type": "boolean",
+        "description": "Default false."
+      },
+      "action": {
+        "type": "string",
+        "enum": [
+          "share",
+          "list",
+          "unshare"
+        ],
+        "description": "Default share."
+      },
+      "share_id": {
+        "type": "string",
+        "description": "Required for unshare."
+      }
+    },
+    "additionalProperties": false
+  },
+  "permission": "writes",
+  "always_loaded": true,
+  "load_policy": "summary",
+  "groups": []
+}

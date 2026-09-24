@@ -1,0 +1,30 @@
+{
+  "name": "glob",
+  "display_name": "查找文件",
+  "description": "Find files under a directory with a case-insensitive glob.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "path": {
+        "type": "string",
+        "description": "Defaults to the workspace; ~ or /home for user files, / for a protected global search."
+      },
+      "pattern": {
+        "type": "string",
+        "description": "e.g. *ai*测试*."
+      },
+      "max_results": {
+        "type": "integer"
+      }
+    },
+    "required": [
+      "pattern"
+    ]
+  },
+  "permission": "readonly",
+  "always_loaded": true,
+  "load_policy": "summary",
+  "groups": [
+    "dev-read"
+  ]
+}

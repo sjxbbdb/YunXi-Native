@@ -1,0 +1,37 @@
+{
+  "name": "run_command",
+  "display_name": "运行命令",
+  "description": "Run a shell command or a multi-line shell script. Use background=true with a short title for long work: it returns a job_id at once, job(action=status) checks it, job(action=stop) kills it, and you are notified when it finishes. Inside a script, `miyu tool-call <name> --stdin` calls structured tools as this session; those run in the daemon-side session workspace and inherit neither the script's environment nor its working directory, so pass data through argument JSON or files.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "command": {
+        "type": "string",
+        "description": "The command or script. Prefer edit for file edits."
+      },
+      "timeout_seconds": {
+        "type": "integer",
+        "description": "1-600, default 120. Ignored when background=true."
+      },
+      "background": {
+        "type": "boolean",
+        "description": "Detach and return a job_id. Use it above roughly 30 seconds."
+      },
+      "title": {
+        "type": "string",
+        "description": "Required. What the command is for, at most 16 characters (e.g. \"release build\"). The UI shows it instead of the command text, so a reader who cannot read shell still knows what is happening."
+      }
+    },
+    "required": [
+      "command",
+      "title"
+    ]
+  },
+  "permission": "readonly",
+  "always_loaded": true,
+  "load_policy": "summary",
+  "groups": [
+    "shell"
+  ],
+  "timeout_seconds": 0
+}

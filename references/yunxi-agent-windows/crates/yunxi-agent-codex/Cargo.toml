@@ -1,0 +1,49 @@
+[package]
+name = "yunxi-agent-codex"
+edition = "2024"
+license = "Apache-2.0"
+version = "0.1.0"
+
+[features]
+default = []
+codex-native = [
+    "dep:codex-app-server-client",
+    "dep:codex-app-server-protocol",
+    "dep:codex-exec",
+    "dep:codex-arg0",
+    "dep:codex-config",
+    "dep:codex-core",
+    "dep:codex-feedback",
+    "dep:codex-protocol",
+    "dep:rama-error",
+    "dep:rama-utils",
+]
+process-fallback = []
+
+[dependencies]
+anyhow = "1"
+async-trait = "0.1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["macros", "process", "rt-multi-thread"] }
+yunxi-agent-core = { path = "../yunxi-agent-core" }
+codex-app-server-client = { path = "../../vendor/codex-rs/app-server-client", optional = true }
+codex-app-server-protocol = { path = "../../vendor/codex-rs/app-server-protocol", optional = true }
+codex-exec = { path = "../../vendor/codex-rs/exec", optional = true }
+codex-arg0 = { path = "../../vendor/codex-rs/arg0", optional = true }
+codex-config = { path = "../../vendor/codex-rs/config", optional = true }
+codex-core = { path = "../../vendor/codex-rs/core", optional = true }
+codex-feedback = { path = "../../vendor/codex-rs/feedback", optional = true }
+codex-protocol = { path = "../../vendor/codex-rs/protocol", optional = true }
+rama-error = { version = "=0.3.0-alpha.4", optional = true }
+rama-utils = { version = "=0.3.0-alpha.4", optional = true }
+
+[dev-dependencies]
+tempfile = "3"
+
+[patch.crates-io]
+# Required by upstream Codex crates when the codex-native feature is enabled.
+tokio-tungstenite = { git = "https://github.com/openai-oss-forks/tokio-tungstenite", rev = "0e5b2d73aa18dd9f0a50ee9ff199d5aef7594186" }
+tungstenite = { git = "https://github.com/openai-oss-forks/tungstenite-rs", rev = "4fffad30fe373adbdcffab9545e9e9bf4f2fc19f" }
+
+[workspace]

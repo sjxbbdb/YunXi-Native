@@ -1,0 +1,73 @@
+{
+  "name": "ask_question",
+  "display_name": "询问用户",
+  "description": "Ask the user structured questions and wait for the answers before continuing. One call may carry several. Keep options concise, put the recommended one first and mark its label \"(recommended)\". Never add an \"other\" option: the UI already offers a custom answer box.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "questions": {
+        "type": "array",
+        "minItems": 1,
+        "maxItems": 8,
+        "items": {
+          "type": "object",
+          "properties": {
+            "header": {
+              "type": "string",
+              "description": "Title, at most 30 characters."
+            },
+            "question": {
+              "type": "string",
+              "description": "The complete, unambiguous question."
+            },
+            "options": {
+              "type": "array",
+              "maxItems": 8,
+              "description": "May be empty, and then only a custom answer is possible.",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "label": {
+                    "type": "string",
+                    "description": "Concise option text."
+                  },
+                  "description": {
+                    "type": "string",
+                    "description": "What it means and what follows from it."
+                  }
+                },
+                "required": [
+                  "label",
+                  "description"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "multiple": {
+              "type": "boolean",
+              "description": "Default false."
+            },
+            "custom": {
+              "type": "boolean",
+              "description": "Default true."
+            }
+          },
+          "required": [
+            "header",
+            "question",
+            "options"
+          ],
+          "additionalProperties": false
+        }
+      }
+    },
+    "required": [
+      "questions"
+    ],
+    "additionalProperties": false
+  },
+  "permission": "read_only",
+  "always_loaded": true,
+  "load_policy": "summary",
+  "groups": []
+}

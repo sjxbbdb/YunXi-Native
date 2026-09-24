@@ -1,0 +1,533 @@
+//! 旧布局迁移与符号链接处置。
+
+use super::shared::*;
+use crate::paths::*;
+
+#[test]
+fn migration_moves_and_merges_without_overwriting() {
+    let temp = tempfile::tempdir().unwrap();
+    let source = temp.path().join("legacy");
+    let destination = temp.path().join("next");
+    fs::create_dir_all(source.join("nested")).unwrap();
+    fs::create_dir_all(&destination).unwrap();
+    fs::write(source.join("nested/value.txt"), "old").unwrap();
+    fs::write(destination.join("kept.txt"), "new").unwrap();
+
+    migrate_entry(&source, &destination).unwrap();
+
+    assert!(!source.exists());
+    assert_eq!(
+        fs::read_to_string(destination.join("nested/value.txt")).unwrap(),
+        "old"
+    );
+    assert_eq!(
+        fs::read_to_string(destination.join("kept.txt")).unwrap(),
+        "new"
+    );
+}
+
+#[test]
+fn migration_preflights_conflicts_then_removes_identical_duplicates() {
+    let temp = tempfile::tempdir().unwrap();
+    let source = temp.path().join("legacy");
+    let destination = temp.path().join("next");
+    fs::create_dir_all(&source).unwrap();
+    fs::create_dir_all(&destination).unwrap();
+    fs::write(source.join("same.txt"), "same").unwrap();
+    fs::write(destination.join("same.txt"), "same").unwrap();
+    fs::write(source.join("conflict.txt"), "legacy").unwrap();
+    fs::write(destination.join("conflict.txt"), "next").unwrap();
+
+    let error = migrate_entry(&source, &destination).unwrap_err();
+
+    assert!(source.join("same.txt").exists());
+    assert!(source.join("conflict.txt").exists());
+    assert_eq!(
+        fs::read_to_string(destination.join("conflict.txt")).unwrap(),
+        "next"
+    );
+    assert!(error.to_string().contains("conflicting entries"));
+
+    fs::remove_file(source.join("conflict.txt")).unwrap();
+    migrate_entry(&source, &destination).unwrap();
+    assert!(!source.exists());
+    assert_eq!(
+        fs::read_to_string(destination.join("same.txt")).unwrap(),
+        "same"
+    );
+}
+
+#[test]
+fn unified_layout_merges_xdg_documents_and_both_picture_directories() {
+    let temp = tempfile::tempdir().unwrap();
+    let (legacy, next) = test_layouts(temp.path());
+    for directory in [
+        &legacy.config_dir,
+        &legacy.data_dir,
+        &legacy.cache_dir,
+        &legacy.state_dir,
+        &legacy.documents_dir,
+        &legacy.pictures_dirs[0],
+        &legacy.pictures_dirs[1],
+    ] {
+        fs::create_dir_all(directory).unwrap();
+    }
+    fs::create_dir_all(legacy.data_dir.join("documents")).unwrap();
+    fs::create_dir_all(legacy.data_dir.join("pictures")).unwrap();
+    fs::create_dir_all(legacy.config_dir.join("shell")).unwrap();
+    fs::write(legacy.config_dir.join("config.jsonc"), "config").unwrap();
+    fs::write(legacy.config_dir.join("shell/bash-hook.sh"), "bash hook").unwrap();
+    fs::write(legacy.config_dir.join("shell/zsh-hook.zsh"), "zsh hook").unwrap();
+    fs::write(
+        temp.path().join(".bashrc"),
+        "before\n# >>> miyu bash hook >>>\nsource '/legacy/bash-hook.sh'\n# <<< miyu bash hook <<<\nafter\n",
+    )
+    .unwrap();
+    fs::write(
+        temp.path().join(".zshrc"),
+        "before\n# >>> miyu zsh hook >>>\nsource '/legacy/zsh-hook.zsh'\n# <<< miyu zsh hook <<<\nafter\n",
+    )
+    .unwrap();
+    fs::write(legacy.data_dir.join("data.bin"), "data").unwrap();
+    fs::write(legacy.cache_dir.join("cache.bin"), "cache").unwrap();
+    fs::write(legacy.state_dir.join("state.db"), "state").unwrap();
+    fs::write(legacy.documents_dir.join("report.md"), "report").unwrap();
+    fs::write(
+        legacy.data_dir.join("documents/shared.txt"),
+        "same document",
+    )
+    .unwrap();
+    fs::write(legacy.documents_dir.join("shared.txt"), "same document").unwrap();
+    fs::write(legacy.data_dir.join("pictures/shared.png"), "same picture").unwrap();
+    fs::write(legacy.pictures_dirs[0].join("shared.png"), "same picture").unwrap();
+    fs::write(legacy.pictures_dirs[0].join("lower.png"), "lower").unwrap();
+    fs::write(legacy.pictures_dirs[1].join("shared.png"), "same picture").unwrap();
+    fs::write(legacy.pictures_dirs[1].join("upper.png"), "upper").unwrap();
+
+    migrate_legacy_layout(&legacy, &next).unwrap();
+
+    for source in [
+        &legacy.config_dir,
+        &legacy.data_dir,
+        &legacy.cache_dir,
+        &legacy.state_dir,
+        &legacy.documents_dir,
+        &legacy.pictures_dirs[0],
+        &legacy.pictures_dirs[1],
+    ] {
+        assert!(
+            !source.exists(),
+            "legacy source remains: {}",
+            source.display()
+        );
+    }
+    assert_eq!(
+        fs::read_to_string(next.config_dir.join("config.jsonc")).unwrap(),
+        "config"
+    );
+    assert_eq!(
+        fs::read_to_string(next.config_dir.join("shell/bash-hook.sh")).unwrap(),
+        "bash hook"
+    );
+    assert_eq!(
+        fs::read_to_string(next.config_dir.join("shell/zsh-hook.zsh")).unwrap(),
+        "zsh hook"
+    );
+    let bashrc = fs::read_to_string(temp.path().join(".bashrc")).unwrap();
+    assert!(bashrc.contains(
+        next.config_dir
+            .join("shell/bash-hook.sh")
+            .to_string_lossy()
+            .as_ref()
+    ));
+    assert!(!bashrc.contains("/legacy/bash-hook.sh"));
+    let zshrc = fs::read_to_string(temp.path().join(".zshrc")).unwrap();
+    assert!(zshrc.contains(
+        next.config_dir
+            .join("shell/zsh-hook.zsh")
+            .to_string_lossy()
+            .as_ref()
+    ));
+    assert!(!zshrc.contains("/legacy/zsh-hook.zsh"));
+    assert_eq!(
+        fs::read_to_string(next.data_dir.join("data.bin")).unwrap(),
+        "data"
+    );
+    assert_eq!(
+        fs::read_to_string(next.cache_dir.join("cache.bin")).unwrap(),
+        "cache"
+    );
+    assert_eq!(
+        fs::read_to_string(next.state_dir.join("state.db")).unwrap(),
+        "state"
+    );
+    assert_eq!(
+        fs::read_to_string(next.data_dir.join("documents/report.md")).unwrap(),
+        "report"
+    );
+    assert_eq!(
+        fs::read_to_string(next.data_dir.join("documents/shared.txt")).unwrap(),
+        "same document"
+    );
+    assert_eq!(
+        fs::read_to_string(next.data_dir.join("pictures/shared.png")).unwrap(),
+        "same picture"
+    );
+    assert_eq!(
+        fs::read_to_string(next.data_dir.join("pictures/lower.png")).unwrap(),
+        "lower"
+    );
+    assert_eq!(
+        fs::read_to_string(next.data_dir.join("pictures/upper.png")).unwrap(),
+        "upper"
+    );
+    assert!(next.marker().exists());
+}
+
+#[test]
+fn unified_layout_discards_cache_with_relative_symlink() {
+    let temp = tempfile::tempdir().unwrap();
+    let (legacy, next) = test_layouts(temp.path());
+    fs::create_dir_all(&legacy.config_dir).unwrap();
+    fs::create_dir_all(legacy.cache_dir.join("blobs")).unwrap();
+    fs::write(legacy.config_dir.join("config.jsonc"), "config").unwrap();
+    fs::write(legacy.cache_dir.join("blobs/blob"), "blob").unwrap();
+    symlink("blobs/blob", legacy.cache_dir.join("snapshot")).unwrap();
+
+    migrate_legacy_layout(&legacy, &next).unwrap();
+
+    assert!(!legacy.cache_dir.exists());
+    assert!(!next.cache_dir.join("snapshot").exists());
+    assert_eq!(
+        fs::read_to_string(next.config_dir.join("config.jsonc")).unwrap(),
+        "config"
+    );
+    assert!(next.marker().exists());
+}
+
+#[test]
+fn unified_layout_discards_symlinked_cache_without_touching_its_target() {
+    let temp = tempfile::tempdir().unwrap();
+    let (legacy, next) = test_layouts(temp.path());
+    fs::create_dir_all(&legacy.config_dir).unwrap();
+    fs::write(legacy.config_dir.join("config.jsonc"), "config").unwrap();
+    let target = temp.path().join("real-cache");
+    fs::create_dir_all(&target).unwrap();
+    fs::write(target.join("cache.bin"), "keep me").unwrap();
+    symlink("../real-cache", &legacy.cache_dir).unwrap();
+
+    migrate_legacy_layout(&legacy, &next).unwrap();
+
+    assert!(fs::symlink_metadata(&legacy.cache_dir).is_err());
+    assert_eq!(
+        fs::read_to_string(target.join("cache.bin")).unwrap(),
+        "keep me"
+    );
+    assert!(next.marker().exists());
+}
+
+#[test]
+fn unified_layout_discards_cache_whose_absolute_symlink_target_moves() {
+    let temp = tempfile::tempdir().unwrap();
+    let (legacy, next) = test_layouts(temp.path());
+    fs::create_dir_all(&legacy.config_dir).unwrap();
+    fs::create_dir_all(&legacy.data_dir).unwrap();
+    fs::create_dir_all(&legacy.cache_dir).unwrap();
+    fs::write(legacy.config_dir.join("config.jsonc"), "config").unwrap();
+    fs::write(legacy.data_dir.join("data.bin"), "data").unwrap();
+    symlink(
+        legacy.data_dir.join("data.bin"),
+        legacy.cache_dir.join("link"),
+    )
+    .unwrap();
+
+    migrate_legacy_layout(&legacy, &next).unwrap();
+
+    assert!(!legacy.cache_dir.exists());
+    assert_eq!(
+        fs::read_to_string(next.data_dir.join("data.bin")).unwrap(),
+        "data"
+    );
+    assert!(next.marker().exists());
+}
+
+#[test]
+fn unified_layout_still_refuses_relative_symlink_outside_cache() {
+    let temp = tempfile::tempdir().unwrap();
+    let (legacy, next) = test_layouts(temp.path());
+    fs::create_dir_all(&legacy.config_dir).unwrap();
+    fs::create_dir_all(&legacy.cache_dir).unwrap();
+    fs::write(legacy.config_dir.join("config.jsonc"), "config").unwrap();
+    fs::write(legacy.cache_dir.join("cache.bin"), "cache").unwrap();
+    symlink("config.jsonc", legacy.config_dir.join("alias")).unwrap();
+
+    let error = migrate_legacy_layout(&legacy, &next).unwrap_err();
+
+    assert!(error.to_string().contains("relative symbolic link"));
+    // A healthy cache must survive an aborted migration untouched.
+    assert_eq!(
+        fs::read_to_string(legacy.cache_dir.join("cache.bin")).unwrap(),
+        "cache"
+    );
+    assert!(!next.root_dir.exists());
+}
+
+#[test]
+fn unified_layout_cross_source_conflict_has_zero_migration_writes() {
+    let temp = tempfile::tempdir().unwrap();
+    let (legacy, next) = test_layouts(temp.path());
+    fs::create_dir_all(&legacy.config_dir).unwrap();
+    fs::create_dir_all(&legacy.pictures_dirs[0]).unwrap();
+    if legacy.pictures_dirs[1].exists() {
+        // 大小写不敏感的文件系统上 Pictures/miyu 与 Pictures/Miyu 是同一个
+        // 目录,造不出跨源冲突;合并那一侧由上面的去重用例覆盖。
+        return;
+    }
+    fs::create_dir_all(&legacy.pictures_dirs[1]).unwrap();
+    fs::write(legacy.config_dir.join("config.jsonc"), "must stay").unwrap();
+    fs::write(legacy.pictures_dirs[0].join("conflict.png"), "lower").unwrap();
+    fs::write(legacy.pictures_dirs[1].join("conflict.png"), "upper").unwrap();
+
+    let error = migrate_legacy_layout(&legacy, &next).unwrap_err();
+
+    assert!(error.to_string().contains("conflicting legacy entries"));
+    assert_eq!(
+        fs::read_to_string(legacy.config_dir.join("config.jsonc")).unwrap(),
+        "must stay"
+    );
+    assert_eq!(
+        fs::read_to_string(legacy.pictures_dirs[0].join("conflict.png")).unwrap(),
+        "lower"
+    );
+    assert_eq!(
+        fs::read_to_string(legacy.pictures_dirs[1].join("conflict.png")).unwrap(),
+        "upper"
+    );
+    assert!(!next.root_dir.exists());
+}
+
+#[test]
+fn unified_layout_late_destination_conflict_does_not_move_earlier_sources() {
+    let temp = tempfile::tempdir().unwrap();
+    let (legacy, next) = test_layouts(temp.path());
+    fs::create_dir_all(&legacy.config_dir).unwrap();
+    fs::create_dir_all(&legacy.documents_dir).unwrap();
+    fs::create_dir_all(next.data_dir.join("documents")).unwrap();
+    fs::write(legacy.config_dir.join("config.jsonc"), "must stay").unwrap();
+    fs::write(legacy.documents_dir.join("conflict.md"), "legacy").unwrap();
+    fs::write(next.data_dir.join("documents/conflict.md"), "current").unwrap();
+
+    let error = migrate_legacy_layout(&legacy, &next).unwrap_err();
+
+    assert!(error.to_string().contains("conflicting entries"));
+    assert!(legacy.config_dir.join("config.jsonc").exists());
+    assert!(!next.config_dir.exists());
+    assert_eq!(
+        fs::read_to_string(legacy.documents_dir.join("conflict.md")).unwrap(),
+        "legacy"
+    );
+    assert_eq!(
+        fs::read_to_string(next.data_dir.join("documents/conflict.md")).unwrap(),
+        "current"
+    );
+    assert!(!next.marker().exists());
+}
+
+#[test]
+fn interrupted_shell_hook_refresh_is_retried_before_marking_layout_complete() {
+    let temp = tempfile::tempdir().unwrap();
+    let (legacy, next) = test_layouts(temp.path());
+    fs::create_dir_all(legacy.config_dir.join("shell")).unwrap();
+    fs::write(legacy.config_dir.join("shell/bash-hook.sh"), "bash hook").unwrap();
+    fs::write(
+        temp.path().join(".bashrc"),
+        "# >>> miyu bash hook >>>\nsource '/legacy/bash-hook.sh'\n",
+    )
+    .unwrap();
+
+    let error = migrate_legacy_layout(&legacy, &next).unwrap_err();
+    assert!(error.to_string().contains("refreshing shell hook paths"));
+    assert!(!next.marker().exists());
+    assert!(next.config_dir.join("shell/bash-hook.sh").exists());
+
+    fs::write(
+        temp.path().join(".bashrc"),
+        "# >>> miyu bash hook >>>\nsource '/legacy/bash-hook.sh'\n# <<< miyu bash hook <<<\n",
+    )
+    .unwrap();
+    migrate_legacy_layout(&legacy, &next).unwrap();
+
+    let bashrc = fs::read_to_string(temp.path().join(".bashrc")).unwrap();
+    assert!(bashrc.contains(
+        next.config_dir
+            .join("shell/bash-hook.sh")
+            .to_string_lossy()
+            .as_ref()
+    ));
+    assert!(!bashrc.contains("/legacy/bash-hook.sh"));
+    assert!(next.marker().exists());
+}
+
+#[test]
+fn migration_rejects_relative_symbolic_links() {
+    let temp = tempfile::tempdir().unwrap();
+    let source = temp.path().join("legacy");
+    let destination = temp.path().join("next");
+    fs::create_dir_all(&source).unwrap();
+    fs::create_dir_all(temp.path().join("outside")).unwrap();
+    fs::write(temp.path().join("outside/value"), "value").unwrap();
+    symlink("../outside/value", source.join("link")).unwrap();
+
+    let error = migrate_entry(&source, &destination).unwrap_err();
+
+    assert!(error.to_string().contains("relative symbolic link"));
+    assert!(source.join("link").exists());
+    assert!(!destination.exists());
+}
+
+#[test]
+fn migration_rejects_symlinked_destination_root_and_marker() {
+    let temp = tempfile::tempdir().unwrap();
+    let (legacy, next) = test_layouts(temp.path());
+    fs::create_dir_all(&legacy.config_dir).unwrap();
+    fs::write(legacy.config_dir.join("config.jsonc"), "config").unwrap();
+    let outside = temp.path().join("outside");
+    fs::create_dir_all(&outside).unwrap();
+
+    symlink(&outside, &next.root_dir).unwrap();
+    let root_error = migrate_legacy_layout(&legacy, &next).unwrap_err();
+    assert!(root_error.to_string().contains("symbolic-link directory"));
+    fs::remove_file(&next.root_dir).unwrap();
+
+    fs::create_dir_all(&next.root_dir).unwrap();
+    let marker_target = temp.path().join("marker-target");
+    fs::write(&marker_target, "1\n").unwrap();
+    symlink(&marker_target, next.marker()).unwrap();
+    let marker_error = migrate_legacy_layout(&legacy, &next).unwrap_err();
+    assert!(marker_error.to_string().contains("layout marker"));
+}
+
+#[test]
+fn legacy_data_and_state_alias_is_migrated_once() {
+    let temp = tempfile::tempdir().unwrap();
+    let (mut legacy, next) = test_layouts(temp.path());
+    legacy.state_dir = legacy.data_dir.clone();
+    fs::create_dir_all(&legacy.data_dir).unwrap();
+    fs::write(legacy.data_dir.join("shared.db"), "state and data").unwrap();
+
+    migrate_legacy_layout(&legacy, &next).unwrap();
+
+    assert_eq!(
+        fs::read_to_string(next.data_dir.join("shared.db")).unwrap(),
+        "state and data"
+    );
+    assert!(!legacy.data_dir.exists());
+}
+
+#[test]
+fn legacy_layout_stays_put_while_the_core_lock_is_held() {
+    let temp = tempfile::tempdir().unwrap();
+    let (legacy, _) = test_layouts(temp.path());
+    let runtime_dir = legacy.state_dir.join("miyu");
+    fs::create_dir_all(&runtime_dir).unwrap();
+    let lock = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(runtime_dir.join("core.lock"))
+        .unwrap();
+    assert_eq!(
+        unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) },
+        0
+    );
+
+    assert!(legacy_daemon_is_running_at(&legacy, None));
+    unsafe {
+        libc::flock(lock.as_raw_fd(), libc::LOCK_UN);
+    }
+    assert!(!legacy_daemon_is_running_at(&legacy, None));
+}
+
+#[test]
+fn legacy_layout_stays_put_while_the_starter_lock_is_held() {
+    let temp = tempfile::tempdir().unwrap();
+    let (legacy, _) = test_layouts(temp.path());
+    let runtime_dir = legacy.state_dir.join("miyu");
+    fs::create_dir_all(&runtime_dir).unwrap();
+    let lock = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(runtime_dir.join("starter.lock"))
+        .unwrap();
+    assert_eq!(
+        unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) },
+        0
+    );
+
+    assert!(legacy_daemon_is_running_at(&legacy, None));
+    unsafe {
+        libc::flock(lock.as_raw_fd(), libc::LOCK_UN);
+    }
+    assert!(!legacy_daemon_is_running_at(&legacy, None));
+}
+
+/// 09-21:`home_layout_rollback_restores_the_legacy_tree` 并行跑时间歇性失败。
+///
+/// 根因不在那个测试,在 [`try_acquire_runtime_lock`] 只试一次 `LOCK_NB`:它分不清
+/// 「真 daemon 攥着」和「另一个**会改状态的探针**(`runtime_lock_is_held` 自己要
+/// 先 `LOCK_EX` 才知道拿不拿得到)攥了几微秒」。撞上后者就判 daemon 在跑,搬家
+/// 与回滚静默无操作。实测失败后隔 2ms 重试必成。
+#[test]
+fn a_momentary_holder_is_not_mistaken_for_a_running_daemon() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("starter.lock");
+    let lock = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(&path)
+        .unwrap();
+    assert_eq!(
+        unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) },
+        0
+    );
+    // 探针那样攥一小下就放:比重试窗口短得多,不该被当成 daemon。
+    let held = std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(15));
+        unsafe {
+            libc::flock(lock.as_raw_fd(), libc::LOCK_UN);
+        }
+        lock
+    });
+    let acquired = try_acquire_runtime_lock(&path).unwrap();
+    held.join().unwrap();
+    assert!(
+        acquired.is_some(),
+        "短暂持有被误判成 daemon:{}",
+        path.display()
+    );
+}
+
+/// 反过来:真攥着不放的,必须照旧判成占用——重试不能把这条闸放水。
+#[test]
+fn a_holder_that_never_lets_go_is_still_reported_busy() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("starter.lock");
+    let lock = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(&path)
+        .unwrap();
+    assert_eq!(
+        unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) },
+        0
+    );
+    assert!(try_acquire_runtime_lock(&path).unwrap().is_none());
+    drop(lock);
+}

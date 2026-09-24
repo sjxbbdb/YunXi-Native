@@ -1,0 +1,69 @@
+{
+  "name": "manage_meme",
+  "trust": "external",
+  "display_name": "管理表情包",
+  "description": "Manage this persona's meme library. add imports a local image, update edits metadata in the writable overlay, delete removes a user meme or disables a built-in one.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "action": {
+        "type": "string",
+        "enum": [
+          "add",
+          "update",
+          "delete"
+        ]
+      },
+      "image": {
+        "type": "string",
+        "description": "add: local image path."
+      },
+      "id": {
+        "type": "string",
+        "description": "update/delete: full sha256 id or a unique short id."
+      },
+      "library": {
+        "type": "string",
+        "description": "Meme library override."
+      },
+      "name_zh": {
+        "type": "string"
+      },
+      "name_en": {
+        "type": "string"
+      },
+      "description": {
+        "type": "string",
+        "description": "What is visible in it."
+      },
+      "usage": {
+        "type": "string",
+        "description": "When to use it."
+      },
+      "tags": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "description": "Search tags."
+      },
+      "enabled": {
+        "type": "boolean",
+        "description": "update: enable or disable."
+      },
+      "hard_delete": {
+        "type": "boolean",
+        "description": "delete: delete the file permanently instead of moving it to the recycle bin."
+      }
+    },
+    "required": [
+      "action"
+    ],
+    "additionalProperties": false
+  },
+  "always_loaded": false,
+  "load_policy": "group",
+  "groups": [
+    "memes"
+  ]
+}

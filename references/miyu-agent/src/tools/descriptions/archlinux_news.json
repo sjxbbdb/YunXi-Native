@@ -1,0 +1,20 @@
+{
+  "name": "archlinux_news",
+  "display_name": "Arch 新闻",
+  "description": "Fetch the latest Arch Linux news.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "limit": {
+        "type": "integer",
+        "description": "Maximum number of articles to return (1-20), default 10."
+      }
+    }
+  },
+  "permission": "readonly",
+  "always_loaded": false,
+  "load_policy": "group",
+  "groups": [
+    "arch"
+  ]
+}

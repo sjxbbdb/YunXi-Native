@@ -1,0 +1,45 @@
+# 不带尾斜杠：worktree 里 target 往往是指向主检出的符号链接（共享构建缓存），
+# `/target/` 只匹配目录，那个链接会漏进索引。
+/target
+/out/distribution/
+/.idea/
+/.vscode/
+.DS_Store
+*.tmp
+*.bak
+*.swp
+*.swo
+*.log
+*.pkg.tar.zst
+*.part
+*.old
+.claude
+
+# Python 脚本跑过就会生成，不进仓库
+__pycache__/
+*.pyc
+
+# testkit/embedding 一次性产物
+testkit/embedding/home/
+
+# testkit/compact-quality 的实测产物（报告在验收时贴出来，不进仓库）
+testkit/compact-quality/out/
+testkit/compact-concurrency/out/
+testkit/embedding/out-*.txt
+testkit/embedding/kbsrc/
+
+# testkit/subagent-dev 黑盒的一次性产物
+testkit/subagent-dev/home/
+testkit/subagent-dev/out/
+testkit/subagent-dev/work/
+
+# testkit/cli 黑盒与真宿主 demo 的一次性产物
+testkit/cli/home/
+testkit/cli/home-demo/
+testkit/cli/out/
+testkit/cli/out-demo/
+testkit/cli/xdg-run/
+
+# testkit/host-query 的隔离 home 与实测产物
+testkit/host-query/home/
+testkit/host-query/out/

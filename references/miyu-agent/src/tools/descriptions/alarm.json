@@ -1,0 +1,42 @@
+{
+  "name": "alarm",
+  "display_name": "闹钟",
+  "description": "Manage local alarms.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "action": {
+        "type": "string",
+        "enum": [
+          "set",
+          "list",
+          "cancel"
+        ]
+      },
+      "time": {
+        "type": "string",
+        "description": "Required for set: a duration or a clock time."
+      },
+      "label": {
+        "type": "string"
+      },
+      "audio_file": {
+        "type": "string",
+        "description": "set: a local .wav or .mp3."
+      },
+      "id": {
+        "type": "string",
+        "description": "Required for cancel."
+      }
+    },
+    "required": [
+      "action"
+    ]
+  },
+  "permission": "writes",
+  "always_loaded": false,
+  "load_policy": "group",
+  "groups": [
+    "alarms"
+  ]
+}

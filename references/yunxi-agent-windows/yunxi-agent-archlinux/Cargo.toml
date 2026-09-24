@@ -1,0 +1,19 @@
+[package]
+name = "yunxi-agent-archlinux"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Arch Linux TUI distribution of YunXi Agent"
+
+[[bin]]
+name = "yunxi-archlinux"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+tokio.workspace = true
+yunxi-agent-core = { path = "../crates/yunxi-agent-core" }
+yunxi-agent-provider = { path = "../crates/yunxi-agent-provider" }
+yunxi-agent-runtime = { path = "../crates/yunxi-agent-runtime" }
+yunxi-agent-tui = { path = "../crates/yunxi-agent-tui" }

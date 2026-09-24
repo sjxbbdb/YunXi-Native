@@ -1,0 +1,49 @@
+[package]
+name = "yunxi-agent-cli"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+default-run = "yunxi"
+
+[[bin]]
+name = "yunxi"
+path = "src/main.rs"
+
+[[bin]]
+name = "yunxi-agent-cli"
+path = "src/bin/yunxi-agent-cli.rs"
+
+[features]
+default = []
+codex-compat = []
+codex-native = ["codex-compat"]
+
+[dependencies]
+anyhow.workspace = true
+axum.workspace = true
+clap.workspace = true
+crossterm.workspace = true
+ratatui.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+yunxi-agent-core = { path = "../yunxi-agent-core" }
+yunxi-agent-companion = { path = "../yunxi-agent-companion" }
+yunxi-agent-protocol = { path = "../yunxi-agent-protocol" }
+yunxi-agent-provider = { path = "../yunxi-agent-provider" }
+yunxi-agent-persona = { path = "../yunxi-agent-persona" }
+yunxi-agent-runtime = { path = "../yunxi-agent-runtime" }
+yunxi-agent-eval = { path = "../yunxi-agent-eval" }
+yunxi-agent-storage = { path = "../yunxi-agent-storage" }
+yunxi-agent-tools = { path = "../yunxi-agent-tools" }
+yunxi-agent-mcp = { path = "../yunxi-agent-mcp" }
+yunxi-agent-tui = { path = "../yunxi-agent-tui" }
+yunxi-agent-weixin = { path = "../yunxi-agent-weixin" }
+yunxi-agent-voice = { path = "../yunxi-agent-voice" }
+
+[dev-dependencies]
+async-trait.workspace = true
+assert_cmd.workspace = true
+predicates.workspace = true
+serde_json.workspace = true
+tempfile.workspace = true
