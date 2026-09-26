@@ -329,6 +329,11 @@ FTS 内容或孤立向量；文档 hash 与分块参数都未变化时会跳过�
 参数或任意可执行文件。它与 `man` 采集共用 provenance、输出上限和 `ingest_text`，
 后续若扩展名单必须逐项审查副作用与版本差异。
 
+`system-linux` 空间本身使用 `mixed` 版本标记，以便同时收纳 Ubuntu、Arch 等
+发行版的系统资料；实际的发行版/运行时版本仍逐文档、逐 chunk 保存并随召回结果
+保留。project/private 空间不采用这一例外，文档版本必须与空间版本一致，防止私有
+知识在版本不匹配时被静默写入。
+
 Linux Runtime 已增加只读 `knowledge-search` 入口，并在 Linux 目标构建 prompt 时
 有限召回 system 空间的 FTS 证据。证据被明确标记为不可信参考材料，不能覆盖
 Tool/Approval/Sandbox 规则，也不会直接进入执行器；Windows Runtime 不启用该分支。

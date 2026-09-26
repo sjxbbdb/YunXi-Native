@@ -1083,7 +1083,7 @@ fn ensure_space_metadata(
     if space.1 != document.owner
         || space.2 != document.visibility.as_str()
         || space.3 != document.source
-        || space.4 != document.version
+        || (space.0 != "system" && space.4 != document.version)
         || space.5 != document.generation
     {
         return Err(storage_error(

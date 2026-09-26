@@ -114,14 +114,14 @@ pub fn ingest_collected_man_page(
     ingest_collected_knowledge(store, collected, options)
 }
 
-pub fn ensure_system_space(store: &SqliteKnowledgeStore, source_version: &str) -> AgentResult<()> {
+pub fn ensure_system_space(store: &SqliteKnowledgeStore, _source_version: &str) -> AgentResult<()> {
     store.upsert_space(&yunxi_agent_storage::KnowledgeSpaceSpec {
         space_id: "system-linux".to_string(),
         kind: yunxi_agent_storage::KnowledgeSpaceKind::System,
         owner: "system".to_string(),
         visibility: yunxi_agent_storage::KnowledgeVisibility::Public,
         source: "local-linux".to_string(),
-        version: source_version.to_string(),
+        version: "mixed".to_string(),
         generation: 1,
     })
 }

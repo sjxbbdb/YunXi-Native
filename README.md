@@ -90,6 +90,11 @@ space；topic/section 不允许 shell 语法或路径，缺少 man、非零退�
 当前只允许 `fish`、`git`、`systemctl`、`pacman`、`ip`，始终固定为
 `<命令> --help`，不会执行用户提供的路径或参数。
 
+`system-linux` 是可容纳多发行版资料的混合版本空间：空间自身标记为 `mixed`，
+但每个文档和 chunk 仍保留采集时传入的发行版/运行时版本（例如
+`ubuntu-24.04` 或 `arch-rolling`）。project/private 空间则继续要求文档版本与
+空间版本严格一致，避免私有资料发生静默串版本。
+
 采集后的 system 知识可以用 `yunxi-linux knowledge-search <query> --cwd .` 只读检查。
 Linux Runtime 会有限召回同一空间的 FTS 证据并把它标记为不可信参考；它不会替代
 人格、记忆、审批或沙盒，也不会把知识文本直接当作命令执行。

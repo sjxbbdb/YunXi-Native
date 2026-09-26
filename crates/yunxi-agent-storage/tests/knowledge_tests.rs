@@ -207,6 +207,45 @@ fn knowledge_metadata_boundaries_are_rejected() {
 }
 
 #[test]
+fn system_space_allows_document_specific_versions_but_project_space_is_strict() {
+    let dir = tempdir().expect("tempdir");
+    let store = SqliteKnowledgeStore::new(dir.path().join("knowledge.sqlite3"));
+
+    let mut system = space(
+        "system-linux",
+        KnowledgeSpaceKind::System,
+        "system",
+        KnowledgeVisibility::Public,
+        1,
+    );
+    system.version = "mixed".to_string();
+    store.upsert_space(&system).expect("system space");
+
+    let mut ubuntu = document("system-linux", "system", KnowledgeVisibility::Public);
+    ubuntu.document_id = "system-linux-ubuntu-doc".to_string();
+    ubuntu.version = "ubuntu-24.04".to_string();
+    store.upsert_document(&ubuntu).expect("ubuntu document");
+
+    let mut arch = ubuntu.clone();
+    arch.document_id = "system-linux-arch-doc".to_string();
+    arch.version = "arch-rolling".to_string();
+    store.upsert_document(&arch).expect("arch document");
+
+    store
+        .upsert_space(&space(
+            "project",
+            KnowledgeSpaceKind::Project,
+            "alice",
+            KnowledgeVisibility::Owner,
+            1,
+        ))
+        .expect("project space");
+    let mut mismatched_project = document("project", "alice", KnowledgeVisibility::Owner);
+    mismatched_project.version = "project-specific".to_string();
+    assert!(store.upsert_document(&mismatched_project).is_err());
+}
+
+#[test]
 fn knowledge_vectors_rank_within_model_and_scope() {
     let dir = tempdir().expect("tempdir");
     let store = SqliteKnowledgeStore::new(dir.path().join("knowledge.sqlite3"));
