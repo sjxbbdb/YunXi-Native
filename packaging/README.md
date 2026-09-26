@@ -3,6 +3,13 @@
 `packaging/arch/yunxi-native/PKGBUILD` 是面向 Arch Linux 的源码构建包，当前定位为
 可审计的发行工程骨架，不是已经发布到 AUR 的二进制包。
 
+在没有 Arch `makepkg` 的环境中，可以先运行静态打包验收，检查源码 pin、安装路径、
+user service 安全项以及“不自动启用服务”的边界：
+
+```bash
+bash packaging/arch/yunxi-native/package-smoke.sh
+```
+
 ## 构建与安装
 
 在 Arch Linux 上准备 `base-devel`、`git` 和 `cargo` 后执行：

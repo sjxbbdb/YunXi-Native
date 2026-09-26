@@ -200,7 +200,7 @@ CLI 验证路径：先运行 `yunxi-linux knowledge-index <document-id> --cwd .`
 撤回只允许命中固定的 `system-linux` 公共空间，并在一个事务内删除文档、chunk、
 FTS 行和向量；找不到文档不会误报成功，也不会触碰 project/private 或长期记忆库。
 
-这条边界是 Linux 原生交互的第一步：先让 YunXi 能可靠地理解并观察系统，再进入预览、可回滚修改和高风险操作。CLI 还提供 `yunxi-linux linux-tool describe|processes|network|systemd-status|man` 作为本机诊断入口；它与 Runtime ToolSpec 同样禁止写入和任意命令拼接。真实 Linux 验收脚本为 `yunxi-agent-linux/tests/linux_tool_smoke.sh`。
+这条边界是 Linux 原生交互的第一步：先让 YunXi 能可靠地理解并观察系统，再进入预览、可回滚修改和高风险操作。CLI 还提供 `yunxi-linux linux-tool describe|processes|network|systemd-status|man|pacman` 作为本机诊断入口；其中 `pacman` 仅支持已安装包信息和包数据库搜索，禁止安装、删除、升级、刷新数据库等变更操作。它与 Runtime ToolSpec 同样禁止写入和任意命令拼接。真实 Linux 验收脚本为 `yunxi-agent-linux/tests/linux_tool_smoke.sh`。
 
 ## 仓库结构
 
@@ -225,6 +225,10 @@ references/
 ├─ yunxi-agent-windows/      # Windows YunXi 源码只读快照
 ├─ miyu-agent/               # Miyu 0.6.2 固定 commit 只读快照
 └─ REFERENCE-SOURCES.md      # 来源、许可证和使用边界
+
+packaging/
+├─ arch/yunxi-native/         # Arch PKGBUILD 与 user service 模板
+└─ README.md                  # 构建、安装、fish hook 与卸载边界
 ```
 
 `references/` 不参与 Cargo 构建，也不自动进入运行时。它们只用于理解设计、核对行为和定位可迁移的 Linux 思路。
