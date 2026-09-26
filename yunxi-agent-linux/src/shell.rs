@@ -81,6 +81,10 @@ pub(crate) enum LinuxShellCommand {
         /// Print the hook instead of writing it.
         #[arg(long)]
         print: bool,
+        /// Route every non-empty submitted fish buffer to YunXi instead of
+        /// classifying the first token locally.
+        #[arg(long)]
+        takeover: bool,
     },
     /// Remove a hook previously installed by `fish-init`.
     RemoveShellHook,
@@ -399,7 +403,7 @@ pub(crate) enum LinuxShellCommand {
 
 pub(crate) async fn run_command(command: LinuxShellCommand) -> Result<()> {
     match command {
-        LinuxShellCommand::FishInit { print } => install_fish_hook(print),
+        LinuxShellCommand::FishInit { print, takeover } => install_fish_hook(print, takeover),
         LinuxShellCommand::RemoveShellHook => remove_fish_hook(),
         LinuxShellCommand::ShellClassify { shell, stdin } => {
             let input = read_shell_input(stdin)?;
@@ -1536,12 +1540,12 @@ fn read_shell_input(stdin: bool) -> Result<String> {
     bail!("shell 命令必须使用 --stdin；这样可以避免参数重新解析和命令替换")
 }
 
-fn install_fish_hook(print: bool) -> Result<()> {
+fn install_fish_hook(print: bool, takeover: bool) -> Result<()> {
     let binary = std::env::var_os("YUNXI_LINUX_BINARY")
         .map(PathBuf::from)
         .or_else(|| std::env::current_exe().ok())
         .context("无法定位 yunxi-linux 可执行文件")?;
-    let hook = fish_hook(&binary);
+    let hook = fish_hook(&binary, takeover);
     if print {
         print!("{hook}");
         return Ok(());
@@ -1601,12 +1605,20 @@ fn fish_quote_path(path: &Path) -> String {
         .replace('`', "\\`")
 }
 
-fn fish_hook(binary: &Path) -> String {
+fn fish_hook(binary: &Path, takeover: bool) -> String {
     let binary = fish_quote_path(binary);
+    let mode_comment = if takeover {
+        "# 当前为 takeover 模式：每个非空提交的输入都先交给 YunXi。"
+    } else {
+        "# 当前为 conservative 模式：普通 shell 命令交回 fish。"
+    };
+    let takeover_flag = if takeover { "1" } else { "0" };
     format!(
         r#"{HOOK_MARKER}
-# 由 `yunxi-linux fish-init` 生成；普通 shell 命令始终交回 fish。
+# 由 `yunxi-linux fish-init` 生成。
+{mode_comment}
 set -g __yunxi_binary "{binary}"
+set -g __yunxi_takeover {takeover_flag}
 
 function __yunxi_head_is_plain_word
     test -n "$argv[1]"; or return 1
@@ -1685,6 +1697,10 @@ function __yunxi_accept_line
     set -l trimmed (string trim -- "$buffer")
     if test -z "$trimmed"
         __yunxi_execute_or_continue
+        return
+    end
+    if test "$__yunxi_takeover" = 1
+        __yunxi_hand_to_ai "$buffer"
         return
     end
     if not __yunxi_buffer_is_multiline "$buffer"
@@ -3546,7 +3562,7 @@ mod tests {
 
     #[test]
     fn hook_keeps_the_real_miyu_boundaries() {
-        let hook = fish_hook(Path::new("/home/user/.local/bin/yunxi-linux"));
+        let hook = fish_hook(Path::new("/home/user/.local/bin/yunxi-linux"), false);
         assert!(hook.contains("commandline --input=\"$argv[1]\" --tokens-raw"));
         assert!(hook.contains("shell-classify --shell fish --stdin"));
         assert!(hook.contains("type -q -- \"$argv[1]\""));
@@ -3558,6 +3574,14 @@ mod tests {
         assert!(hook.contains("fish_command_not_found"));
         assert!(hook.contains("bind enter __yunxi_accept_line"));
         assert!(hook.contains("bind ctrl-j __yunxi_insert_newline"));
+    }
+
+    #[test]
+    fn takeover_hook_routes_non_empty_buffers_without_classification() {
+        let hook = fish_hook(Path::new("/home/user/.local/bin/yunxi-linux"), true);
+        assert!(hook.contains("set -g __yunxi_takeover 1"));
+        assert!(hook.contains("if test \"$__yunxi_takeover\" = 1"));
+        assert!(hook.contains("当前为 takeover 模式"));
     }
 
     #[cfg(unix)]

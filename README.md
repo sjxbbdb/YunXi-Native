@@ -42,7 +42,10 @@ Shell / 文件系统 / 进程 / 包管理 / MCP / Skills
 终端中的流式结果、命令摘要与可追踪记录
 ```
 
-已知的 Shell 命令仍然交给 Shell；只有自然语言意图进入 YunXi。系统操作不会因为“接管终端”而绕过审批，也不会把用户输入盲目拼接成命令。
+默认模式下，已知的 Shell 命令仍然交给 Shell，只有自然语言意图进入 YunXi。需要让
+YunXi 接手每个非空提交时，可显式使用 `fish-init --takeover`；此时命令、自然语言和
+多行输入都先进入 YunXi，再由 Runtime 的工具审批、Sandbox 和工作区策略决定下一步。
+无论哪种模式，系统操作都不会绕过审批，也不会把用户输入盲目拼接成命令。
 
 ## 新的设计哲学
 
@@ -270,6 +273,13 @@ cargo build --release -p yunxi-agent-linux
 
 ```bash
 ./target/release/yunxi-linux fish-init
+source ~/.config/fish/conf.d/yunxi.fish
+```
+
+如果需要全量接管非空输入：
+
+```bash
+./target/release/yunxi-linux fish-init --takeover
 source ~/.config/fish/conf.d/yunxi.fish
 ```
 

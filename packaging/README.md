@@ -47,6 +47,9 @@ mkdir -p ~/.config/fish/conf.d
 yunxi-linux fish-init --print > ~/.config/fish/conf.d/yunxi.fish
 ```
 
+如需让 YunXi 接手所有非空提交，可改用 `yunxi-linux fish-init --takeover`；不带该
+参数时保持保守分类模式，便于在首次安装后验证和回退。
+
 ## 卸载与数据边界
 
 ```bash

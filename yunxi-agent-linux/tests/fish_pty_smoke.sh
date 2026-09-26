@@ -7,6 +7,11 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 BINARY="${1:-${ROOT_DIR}/target/release/yunxi-linux}"
+MODE="${2:-}"
+if [[ -n "$MODE" && "$MODE" != "--takeover" ]]; then
+  echo "usage: $0 [binary] [--takeover]" >&2
+  exit 2
+fi
 
 command -v fish >/dev/null || { echo "fish is required" >&2; exit 77; }
 command -v python3 >/dev/null || { echo "python3 is required" >&2; exit 77; }
@@ -67,12 +72,17 @@ chmod +x "$FAKE_BIN"
 # Generate the real hook, then point only its executable at the deterministic
 # fake. This preserves the production fish functions and bindings verbatim.
 HOOK="$HOME_DIR/.config/fish/conf.d/yunxi.fish"
-"$BINARY" fish-init --print | sed "s#$(printf '%s' "$BINARY" | sed 's/[.[\*^$()+?{|\\]/\\&/g')#$FAKE_BIN#g" >"$HOOK"
+HOOK_ARGS=(fish-init --print)
+if [[ "$MODE" == "--takeover" ]]; then
+  HOOK_ARGS+=(--takeover)
+fi
+"$BINARY" "${HOOK_ARGS[@]}" | sed "s#$(printf '%s' "$BINARY" | sed 's/[.[\*^$()+?{|\\]/\\&/g')#$FAKE_BIN#g" >"$HOOK"
 
 export HOME="$HOME_DIR"
 export XDG_CONFIG_HOME="$HOME_DIR/.config"
 export YUNXI_FAKE_LOG="$FAKE_LOG"
 export YUNXI_TEST_FILE="$TMP_ROOT/redirection.txt"
+export YUNXI_TEST_FISH_TAKEOVER="$MODE"
 
 if ! fish -i -c 'functions __yunxi_accept_line' >/dev/null 2>&1; then
   echo "generated fish hook was not loaded" >&2
@@ -126,6 +136,33 @@ def read_until(needle: bytes, timeout: float = 4.0) -> bytes:
     raise AssertionError(f"timed out waiting for {needle!r}; got {bytes(data)!r}; log={debug_log!r}")
 
 read_until(b"> ")
+
+if os.environ.get("YUNXI_TEST_FISH_TAKEOVER") == "--takeover":
+    # Takeover mode deliberately sends shell-looking input to YunXi too. The
+    # fish process remains the line editor and prompt host; YunXi owns routing.
+    os.write(fd, b"ls -la\r")
+    read_until(b"[yunxi intercepted] ls -la")
+    read_until(b"> ")
+    os.write(fd, "你好，帮我整理一下".encode() + b"\r")
+    read_until("[yunxi intercepted]".encode())
+    read_until(b"> ")
+    os.write(fd, "第一行".encode())
+    time.sleep(0.1)
+    os.write(fd, "\x0a第二行".encode() + b"\r")
+    read_until("[yunxi intercepted]".encode())
+    read_until(b"> ")
+    os.write(fd, b"\x04")
+    _, status = os.waitpid(pid, 0)
+    if status != 0:
+        raise AssertionError(f"fish exited with status {status}")
+    with open(log_path, encoding="utf-8") as handle:
+        lines = [line.strip() for line in handle if line.strip()]
+    assert any(line.endswith(":ls -la") for line in lines if line.startswith("intercept:")), lines
+    assert any(line.endswith(":你好，帮我整理一下") for line in lines if line.startswith("intercept:")), lines
+    assert any(line.endswith(":第一行\\n第二行") for line in lines if line.startswith("intercept:")), lines
+    assert not any(line.startswith("classify:") for line in lines), lines
+    print("fish-takeover-pty-smoke=ok")
+    raise SystemExit(0)
 
 # Ctrl+C at the editable prompt must cancel the pending natural-language
 # buffer locally; it must not invoke shell-intercept or leave stale input for

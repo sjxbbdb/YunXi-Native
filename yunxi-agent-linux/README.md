@@ -189,12 +189,24 @@ source ~/.config/fish/conf.d/yunxi.fish
   下一条 fish 输入。真实 PTY 验收脚本为
   `tests/shell_prompt_cancel_smoke.sh`。
 
+如果希望让 YunXi 接手每一个非空提交的输入，可显式安装 takeover hook：
+
+```bash
+./target/release/yunxi-linux fish-init --takeover
+```
+
+takeover 模式仍由 fish 提供行编辑、历史和 prompt，但不会再在本地判断首词；`ls`、
+`git status`、自然语言和多行内容都会作为一个 YunXi 回合交给 Runtime，由工具审批和
+Sandbox 决定是否执行。空输入仍保留给 fish，输入编辑态的 `Ctrl+C` 也仍由 fish 本地
+处理。需要回到保守模式时重新运行不带 `--takeover` 的 `fish-init` 即可。
+
 hook 的设计目标参考 Miyu：回车时使用 `commandline --tokens-raw` 读取首词，尽量避免在分类阶段触发命令替换、通配符或其他副作用；解析器无 token 时再使用不求值的首词回退。真正的命令交回 fish，自然语言才送入 `shell-intercept`。对 alias/function 等 fish 运行时定义的命令，hook 会先用 `functions -q`/`type -q` 判断，不把它们误送给 YunXi。`fish_command_not_found` 是第二道兜底；含 shell 语法或多行的未知命令不会被重复转发。每个交互式 fish 进程会携带独立的 `fish-<pid>` session id，因此两个终端即使位于同一目录，也不会误用同一个 YunXi Runtime 会话；手动调用 `shell-intercept` 时仍可用 `YUNXI_SHELL_SESSION` 提供兼容 session id。真实 fish + PTY smoke 已覆盖 alias/function、中文自然语言、Ctrl+J、多行、命令替换、重定向、管道、窗口 resize、输入态 Ctrl+C 和普通命令退出码；`tests/shell_prompt_cancel_smoke.sh` 另行覆盖审批等待态取消；复杂嵌套命令和提示符重绘矩阵仍未完成，不能把这段设计说明当成已验收的全部行为保证。
 
 真实 PTY 回归可运行：
 
 ```bash
 bash yunxi-agent-linux/tests/fish_pty_smoke.sh ./target/release/yunxi-linux
+bash yunxi-agent-linux/tests/fish_pty_smoke.sh ./target/release/yunxi-linux --takeover
 bash yunxi-agent-linux/tests/shell_prompt_cancel_smoke.sh ./target/release/yunxi-linux
 ```
 
@@ -208,6 +220,7 @@ bash yunxi-agent-linux/tests/shell_prompt_cancel_smoke.sh ./target/release/yunxi
 
 ```bash
 ./target/release/yunxi-linux fish-init --print
+./target/release/yunxi-linux fish-init --print --takeover
 printf '%s' '解释一下 Cargo.lock' | ./target/release/yunxi-linux shell-classify --shell fish --stdin
 ```
 

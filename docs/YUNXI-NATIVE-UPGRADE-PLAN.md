@@ -290,6 +290,11 @@ daemon 还对 `Hello` 与握手后的首个请求设置 5 秒超时，防止半�
 - 记录 cwd/session/origin，保证 Shell 回显和 YunXi 结果不重叠；fish 前台回合收到
   `Ctrl+C` 时向 daemon 发送 `Cancel`，不把中断留在客户端进程层；审批和用户输入等待使用可轮询的 `/dev/tty`，取消后先回收输入任务再发送 `Cancel`，避免后台读取线程吞掉下一条 fish 输入。
 
+当前同时提供显式 `fish-init --takeover`：它保留 fish 的行编辑和 prompt，但把每个非空
+提交直接交给 YunXi Runtime，不再依赖本地首词分类；默认 `fish-init` 仍保持保守模式，
+因此用户可以在两种交互哲学之间切换。真实 `fish_pty_smoke.sh --takeover` 验证命令、
+中文和多行输入均进入 `shell-intercept`，且没有 `shell-classify` 调用。
+
 **门槛**：普通命令零误拦截，自然语言零重复执行，PTY resize/中断/退出码一致。
 
 ### Phase 3：Linux 系统工具层

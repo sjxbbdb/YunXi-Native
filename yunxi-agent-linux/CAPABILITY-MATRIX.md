@@ -113,7 +113,7 @@
 
 - Arch TUI：已有。
 - XDG 存储目录：已有。
-- fish hook 基础接管：已有实验实现，已通过真实 fish + PTY smoke；尚未完成 Miyu 行为等价和完整 PTY 矩阵。
+- fish hook 基础接管：已有保守模式与显式 takeover 模式，均已通过真实 fish + PTY smoke；尚未完成 Miyu 行为等价和完整 PTY 矩阵。
 - Unix socket daemon：已补齐协议版本、frame 上限、单例锁、Ping、Cancel，以及已完成回合的有界 Follow 回放；活动回合断线续跑仍未实现。
 - daemon 活动回合断线续跑、过期游标和持久化会话映射：待实现。
 - Miyu Linux 专用 Skills：待评估，不在核心 Runtime 中硬编码。
