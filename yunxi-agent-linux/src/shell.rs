@@ -3221,21 +3221,33 @@ async fn run_daemon_turn_inner<W: tokio::io::AsyncWrite + Unpin>(
                     command: request.command.clone(),
                     cwd: request.cwd.clone(),
                 }).await?;
-                let decision = await_approval(rx, request.id.as_deref()).await;
-                if decision.is_err() {
-                    control.cancel();
+                match await_approval(rx, request.id.as_deref(), &request_id).await? {
+                    ShellPromptResult::Value(decision) => {
+                        let _ = request.respond_to.send(AgentRunApprovalDecision {
+                            approved: decision.0,
+                            reason: decision.1,
+                        });
+                    }
+                    ShellPromptResult::Cancelled => {
+                        control.cancel();
+                        let _ = request.respond_to.send(AgentRunApprovalDecision {
+                            approved: false,
+                            reason: Some("fish shell user cancelled".to_string()),
+                        });
+                    }
                 }
-                let decision = decision?;
-                let _ = request.respond_to.send(AgentRunApprovalDecision { approved: decision.0, reason: decision.1 });
             },
             request = stream.user_inputs.recv() => if let Some(request) = request {
                 write_frame(writer, &ServerFrame::UserInput { id: request.id.clone(), prompt: request.prompt.clone() }).await?;
-                let value = await_user_input(rx, request.id.as_deref()).await;
-                if value.is_err() {
-                    control.cancel();
+                match await_user_input(rx, request.id.as_deref(), &request_id).await? {
+                    ShellPromptResult::Value(value) => {
+                        let _ = request.respond_to.send(AgentRunUserInputResponse { value });
+                    }
+                    ShellPromptResult::Cancelled => {
+                        control.cancel();
+                        let _ = request.respond_to.send(AgentRunUserInputResponse { value: None });
+                    }
                 }
-                let value = value?;
-                let _ = request.respond_to.send(AgentRunUserInputResponse { value });
             },
             frame = rx.recv() => match frame {
                 Some(frame) => match frame {
@@ -3328,22 +3340,33 @@ fn numbered_replay_frame(run_id: &str, seq: u64, frame: ServerFrame) -> ServerFr
 }
 
 #[cfg(unix)]
+enum ShellPromptResult<T> {
+    Value(T),
+    Cancelled,
+}
+
+#[cfg(unix)]
 async fn await_approval(
     rx: &mut mpsc::Receiver<ClientFrame>,
     expected: Option<&str>,
-) -> Result<(bool, Option<String>)> {
+    request_id: &str,
+) -> Result<ShellPromptResult<(bool, Option<String>)>> {
     loop {
         let Some(frame) = rx.recv().await else {
             bail!("shell client disconnected");
         };
-        if let ClientFrame::ApprovalResponse {
-            id,
-            approved,
-            reason,
-        } = frame
-            && id.as_deref() == expected
-        {
-            return Ok((approved, reason));
+        match frame {
+            ClientFrame::Cancel {
+                request_id: cancelled,
+            } if cancelled == request_id => return Ok(ShellPromptResult::Cancelled),
+            ClientFrame::ApprovalResponse {
+                id,
+                approved,
+                reason,
+            } if id.as_deref() == expected => {
+                return Ok(ShellPromptResult::Value((approved, reason)));
+            }
+            _ => {}
         }
     }
 }
@@ -3352,15 +3375,20 @@ async fn await_approval(
 async fn await_user_input(
     rx: &mut mpsc::Receiver<ClientFrame>,
     expected: Option<&str>,
-) -> Result<Option<String>> {
+    request_id: &str,
+) -> Result<ShellPromptResult<Option<String>>> {
     loop {
         let Some(frame) = rx.recv().await else {
             bail!("shell client disconnected");
         };
-        if let ClientFrame::UserInputResponse { id, value } = frame
-            && id.as_deref() == expected
-        {
-            return Ok(value);
+        match frame {
+            ClientFrame::Cancel {
+                request_id: cancelled,
+            } if cancelled == request_id => return Ok(ShellPromptResult::Cancelled),
+            ClientFrame::UserInputResponse { id, value } if id.as_deref() == expected => {
+                return Ok(ShellPromptResult::Value(value));
+            }
+            _ => {}
         }
     }
 }
@@ -3396,6 +3424,45 @@ mod tests {
         assert!(hook.contains("fish_command_not_found"));
         assert!(hook.contains("bind enter __yunxi_accept_line"));
         assert!(hook.contains("bind ctrl-j __yunxi_insert_newline"));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn approval_and_user_input_waits_honor_matching_cancel() {
+        let (approval_tx, mut approval_rx) = mpsc::channel(2);
+        approval_tx
+            .send(ClientFrame::Cancel {
+                request_id: "turn-1".to_string(),
+            })
+            .await
+            .expect("cancel frame");
+        assert!(matches!(
+            await_approval(&mut approval_rx, Some("approval-1"), "turn-1")
+                .await
+                .expect("approval wait"),
+            ShellPromptResult::Cancelled
+        ));
+
+        let (input_tx, mut input_rx) = mpsc::channel(2);
+        input_tx
+            .send(ClientFrame::Cancel {
+                request_id: "other-turn".to_string(),
+            })
+            .await
+            .expect("mismatched cancel frame");
+        input_tx
+            .send(ClientFrame::UserInputResponse {
+                id: Some("input-1".to_string()),
+                value: Some("answer".to_string()),
+            })
+            .await
+            .expect("input response");
+        assert!(matches!(
+            await_user_input(&mut input_rx, Some("input-1"), "turn-1")
+                .await
+                .expect("input wait"),
+            ShellPromptResult::Value(Some(value)) if value == "answer"
+        ));
     }
 
     #[test]
