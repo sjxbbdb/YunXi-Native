@@ -115,6 +115,17 @@ pub(crate) enum LinuxShellCommand {
         #[arg(long, default_value = ".")]
         cwd: PathBuf,
     },
+    /// Collect help text from an explicitly allowlisted local command.
+    KnowledgeHelp {
+        /// Allowlisted command: fish, git, systemctl, pacman, or ip.
+        command: String,
+        /// Explicit distro/runtime version recorded as provenance.
+        #[arg(long, default_value = "unknown")]
+        source_version: String,
+        /// Workspace whose `.yunxi/knowledge/knowledge.sqlite3` receives the document.
+        #[arg(long, default_value = ".")]
+        cwd: PathBuf,
+    },
     /// Hidden long-lived process used by shell-intercept.
     #[command(hide = true)]
     Daemon,
@@ -159,8 +170,53 @@ pub(crate) async fn run_command(command: LinuxShellCommand) -> Result<()> {
             source_version,
             cwd,
         } => run_knowledge_man(topic, section, source_version, cwd).await,
+        LinuxShellCommand::KnowledgeHelp {
+            command,
+            source_version,
+            cwd,
+        } => run_knowledge_help(command, source_version, cwd).await,
         LinuxShellCommand::Daemon => run_daemon().await,
     }
+}
+
+async fn run_knowledge_help(command: String, source_version: String, cwd: PathBuf) -> Result<()> {
+    let cwd = std::fs::canonicalize(&cwd)
+        .with_context(|| format!("无法访问知识工作区: {}", cwd.display()))?;
+    let request = knowledge_collector::CommandHelpRequest {
+        command,
+        source_version,
+    };
+    let cancellation = yunxi_agent_core::AgentCancellationToken::new();
+    let collected = knowledge_collector::collect_help_command(&request, &cwd, cancellation).await?;
+    let status = collected.status;
+    let stderr = collected.stderr.clone();
+    let mut result = serde_json::json!({
+        "schema_version": 1,
+        "collector": "linux.command_help",
+        "status": status,
+        "document_id": collected.document.document_id,
+        "argv": collected.argv,
+        "exit_code": collected.exit_code,
+        "truncated": collected.truncated,
+    });
+    if status != knowledge_collector::CollectionStatus::Ok {
+        result["stderr"] = serde_json::Value::String(stderr);
+        println!("{}", serde_json::to_string_pretty(&result)?);
+        return Ok(());
+    }
+
+    let store = yunxi_agent_storage::SqliteKnowledgeStore::for_workspace(&cwd);
+    knowledge_collector::ensure_system_space(&store, &request.source_version)?;
+    let summary = knowledge_collector::ingest_collected_knowledge(
+        &store,
+        &collected,
+        &yunxi_agent_storage::KnowledgeChunkingOptions::default(),
+    )?;
+    result["content_hash"] = serde_json::Value::String(summary.content_hash);
+    result["chunks_written"] = serde_json::json!(summary.chunks_written);
+    result["chunks_removed"] = serde_json::json!(summary.chunks_removed);
+    println!("{}", serde_json::to_string_pretty(&result)?);
+    Ok(())
 }
 
 async fn run_knowledge_man(

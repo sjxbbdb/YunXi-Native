@@ -28,6 +28,12 @@ pub struct ManPageRequest {
     pub source_version: String,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CommandHelpRequest {
+    pub command: String,
+    pub source_version: String,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CollectionStatus {
@@ -53,72 +59,33 @@ pub async fn collect_man_page(
     cancellation: AgentCancellationToken,
 ) -> AgentResult<CollectedKnowledge> {
     validate_request(request)?;
-    let argv = man_argv(request);
-    let command = canonical_command(&argv);
-    let policy = ExecutionPolicy {
-        approval: ApprovalRequirement::PreApproved,
-        sandbox: SandboxRequirement::ReadOnly,
-        network: NetworkPolicy::Disabled,
-        workspace_root: cwd.to_path_buf(),
-    };
-    let trace = match ExecManager::default()
-        .run_with_cancellation(
-            ExecCommand {
-                id: None,
-                cwd: cwd.to_path_buf(),
-                command,
-                argv: argv.clone(),
-                stdin: None,
-                env: fixed_environment(),
-                timeout_millis: Some(10_000),
-                policy,
-            },
-            cancellation,
-        )
-        .await
-    {
-        Ok(trace) => trace,
-        Err(error) => {
-            return Ok(collected_failure(
-                request,
-                argv,
-                CollectionStatus::Unavailable,
-                None,
-                error.to_string(),
-            ));
-        }
-    };
-
-    let (stdout, stderr) = trace
-        .events
-        .iter()
-        .rev()
-        .find_map(|event| match event {
-            ExecLifecycleEvent::Completed { output, .. } => {
-                Some((output.stdout.clone(), output.stderr.clone()))
-            }
-            _ => None,
-        })
-        .unwrap_or_else(|| (trace.summary.aggregated_output.clone(), String::new()));
-    let stdout = bounded_text(&stdout);
-    let stderr = bounded_text(&stderr);
-    let status = if trace.summary.exit_code == Some(0) && !trace.summary.timed_out {
-        CollectionStatus::Ok
-    } else {
-        CollectionStatus::Failed
-    };
-    Ok(CollectedKnowledge {
-        document: document_for(request),
-        text: stdout.0,
-        argv,
-        exit_code: trace.summary.exit_code,
-        status,
-        stderr: stderr.0,
-        truncated: stdout.1 || stderr.1,
-    })
+    collect_fixed_command(
+        document_for(request),
+        man_argv(request),
+        cwd,
+        fixed_environment(),
+        cancellation,
+    )
+    .await
 }
 
-pub fn ingest_collected_man_page(
+pub async fn collect_help_command(
+    request: &CommandHelpRequest,
+    cwd: &Path,
+    cancellation: AgentCancellationToken,
+) -> AgentResult<CollectedKnowledge> {
+    validate_help_request(request)?;
+    collect_fixed_command(
+        help_document_for(request),
+        help_argv(request),
+        cwd,
+        fixed_environment(),
+        cancellation,
+    )
+    .await
+}
+
+pub fn ingest_collected_knowledge(
     store: &SqliteKnowledgeStore,
     collected: &CollectedKnowledge,
     options: &KnowledgeChunkingOptions,
@@ -136,13 +103,21 @@ pub fn ingest_collected_man_page(
     store.ingest_text(&collected.document, &collected.text, options)
 }
 
+pub fn ingest_collected_man_page(
+    store: &SqliteKnowledgeStore,
+    collected: &CollectedKnowledge,
+    options: &KnowledgeChunkingOptions,
+) -> AgentResult<KnowledgeIngestSummary> {
+    ingest_collected_knowledge(store, collected, options)
+}
+
 pub fn ensure_system_space(store: &SqliteKnowledgeStore, source_version: &str) -> AgentResult<()> {
     store.upsert_space(&yunxi_agent_storage::KnowledgeSpaceSpec {
         space_id: "system-linux".to_string(),
         kind: yunxi_agent_storage::KnowledgeSpaceKind::System,
         owner: "system".to_string(),
         visibility: yunxi_agent_storage::KnowledgeVisibility::Public,
-        source: "local-man".to_string(),
+        source: "local-linux".to_string(),
         version: source_version.to_string(),
         generation: 1,
     })
@@ -157,7 +132,7 @@ pub fn document_for(request: &ManPageRequest) -> KnowledgeDocument {
             Some(section) => format!("man {section} {}", request.topic),
             None => format!("man {}", request.topic),
         },
-        source: "local-man".to_string(),
+        source: "local-linux".to_string(),
         version: request.source_version.clone(),
         generation: 1,
         owner: "system".to_string(),
@@ -166,6 +141,24 @@ pub fn document_for(request: &ManPageRequest) -> KnowledgeDocument {
             "source_type": "man",
             "topic": request.topic,
             "section": request.section,
+        })
+        .to_string(),
+    }
+}
+
+fn help_document_for(request: &CommandHelpRequest) -> KnowledgeDocument {
+    KnowledgeDocument {
+        document_id: format!("system-help:{}", request.command),
+        space_id: "system-linux".to_string(),
+        title: format!("{} --help", request.command),
+        source: "local-linux".to_string(),
+        version: request.source_version.clone(),
+        generation: 1,
+        owner: "system".to_string(),
+        visibility: yunxi_agent_storage::KnowledgeVisibility::Public,
+        metadata_json: serde_json::json!({
+            "source_type": "command_help",
+            "command": request.command,
         })
         .to_string(),
     }
@@ -185,6 +178,10 @@ pub fn man_argv(request: &ManPageRequest) -> Vec<String> {
     argv
 }
 
+pub fn help_argv(request: &CommandHelpRequest) -> Vec<String> {
+    vec![request.command.clone(), "--help".to_string()]
+}
+
 fn validate_request(request: &ManPageRequest) -> AgentResult<()> {
     validate_token(&request.topic, "man topic")?;
     if let Some(section) = &request.section {
@@ -196,6 +193,24 @@ fn validate_request(request: &ManPageRequest) -> AgentResult<()> {
     {
         return Err(yunxi_agent_core::AgentError::Execution {
             message: "man source version is invalid".to_string(),
+        });
+    }
+    Ok(())
+}
+
+fn validate_help_request(request: &CommandHelpRequest) -> AgentResult<()> {
+    const ALLOWED_COMMANDS: &[&str] = &["fish", "git", "systemctl", "pacman", "ip"];
+    if !ALLOWED_COMMANDS.contains(&request.command.as_str()) {
+        return Err(yunxi_agent_core::AgentError::Execution {
+            message: format!("command help is not allowlisted: {}", request.command),
+        });
+    }
+    if request.source_version.trim().is_empty()
+        || request.source_version.chars().count() > MAX_TOKEN_CHARS
+        || request.source_version.contains(['\r', '\n'])
+    {
+        return Err(yunxi_agent_core::AgentError::Execution {
+            message: "command help source version is invalid".to_string(),
         });
     }
     Ok(())
@@ -227,6 +242,78 @@ fn canonical_command(argv: &[String]) -> String {
     argv.join(" ")
 }
 
+async fn collect_fixed_command(
+    document: KnowledgeDocument,
+    argv: Vec<String>,
+    cwd: &Path,
+    env: BTreeMap<String, String>,
+    cancellation: AgentCancellationToken,
+) -> AgentResult<CollectedKnowledge> {
+    let command = canonical_command(&argv);
+    let policy = ExecutionPolicy {
+        approval: ApprovalRequirement::PreApproved,
+        sandbox: SandboxRequirement::ReadOnly,
+        network: NetworkPolicy::Disabled,
+        workspace_root: cwd.to_path_buf(),
+    };
+    let trace = match ExecManager::default()
+        .run_with_cancellation(
+            ExecCommand {
+                id: None,
+                cwd: cwd.to_path_buf(),
+                command,
+                argv: argv.clone(),
+                stdin: None,
+                env,
+                timeout_millis: Some(10_000),
+                policy,
+            },
+            cancellation,
+        )
+        .await
+    {
+        Ok(trace) => trace,
+        Err(error) => {
+            return Ok(CollectedKnowledge {
+                document,
+                text: String::new(),
+                argv,
+                exit_code: None,
+                status: CollectionStatus::Unavailable,
+                stderr: error.to_string(),
+                truncated: false,
+            });
+        }
+    };
+    let (stdout, stderr) = trace
+        .events
+        .iter()
+        .rev()
+        .find_map(|event| match event {
+            ExecLifecycleEvent::Completed { output, .. } => {
+                Some((output.stdout.clone(), output.stderr.clone()))
+            }
+            _ => None,
+        })
+        .unwrap_or_else(|| (trace.summary.aggregated_output.clone(), String::new()));
+    let stdout = bounded_text(&stdout);
+    let stderr = bounded_text(&stderr);
+    let status = if trace.summary.exit_code == Some(0) && !trace.summary.timed_out {
+        CollectionStatus::Ok
+    } else {
+        CollectionStatus::Failed
+    };
+    Ok(CollectedKnowledge {
+        document,
+        text: stdout.0,
+        argv,
+        exit_code: trace.summary.exit_code,
+        status,
+        stderr: stderr.0,
+        truncated: stdout.1 || stderr.1,
+    })
+}
+
 fn bounded_text(value: &str) -> (String, bool) {
     if value.len() <= MAX_OUTPUT_BYTES {
         return (value.to_string(), false);
@@ -236,24 +323,6 @@ fn bounded_text(value: &str) -> (String, bool) {
         end -= 1;
     }
     (value[..end].to_string(), true)
-}
-
-fn collected_failure(
-    request: &ManPageRequest,
-    argv: Vec<String>,
-    status: CollectionStatus,
-    exit_code: Option<i32>,
-    stderr: String,
-) -> CollectedKnowledge {
-    CollectedKnowledge {
-        document: document_for(request),
-        text: String::new(),
-        argv,
-        exit_code,
-        status,
-        stderr,
-        truncated: false,
-    }
 }
 
 #[cfg(test)]
@@ -298,13 +367,31 @@ mod tests {
     fn document_identity_and_provenance_are_stable() {
         let document = document_for(&request());
         assert_eq!(document.document_id, "system-man:1:fish");
-        assert_eq!(document.source, "local-man");
+        assert_eq!(document.source, "local-linux");
         assert_eq!(document.owner, "system");
         assert_eq!(
             document.visibility,
             yunxi_agent_storage::KnowledgeVisibility::Public
         );
         assert!(!document.metadata_json.contains("/"));
+    }
+
+    #[test]
+    fn help_collector_is_allowlisted_and_uses_fixed_help_argv() {
+        let request = CommandHelpRequest {
+            command: "systemctl".to_string(),
+            source_version: "ubuntu-24.04".to_string(),
+        };
+        assert_eq!(help_argv(&request), vec!["systemctl", "--help"]);
+        assert_eq!(
+            help_document_for(&request).document_id,
+            "system-help:systemctl"
+        );
+        let invalid = CommandHelpRequest {
+            command: "./script".to_string(),
+            source_version: "ubuntu-24.04".to_string(),
+        };
+        assert!(validate_help_request(&invalid).is_err());
     }
 
     #[test]
