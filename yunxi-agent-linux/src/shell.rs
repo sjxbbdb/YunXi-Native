@@ -149,6 +149,29 @@ pub(crate) enum LinuxShellCommand {
         #[arg(long, default_value = ".")]
         cwd: PathBuf,
     },
+    /// Enqueue the current generation of one document for local embedding.
+    KnowledgeEnqueue {
+        /// Stable document id returned by knowledge-man/knowledge-help.
+        document_id: String,
+        /// Embedding model requested by the worker.
+        #[arg(long, default_value = yunxi_agent_persona::LOCAL_MEMORY_EMBEDDING_MODEL)]
+        embedding_model: String,
+        /// Workspace whose `.yunxi/knowledge/knowledge.sqlite3` receives the job.
+        #[arg(long, default_value = ".")]
+        cwd: PathBuf,
+    },
+    /// Process one pending local knowledge embedding job and exit.
+    KnowledgeWorker {
+        /// Stable worker identity used for the SQLite lease.
+        #[arg(long)]
+        worker_id: Option<String>,
+        /// Maximum number of pending jobs to process in this invocation.
+        #[arg(long, default_value_t = 1)]
+        max_jobs: usize,
+        /// Workspace whose `.yunxi/knowledge/knowledge.sqlite3` is processed.
+        #[arg(long, default_value = ".")]
+        cwd: PathBuf,
+    },
     /// Search the isolated knowledge vector index with the local provider.
     KnowledgeVectorSearch {
         /// Query text embedded by the local character n-gram provider.
@@ -229,6 +252,16 @@ pub(crate) async fn run_command(command: LinuxShellCommand) -> Result<()> {
         LinuxShellCommand::KnowledgeIndex { document_id, cwd } => {
             run_knowledge_index(document_id, cwd)
         }
+        LinuxShellCommand::KnowledgeEnqueue {
+            document_id,
+            embedding_model,
+            cwd,
+        } => run_knowledge_enqueue(document_id, embedding_model, cwd),
+        LinuxShellCommand::KnowledgeWorker {
+            worker_id,
+            max_jobs,
+            cwd,
+        } => run_knowledge_worker(worker_id, max_jobs, cwd),
         LinuxShellCommand::KnowledgeVectorSearch {
             query,
             cwd,
@@ -303,6 +336,63 @@ fn run_knowledge_index(document_id: String, cwd: PathBuf) -> Result<()> {
             "chunks_indexed": summary.chunks_indexed,
         }))?
     );
+    Ok(())
+}
+
+fn run_knowledge_enqueue(document_id: String, embedding_model: String, cwd: PathBuf) -> Result<()> {
+    let cwd = std::fs::canonicalize(&cwd)
+        .with_context(|| format!("无法访问知识工作区: {}", cwd.display()))?;
+    let store = yunxi_agent_storage::SqliteKnowledgeStore::for_workspace(&cwd);
+    let job = store.enqueue_current_document_embedding_job(&document_id, &embedding_model)?;
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&serde_json::json!({
+            "schema_version": 1,
+            "status": job.status.as_str(),
+            "job_id": job.job_id,
+            "document_id": job.document_id,
+            "embedding_model": job.embedding_model,
+            "generation": job.generation,
+            "attempts": job.attempts,
+        }))?
+    );
+    Ok(())
+}
+
+fn run_knowledge_worker(worker_id: Option<String>, max_jobs: usize, cwd: PathBuf) -> Result<()> {
+    if max_jobs == 0 || max_jobs > 1_000 {
+        bail!("--max-jobs 必须在 1 到 1000 之间");
+    }
+    let cwd = std::fs::canonicalize(&cwd)
+        .with_context(|| format!("无法访问知识工作区: {}", cwd.display()))?;
+    let store = yunxi_agent_storage::SqliteKnowledgeStore::for_workspace(&cwd);
+    let provider = yunxi_agent_persona::LocalChargramEmbedding::default();
+    let worker_id =
+        worker_id.unwrap_or_else(|| format!("yunxi-linux-embedding-worker-{}", std::process::id()));
+    let mut jobs = Vec::new();
+    for _ in 0..max_jobs {
+        let Some(result) = store.process_next_embedding_job(&worker_id, &provider)? else {
+            break;
+        };
+        jobs.push(serde_json::json!({
+            "status": result.job.status.as_str(),
+            "job_id": result.job.job_id,
+            "document_id": result.job.document_id,
+            "embedding_model": result.job.embedding_model,
+            "generation": result.job.generation,
+            "attempts": result.job.attempts,
+            "chunks_indexed": result.chunks_indexed,
+            "last_error": result.job.last_error,
+        }));
+    }
+    let output = serde_json::json!({
+        "schema_version": 1,
+        "status": if jobs.is_empty() { "idle" } else { "processed" },
+        "worker_id": worker_id,
+        "embedding_model": provider.model_id(),
+        "jobs": jobs,
+    });
+    println!("{}", serde_json::to_string_pretty(&output)?);
     Ok(())
 }
 

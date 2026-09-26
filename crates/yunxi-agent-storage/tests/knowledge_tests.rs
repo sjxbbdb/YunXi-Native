@@ -149,6 +149,115 @@ fn embedding_job_enqueue_requires_existing_document_generation() {
 }
 
 #[test]
+fn embedding_worker_indexes_and_completes_one_job() {
+    let (_dir, store, document) = queue_fixture();
+    let knowledge_chunk = chunk(
+        &document.document_id,
+        "system",
+        KnowledgeVisibility::Public,
+        "systemctl status shows the current service state",
+    );
+    store.upsert_chunk(&knowledge_chunk).expect("chunk");
+    let provider = LocalChargramEmbedding::default();
+    let queued = store
+        .enqueue_embedding_job(&document.document_id, provider.model_id(), 1)
+        .expect("enqueue");
+
+    let result = store
+        .process_next_embedding_job("worker-a", &provider)
+        .expect("worker step")
+        .expect("claimed job");
+    assert_eq!(result.job.job_id, queued.job_id);
+    assert_eq!(result.job.status, KnowledgeEmbeddingJobStatus::Completed);
+    assert_eq!(result.chunks_indexed, 1);
+
+    let query = provider.embed("service state").expect("query embedding");
+    let matches = store
+        .search_vectors(
+            &query.values,
+            provider.model_id(),
+            &KnowledgeSearchScope {
+                space_id: "system-linux".to_string(),
+                owner: "system".to_string(),
+                generation: 1,
+                visibility: KnowledgeVisibility::Public,
+            },
+            5,
+        )
+        .expect("knowledge vector search");
+    assert_eq!(matches.len(), 1);
+    assert_eq!(matches[0].document_id, document.document_id);
+    assert!(
+        store
+            .process_next_embedding_job("worker-b", &provider)
+            .expect("idle worker")
+            .is_none()
+    );
+}
+
+#[test]
+fn embedding_worker_marks_provider_model_mismatch_failed() {
+    let (_dir, store, document) = queue_fixture();
+    let provider = LocalChargramEmbedding::default();
+    let queued = store
+        .enqueue_embedding_job(&document.document_id, "different-model", 1)
+        .expect("enqueue");
+
+    let result = store
+        .process_next_embedding_job("worker-a", &provider)
+        .expect("worker step")
+        .expect("claimed job");
+    assert_eq!(result.job.job_id, queued.job_id);
+    assert_eq!(result.job.status, KnowledgeEmbeddingJobStatus::Failed);
+    assert_eq!(result.chunks_indexed, 0);
+    assert!(
+        result
+            .job
+            .last_error
+            .as_deref()
+            .is_some_and(|message| message.contains("does not match queued model"))
+    );
+}
+
+#[test]
+fn embedding_worker_rejects_a_stale_document_generation() {
+    let (_dir, store, document) = queue_fixture();
+    let provider = LocalChargramEmbedding::default();
+    let queued = store
+        .enqueue_current_document_embedding_job(&document.document_id, provider.model_id())
+        .expect("enqueue current generation");
+    store
+        .upsert_space(&space(
+            "system-linux",
+            KnowledgeSpaceKind::System,
+            "system",
+            KnowledgeVisibility::Public,
+            2,
+        ))
+        .expect("new space generation");
+    let mut updated = document.clone();
+    updated.generation = 2;
+    updated.version = "2026.10".to_string();
+    store
+        .upsert_document(&updated)
+        .expect("new document generation");
+
+    let result = store
+        .process_next_embedding_job("worker-a", &provider)
+        .expect("worker step")
+        .expect("claimed job");
+    assert_eq!(result.job.job_id, queued.job_id);
+    assert_eq!(result.job.status, KnowledgeEmbeddingJobStatus::Failed);
+    assert!(
+        result
+            .job
+            .last_error
+            .as_deref()
+            .is_some_and(|message| message.contains("generation 1 is stale"))
+    );
+}
+
+#[test]
 fn concurrent_embedding_claims_assign_a_job_to_only_one_worker() {
     let (_dir, store, document) = queue_fixture();
     store

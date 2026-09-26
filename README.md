@@ -83,6 +83,13 @@ Linux 知识库已经有独立的 `SqliteKnowledgeStore` 基础：数据库文�
 再用 `knowledge-vector-search` 做有界召回；这是同步索引基础，不代表后台 embedding
 队列或自动执行已经启用。
 
+队列闭环现在也可显式验证：先用
+`yunxi-linux knowledge-enqueue <document-id> --cwd .` 为文档当前 generation 入队，
+再用 `yunxi-linux knowledge-worker --max-jobs 1 --cwd .` 处理有限数量的任务。worker
+只使用当前本地 provider，成功后才完成任务；模型不匹配、代际过期或索引失败会记录为
+`failed`，不会覆盖已有向量。该命令是一次性、有界执行入口，不会自行扫描工作区，也不
+会替代未来的 daemon/systemd 调度器。
+
 Linux 版现在提供只读 P0 `man` 采集入口：
 `yunxi-linux knowledge-man fish --section 1 --source-version ubuntu-24.04 --cwd .`。
 它只运行固定的 `man --locale=C -P cat` argv，把成功正文送入独立 system knowledge

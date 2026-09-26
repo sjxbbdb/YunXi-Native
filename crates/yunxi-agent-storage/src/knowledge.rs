@@ -166,7 +166,7 @@ pub enum KnowledgeEmbeddingJobStatus {
 }
 
 impl KnowledgeEmbeddingJobStatus {
-    fn as_str(self) -> &'static str {
+    pub fn as_str(self) -> &'static str {
         match self {
             Self::Pending => "pending",
             Self::Running => "running",
@@ -199,6 +199,17 @@ pub struct KnowledgeEmbeddingJob {
     pub last_error: Option<String>,
     pub created_at_millis: i64,
     pub updated_at_millis: i64,
+}
+
+/// The outcome of one storage-owned embedding worker step.
+///
+/// A provider failure is represented as a `Failed` job instead of bubbling out
+/// as an uncommitted error. This lets a long-lived daemon keep processing later
+/// jobs while preserving the failure reason for diagnostics.
+#[derive(Clone, Debug, PartialEq)]
+pub struct KnowledgeEmbeddingWorkerResult {
+    pub job: KnowledgeEmbeddingJob,
+    pub chunks_indexed: usize,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -292,6 +303,35 @@ impl SqliteKnowledgeStore {
         Ok(job)
     }
 
+    /// Enqueue an embedding job for the document's current generation.
+    ///
+    /// This is the safe convenience boundary for callers that do not already
+    /// hold a document snapshot. The generation is read from the same store
+    /// immediately before applying the idempotent enqueue contract.
+    pub fn enqueue_current_document_embedding_job(
+        &self,
+        document_id: &str,
+        embedding_model: &str,
+    ) -> AgentResult<KnowledgeEmbeddingJob> {
+        if document_id.trim().is_empty() {
+            return Err(storage_error("embedding job document id is invalid"));
+        }
+        let connection = self.open_connection()?;
+        initialize_schema(&connection, &self.database)?;
+        let generation = connection
+            .query_row(
+                "SELECT generation FROM knowledge_documents WHERE document_id = ?1",
+                params![document_id],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()
+            .map_err(|error| {
+                sqlite_error(&self.database, "read current embedding document", error)
+            })?
+            .ok_or_else(|| storage_error("embedding job references an unknown document"))?;
+        self.enqueue_embedding_job(document_id, embedding_model, generation)
+    }
+
     /// Atomically claim the oldest pending embedding job for one worker.
     pub fn claim_embedding_job(
         &self,
@@ -368,6 +408,75 @@ impl SqliteKnowledgeStore {
             KnowledgeEmbeddingJobStatus::Failed,
             Some(error_message),
         )
+    }
+
+    /// Claim and process one pending embedding job with the supplied provider.
+    ///
+    /// The provider is checked against the job's requested model before any
+    /// vector work begins. Successful indexing is committed before the job is
+    /// marked completed; provider/indexing failures mark the job failed and
+    /// leave any previous vector generation untouched.
+    pub fn process_next_embedding_job<P: MemoryEmbeddingProvider>(
+        &self,
+        worker_id: &str,
+        provider: &P,
+    ) -> AgentResult<Option<KnowledgeEmbeddingWorkerResult>> {
+        let Some(job) = self.claim_embedding_job(worker_id)? else {
+            return Ok(None);
+        };
+        let outcome = match self.read_document_generation(&job.document_id) {
+            Err(error) => Err(storage_error(error.to_string())),
+            Ok(None) => Err(storage_error("embedding job document no longer exists")),
+            Ok(Some(generation)) if generation != job.generation => Err(storage_error(format!(
+                "embedding job generation {} is stale; current document generation differs",
+                job.generation
+            ))),
+            Ok(Some(_)) if job.embedding_model != provider.model_id() => {
+                Err(storage_error(format!(
+                    "embedding provider model {} does not match queued model {}",
+                    provider.model_id(),
+                    job.embedding_model
+                )))
+            }
+            Ok(Some(_)) => self
+                .index_document_with_embeddings(&job.document_id, provider)
+                .map(|summary| summary.chunks_indexed),
+        };
+        match outcome {
+            Ok(chunks_indexed) => {
+                let completed = self.complete_embedding_job(job.job_id, worker_id)?;
+                Ok(Some(KnowledgeEmbeddingWorkerResult {
+                    job: completed,
+                    chunks_indexed,
+                }))
+            }
+            Err(error) => {
+                let message = error.to_string();
+                let message = if message.chars().count() > 4096 {
+                    message.chars().take(4096).collect::<String>()
+                } else {
+                    message
+                };
+                let failed = self.fail_embedding_job(job.job_id, worker_id, &message)?;
+                Ok(Some(KnowledgeEmbeddingWorkerResult {
+                    job: failed,
+                    chunks_indexed: 0,
+                }))
+            }
+        }
+    }
+
+    fn read_document_generation(&self, document_id: &str) -> AgentResult<Option<i64>> {
+        let connection = self.open_connection()?;
+        initialize_schema(&connection, &self.database)?;
+        connection
+            .query_row(
+                "SELECT generation FROM knowledge_documents WHERE document_id = ?1",
+                params![document_id],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()
+            .map_err(|error| sqlite_error(&self.database, "read document generation", error))
     }
 
     fn finish_embedding_job(

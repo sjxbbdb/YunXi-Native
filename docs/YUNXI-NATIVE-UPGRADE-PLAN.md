@@ -310,6 +310,13 @@ generation 过滤的有界 cosine 检索。该切片还没有接入 embedding wo
 失败只记录队列状态并保留已有向量。当前仅落地 SQLite 表、类型与存储方法，尚未接入
 daemon、后台 worker 或 provider；实际后台执行留待后续增量。
 
+当前增量已把队列接成一个可验证的最小执行闭环：`SqliteKnowledgeStore` 提供一次性
+`process_next_embedding_job`，先按 worker lease 领取，再用当前本地字符 n-gram provider
+建立整篇文档向量，成功后完成任务；provider/model 不匹配或索引失败会记录为 `failed`
+并保留旧向量。Linux CLI 暴露 `knowledge-worker` 一次只处理一条任务，便于 systemd
+timer、daemon 或人工诊断调用；它仍不是常驻调度器，也没有接入 Planner、自动重试或
+active generation 切换，这些边界继续留在后续增量。
+
 同时新增了无副作用的 `knowledge_ingest` 基础层：在进入存储前清理 ANSI
 终端控制符、NUL、CRLF 和多余空行，执行输入上限检查，并按段落与字符边界
 生成带稳定 hash 和 ordinal 的有界 chunk。它不读取任意路径，也不启动命令，
