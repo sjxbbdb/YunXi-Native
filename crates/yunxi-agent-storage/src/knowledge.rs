@@ -269,6 +269,82 @@ impl SqliteKnowledgeStore {
             .map_err(|error| sqlite_error(&self.database, "commit knowledge document", error))
     }
 
+    /// Atomically retract one document and all of its chunks and vectors.
+    ///
+    /// Retraction is scoped like search: a caller must prove the document
+    /// belongs to the requested space, owner, generation, and visibility.
+    pub fn retract_document(
+        &self,
+        document_id: &str,
+        scope: &KnowledgeSearchScope,
+    ) -> AgentResult<bool> {
+        if document_id.trim().is_empty() {
+            return Err(storage_error("knowledge document id is required"));
+        }
+        validate_search_scope(scope)?;
+        let mut connection = self.open_connection()?;
+        initialize_schema(&connection, &self.database)?;
+        let transaction = connection
+            .transaction()
+            .map_err(|error| sqlite_error(&self.database, "begin knowledge retraction", error))?;
+        let document = transaction
+            .query_row(
+                "SELECT space_id, generation, owner, visibility
+                 FROM knowledge_documents WHERE document_id = ?1",
+                params![document_id],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, i64>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(|error| sqlite_error(&self.database, "read knowledge document", error))?;
+        let Some(document) = document else {
+            transaction.commit().map_err(|error| {
+                sqlite_error(&self.database, "commit missing knowledge retraction", error)
+            })?;
+            return Ok(false);
+        };
+        if document.0 != scope.space_id
+            || document.1 != scope.generation
+            || document.2 != scope.owner
+            || document.3 != scope.visibility.as_str()
+        {
+            return Err(storage_error(
+                "knowledge document is outside the requested retraction scope",
+            ));
+        }
+        transaction
+            .execute(
+                "DELETE FROM knowledge_vectors
+                 WHERE chunk_id IN (
+                    SELECT chunk_id FROM knowledge_chunks WHERE document_id = ?1
+                 )",
+                params![document_id],
+            )
+            .map_err(|error| sqlite_error(&self.database, "delete knowledge vectors", error))?;
+        transaction
+            .execute(
+                "DELETE FROM knowledge_chunks WHERE document_id = ?1",
+                params![document_id],
+            )
+            .map_err(|error| sqlite_error(&self.database, "delete knowledge chunks", error))?;
+        transaction
+            .execute(
+                "DELETE FROM knowledge_documents WHERE document_id = ?1",
+                params![document_id],
+            )
+            .map_err(|error| sqlite_error(&self.database, "delete knowledge document", error))?;
+        transaction
+            .commit()
+            .map_err(|error| sqlite_error(&self.database, "commit knowledge retraction", error))?;
+        Ok(true)
+    }
+
     pub fn upsert_chunk(&self, chunk: &KnowledgeChunk) -> AgentResult<()> {
         validate_chunk(chunk)?;
         let mut connection = self.open_connection()?;

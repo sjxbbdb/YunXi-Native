@@ -163,6 +163,14 @@ pub(crate) enum LinuxShellCommand {
         #[arg(long)]
         source_version: Option<String>,
     },
+    /// Retract one system knowledge document and its derived index rows.
+    KnowledgeRetract {
+        /// Stable document id returned by knowledge-man/knowledge-help.
+        document_id: String,
+        /// Workspace whose `.yunxi/knowledge/knowledge.sqlite3` is updated.
+        #[arg(long, default_value = ".")]
+        cwd: PathBuf,
+    },
     /// Hidden long-lived process used by shell-intercept.
     #[command(hide = true)]
     Daemon,
@@ -227,6 +235,9 @@ pub(crate) async fn run_command(command: LinuxShellCommand) -> Result<()> {
             limit,
             source_version,
         } => run_knowledge_vector_search(query, cwd, limit, source_version.as_deref()),
+        LinuxShellCommand::KnowledgeRetract { document_id, cwd } => {
+            run_knowledge_retract(document_id, cwd)
+        }
         LinuxShellCommand::Daemon => run_daemon().await,
     }
 }
@@ -346,6 +357,29 @@ fn run_knowledge_vector_search(
             "embedding_model": provider.model_id(),
             "space_id": "system-linux",
             "results": results,
+        }))?
+    );
+    Ok(())
+}
+
+fn run_knowledge_retract(document_id: String, cwd: PathBuf) -> Result<()> {
+    let cwd = std::fs::canonicalize(&cwd)
+        .with_context(|| format!("无法访问知识工作区: {}", cwd.display()))?;
+    let store = yunxi_agent_storage::SqliteKnowledgeStore::for_workspace(&cwd);
+    let scope = yunxi_agent_storage::KnowledgeSearchScope {
+        space_id: "system-linux".to_string(),
+        owner: "system".to_string(),
+        generation: 1,
+        visibility: yunxi_agent_storage::KnowledgeVisibility::Public,
+    };
+    let retracted = store.retract_document(&document_id, &scope)?;
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&serde_json::json!({
+            "schema_version": 1,
+            "status": if retracted { "retracted" } else { "not_found" },
+            "document_id": document_id,
+            "space_id": "system-linux",
         }))?
     );
     Ok(())

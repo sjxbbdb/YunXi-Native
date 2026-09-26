@@ -337,6 +337,74 @@ fn mixed_system_search_can_filter_by_source_version() {
 }
 
 #[test]
+fn knowledge_retraction_is_scoped_atomic_and_removes_derived_rows() {
+    let dir = tempdir().expect("tempdir");
+    let store = SqliteKnowledgeStore::new(dir.path().join("knowledge.sqlite3"));
+    store
+        .upsert_space(&space(
+            "system-linux",
+            KnowledgeSpaceKind::System,
+            "system",
+            KnowledgeVisibility::Public,
+            1,
+        ))
+        .expect("system space");
+    let document = document("system-linux", "system", KnowledgeVisibility::Public);
+    store.upsert_document(&document).expect("document");
+    let chunk = chunk(
+        &document.document_id,
+        "system",
+        KnowledgeVisibility::Public,
+        "systemctl status reference",
+    );
+    store.upsert_chunk(&chunk).expect("chunk");
+    store
+        .upsert_vector(&KnowledgeVector {
+            chunk_id: chunk.chunk_id.clone(),
+            space_id: "system-linux".to_string(),
+            embedding_model: "fixture-v1".to_string(),
+            generation: 1,
+            vector: vec![1.0, 0.0],
+        })
+        .expect("vector");
+    let scope = KnowledgeSearchScope {
+        space_id: "system-linux".to_string(),
+        owner: "system".to_string(),
+        generation: 1,
+        visibility: KnowledgeVisibility::Public,
+    };
+    assert!(
+        store
+            .retract_document(
+                &document.document_id,
+                &KnowledgeSearchScope {
+                    owner: "alice".to_string(),
+                    ..scope.clone()
+                }
+            )
+            .is_err()
+    );
+    assert_eq!(store.search("systemctl", &scope, 5).unwrap().len(), 1);
+    assert!(
+        store
+            .retract_document(&document.document_id, &scope)
+            .expect("retraction")
+    );
+    assert!(store.search("systemctl", &scope, 5).unwrap().is_empty());
+    assert!(
+        store
+            .search_vectors(&[1.0, 0.0], "fixture-v1", &scope, 5)
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        !store
+            .retract_document(&document.document_id, &scope)
+            .expect("missing retraction")
+    );
+}
+
+#[test]
 fn knowledge_vectors_rank_within_model_and_scope() {
     let dir = tempdir().expect("tempdir");
     let store = SqliteKnowledgeStore::new(dir.path().join("knowledge.sqlite3"));

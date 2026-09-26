@@ -349,6 +349,11 @@ CLI 还提供 `knowledge-index` 和 `knowledge-vector-search`：前者使用当�
 召回只读取有界的 `/etc/os-release`（缺失时尝试 `/usr/lib/os-release`）生成同一
 过滤值；无法可靠解析时保持未过滤召回，不会猜测发行版或版本。
 
+同时提供显式的 `knowledge-retract` 边界：调用方必须匹配 system 空间、owner、
+generation 和 visibility，存储层在一个事务内先删向量、再删 chunk/FTS、最后删文档；
+权限不匹配或事务失败时原文档保持可检索。该入口不操作 project/private 空间，也不
+触碰长期记忆向量库。
+
 **门槛**：索引可增量更新、失败可回滚、来源可追踪、风险命令可标记、空间隔离和撤回测试通过、RAG 召回指标达标。
 
 ### Phase 5：记忆与知识协同
