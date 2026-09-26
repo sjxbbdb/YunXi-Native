@@ -170,9 +170,10 @@ Linux Runtime 通过只读的 `LinuxPlanContext` 有限召回同一空间的 FTS
 召回，不会猜测发行版或版本。
 
 每次上下文组装的 `context_assembled` 运行时元数据会同时记录 `knowledge_context`、
-active generation、FTS/向量证据数量、`source_version`、本轮检索耗时和最多 8 条有界
-`knowledge_provenance`（检索方式、chunk/document/space、source/version/generation、
-collector/risk、向量分数）；记忆召回则继续通过独立的 `MemoryRecall` 事件记录 scope、
+active generation、`knowledge_recall_status`（evidence/no_hit/no_active_space/search_error/
+embed_error/skipped_prompt）、FTS/向量证据数量、`source_version`、本轮检索耗时、失败阶段
+和最多 8 条有界 `knowledge_provenance`（检索方式、chunk/document/space、source/version/
+generation、collector/risk、向量分数）；记忆召回则继续通过独立的 `MemoryRecall` 事件记录 scope、
 预算、丢弃原因和召回数量，并在上下文元数据中记录按 source/scope 的聚合。两套诊断都
 不写入正文、原始查询或 workspace 路径，也不会把知识正文写回记忆台账。
 

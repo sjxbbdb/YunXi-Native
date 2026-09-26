@@ -1071,18 +1071,31 @@ impl YunXiRuntimeBackend {
                     ),
                     (
                         "knowledge_context",
-                        if initial_messages.knowledge_diagnostic.is_some() {
+                        if initial_messages.knowledge_diagnostic.as_ref().is_some_and(
+                            |diagnostic| {
+                                diagnostic.keyword_evidence > 0 || diagnostic.vector_evidence > 0
+                            },
+                        ) {
                             "present".to_string()
                         } else {
                             "absent".to_string()
                         },
                     ),
                     (
+                        "knowledge_recall_status",
+                        initial_messages
+                            .knowledge_diagnostic
+                            .as_ref()
+                            .map(|diagnostic| diagnostic.status.label().to_string())
+                            .unwrap_or_else(|| "not_run".to_string()),
+                    ),
+                    (
                         "knowledge_active_generation",
                         initial_messages
                             .knowledge_diagnostic
                             .as_ref()
-                            .map(|diagnostic| diagnostic.generation.to_string())
+                            .and_then(|diagnostic| diagnostic.generation)
+                            .map(|generation| generation.to_string())
                             .unwrap_or_else(|| "none".to_string()),
                     ),
                     (
@@ -1124,6 +1137,17 @@ impl YunXiRuntimeBackend {
                             .as_ref()
                             .map(|diagnostic| {
                                 serde_json::to_string(&diagnostic.provenance)
+                                    .unwrap_or_else(|_| "[]".to_string())
+                            })
+                            .unwrap_or_else(|| "[]".to_string()),
+                    ),
+                    (
+                        "knowledge_retrieval_failures",
+                        initial_messages
+                            .knowledge_diagnostic
+                            .as_ref()
+                            .map(|diagnostic| {
+                                serde_json::to_string(&diagnostic.failures)
                                     .unwrap_or_else(|_| "[]".to_string())
                             })
                             .unwrap_or_else(|| "[]".to_string()),
@@ -2063,12 +2087,64 @@ struct InitialMessages {
 
 #[derive(Clone, Debug, PartialEq)]
 struct KnowledgeRecallDiagnostic {
-    generation: i64,
+    status: KnowledgeRecallStatus,
+    generation: Option<i64>,
     source_version: Option<String>,
     keyword_evidence: usize,
     vector_evidence: usize,
     retrieval_latency_millis: u64,
     provenance: Vec<KnowledgeEvidenceDiagnostic>,
+    failures: Vec<String>,
+}
+
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum KnowledgeRecallStatus {
+    Evidence,
+    NoActiveSpace,
+    NoHit,
+    SearchError,
+    EmbedError,
+    SkippedPrompt,
+}
+
+impl KnowledgeRecallStatus {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Evidence => "evidence",
+            Self::NoActiveSpace => "no_active_space",
+            Self::NoHit => "no_hit",
+            Self::SearchError => "search_error",
+            Self::EmbedError => "embed_error",
+            Self::SkippedPrompt => "skipped_prompt",
+        }
+    }
+}
+
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+impl KnowledgeRecallDiagnostic {
+    fn empty(
+        status: KnowledgeRecallStatus,
+        generation: Option<i64>,
+        source_version: Option<String>,
+        retrieval_latency_millis: u64,
+    ) -> Self {
+        Self {
+            status,
+            generation,
+            source_version,
+            keyword_evidence: 0,
+            vector_evidence: 0,
+            retrieval_latency_millis,
+            provenance: Vec::new(),
+            failures: Vec::new(),
+        }
+    }
+
+    fn with_failures(mut self, failures: Vec<String>) -> Self {
+        self.failures = failures;
+        self
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize)]
@@ -2099,7 +2175,7 @@ struct MemoryRecallDiagnostic {
 }
 
 struct KnowledgeContext {
-    content: String,
+    content: Option<String>,
     diagnostic: KnowledgeRecallDiagnostic,
 }
 
@@ -2670,7 +2746,9 @@ impl YunXiRuntimeBackend {
 
         let knowledge_context = load_linux_knowledge_context_with_diagnostic(config, prompt);
         if let Some(knowledge_context) = &knowledge_context {
-            messages.push(ProviderMessage::system(knowledge_context.content.clone()));
+            if let Some(content) = &knowledge_context.content {
+                messages.push(ProviderMessage::system(content.clone()));
+            }
         }
 
         let mentioned_context = load_mentioned_file_context(&config.cwd, prompt)?;
@@ -2773,9 +2851,10 @@ fn load_linux_knowledge_context_with_diagnostic(
 ) -> Option<KnowledgeContext> {
     #[cfg(target_os = "linux")]
     {
-        linux_planner::build(config, prompt).map(|plan| KnowledgeContext {
-            diagnostic: plan.diagnostic(),
-            content: plan.render(),
+        let plan = linux_planner::build(config, prompt);
+        Some(KnowledgeContext {
+            diagnostic: plan.diagnostic,
+            content: plan.context.map(linux_planner::LinuxPlanContext::render),
         })
     }
     #[cfg(not(target_os = "linux"))]
@@ -6567,6 +6646,35 @@ mod linux_knowledge_tests {
     }
 
     #[test]
+    fn knowledge_planner_reports_explicit_empty_states_without_creating_scope() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let config = AgentConfig::new(directory.path().to_path_buf());
+        let result = linux_planner::build(&config, "show service status");
+        assert_eq!(
+            result.diagnostic.status,
+            KnowledgeRecallStatus::NoActiveSpace
+        );
+        assert!(result.context.is_none());
+
+        let store = yunxi_agent_storage::SqliteKnowledgeStore::for_workspace(directory.path());
+        store
+            .upsert_space(&yunxi_agent_storage::KnowledgeSpaceSpec {
+                space_id: "system-linux".to_string(),
+                kind: yunxi_agent_storage::KnowledgeSpaceKind::System,
+                owner: "system".to_string(),
+                visibility: yunxi_agent_storage::KnowledgeVisibility::Public,
+                source: "local-linux".to_string(),
+                version: "mixed".to_string(),
+                generation: 1,
+            })
+            .expect("space");
+        let result = linux_planner::build(&config, "query-without-any-indexed-hit");
+        assert_eq!(result.diagnostic.status, KnowledgeRecallStatus::NoHit);
+        assert_eq!(result.diagnostic.generation, Some(1));
+        assert!(result.context.is_none());
+    }
+
+    #[test]
     fn runtime_loads_vector_evidence_from_the_isolated_knowledge_store() {
         let directory = tempfile::tempdir().expect("tempdir");
         let store = yunxi_agent_storage::SqliteKnowledgeStore::for_workspace(directory.path());
@@ -6623,7 +6731,8 @@ mod linux_knowledge_tests {
         let config = AgentConfig::new(directory.path().to_path_buf());
         let context =
             load_linux_knowledge_context_with_diagnostic(&config, "zzzz").expect("context");
-        assert_eq!(context.diagnostic.generation, 7);
+        assert_eq!(context.diagnostic.status, KnowledgeRecallStatus::Evidence);
+        assert_eq!(context.diagnostic.generation, Some(7));
         assert_eq!(context.diagnostic.source_version, Some(source_version));
         assert_eq!(context.diagnostic.keyword_evidence, 0);
         assert!(context.diagnostic.vector_evidence >= 1);
@@ -6639,13 +6748,10 @@ mod linux_knowledge_tests {
         assert!(provenance.score.is_some());
         let provenance_json = serde_json::to_string(&context.diagnostic.provenance).expect("json");
         assert!(!provenance_json.contains("service recovery restart state"));
-        assert!(
-            context
-                .content
-                .contains("[Linux planning evidence | active_generation=7")
-        );
-        assert!(context.content.contains("Vector evidence 1"));
-        assert!(context.content.contains("service recovery restart state"));
-        assert!(context.content.contains("collector=linux.fixture"));
+        let content = context.content.as_deref().expect("content");
+        assert!(content.contains("[Linux planning evidence | active_generation=7"));
+        assert!(content.contains("Vector evidence 1"));
+        assert!(content.contains("service recovery restart state"));
+        assert!(content.contains("collector=linux.fixture"));
     }
 }
