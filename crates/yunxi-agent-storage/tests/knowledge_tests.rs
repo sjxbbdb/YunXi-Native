@@ -98,6 +98,7 @@ fn knowledge_store_uses_separate_database_and_searches_active_scope() {
         .expect("search");
     assert_eq!(results.len(), 1);
     assert_eq!(results[0].chunk_id, "system-linux-doc-chunk");
+    assert_eq!(results[0].metadata_json, document.metadata_json);
     assert_eq!(store.database(), database.as_path());
     assert_eq!(
         database.file_name().and_then(|name| name.to_str()),
@@ -411,6 +412,7 @@ fn knowledge_vectors_rank_within_model_and_scope() {
         .expect("vector search");
     assert_eq!(matches.len(), 2);
     assert_eq!(matches[0].chunk_id, first_chunk.chunk_id);
+    assert_eq!(matches[0].metadata_json, first.metadata_json);
     assert!(matches[0].score > matches[1].score);
     assert!(
         matches

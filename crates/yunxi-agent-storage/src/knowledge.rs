@@ -121,6 +121,7 @@ pub struct KnowledgeSearchResult {
     pub space_id: String,
     pub title: String,
     pub content: String,
+    pub metadata_json: String,
     pub source: String,
     pub version: String,
     pub generation: i64,
@@ -136,6 +137,7 @@ pub struct KnowledgeVectorMatch {
     pub space_id: String,
     pub title: String,
     pub content: String,
+    pub metadata_json: String,
     pub source: String,
     pub version: String,
     pub embedding_model: String,
@@ -782,7 +784,7 @@ impl SqliteKnowledgeStore {
         let mut statement = connection
             .prepare(
                 "SELECT c.chunk_id, c.document_id, c.space_id, d.title, c.content,
-                        c.source, c.version, c.generation, c.owner, c.visibility,
+                        d.metadata_json, c.source, c.version, c.generation, c.owner, c.visibility,
                         bm25(knowledge_chunks_fts) AS rank
                  FROM knowledge_chunks_fts f
                  JOIN knowledge_chunks c ON c.chunk_id = f.chunk_id
@@ -823,18 +825,19 @@ impl SqliteKnowledgeStore {
                         space_id: row.get(2)?,
                         title: row.get(3)?,
                         content: row.get(4)?,
-                        source: row.get(5)?,
-                        version: row.get(6)?,
-                        generation: row.get(7)?,
-                        owner: row.get(8)?,
-                        visibility: parse_visibility(&row.get::<_, String>(9)?).map_err(
+                        metadata_json: row.get(5)?,
+                        source: row.get(6)?,
+                        version: row.get(7)?,
+                        generation: row.get(8)?,
+                        owner: row.get(9)?,
+                        visibility: parse_visibility(&row.get::<_, String>(10)?).map_err(
                             |error| {
                                 rusqlite::types::FromSqlError::Other(Box::new(
                                     std::io::Error::other(error),
                                 ))
                             },
                         )?,
-                        rank: row.get(10)?,
+                        rank: row.get(11)?,
                     })
                 },
             )
@@ -879,7 +882,7 @@ impl SqliteKnowledgeStore {
         let mut statement = connection
             .prepare(
                 "SELECT v.chunk_id, c.document_id, c.space_id, d.title, c.content,
-                        c.source, c.version, v.embedding_model, v.generation,
+                        d.metadata_json, c.source, c.version, v.embedding_model, v.generation,
                         v.dimensions, v.vector
                  FROM knowledge_vectors v
                  JOIN knowledge_chunks c ON c.chunk_id = v.chunk_id
@@ -922,9 +925,10 @@ impl SqliteKnowledgeStore {
                         row.get::<_, String>(5)?,
                         row.get::<_, String>(6)?,
                         row.get::<_, String>(7)?,
-                        row.get::<_, i64>(8)?,
+                        row.get::<_, String>(8)?,
                         row.get::<_, i64>(9)?,
-                        row.get::<_, Vec<u8>>(10)?,
+                        row.get::<_, i64>(10)?,
+                        row.get::<_, Vec<u8>>(11)?,
                     ))
                 },
             )
@@ -937,6 +941,7 @@ impl SqliteKnowledgeStore {
                 space_id,
                 title,
                 content,
+                metadata_json,
                 source,
                 version,
                 model,
@@ -960,6 +965,7 @@ impl SqliteKnowledgeStore {
                     space_id,
                     title,
                     content,
+                    metadata_json,
                     source,
                     version,
                     embedding_model: model,

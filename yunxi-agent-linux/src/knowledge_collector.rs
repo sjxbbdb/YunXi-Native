@@ -141,6 +141,9 @@ pub fn document_for(request: &ManPageRequest) -> KnowledgeDocument {
         owner: "system".to_string(),
         visibility: yunxi_agent_storage::KnowledgeVisibility::Public,
         metadata_json: serde_json::json!({
+            "collector": "linux.man",
+            "argv": man_argv(request),
+            "risk_level": "read_only_reference",
             "source_type": "man",
             "topic": request.topic,
             "section": request.section,
@@ -160,6 +163,9 @@ fn help_document_for(request: &CommandHelpRequest) -> KnowledgeDocument {
         owner: "system".to_string(),
         visibility: yunxi_agent_storage::KnowledgeVisibility::Public,
         metadata_json: serde_json::json!({
+            "collector": "linux.command_help",
+            "argv": help_argv(request),
+            "risk_level": "read_only_reference",
             "source_type": "command_help",
             "command": request.command,
         })
@@ -382,6 +388,11 @@ mod tests {
             yunxi_agent_storage::KnowledgeVisibility::Public
         );
         assert!(!document.metadata_json.contains("/"));
+        let metadata: serde_json::Value =
+            serde_json::from_str(&document.metadata_json).expect("metadata json");
+        assert_eq!(metadata["collector"], "linux.man");
+        assert_eq!(metadata["risk_level"], "read_only_reference");
+        assert_eq!(metadata["argv"][0], "man");
     }
 
     #[test]
@@ -395,6 +406,17 @@ mod tests {
             help_document_for(&request).document_id,
             "system-help:systemctl"
         );
+        let metadata: serde_json::Value = serde_json::from_str(
+            &help_document_for(&CommandHelpRequest {
+                command: "systemctl".to_string(),
+                source_version: "ubuntu-24.04".to_string(),
+            })
+            .metadata_json,
+        )
+        .expect("help metadata json");
+        assert_eq!(metadata["collector"], "linux.command_help");
+        assert_eq!(metadata["risk_level"], "read_only_reference");
+        assert_eq!(metadata["argv"][1], "--help");
         let invalid = CommandHelpRequest {
             command: "./script".to_string(),
             source_version: "ubuntu-24.04".to_string(),

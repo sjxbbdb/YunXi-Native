@@ -6096,6 +6096,7 @@ mod linux_knowledge_tests {
             space_id: "system-linux".to_string(),
             title: "systemctl --help".to_string(),
             content: "systemctl [OPTIONS...] COMMAND ...".to_string(),
+            metadata_json: "{}".to_string(),
             source: "local-linux".to_string(),
             version: "ubuntu-24.04".to_string(),
             generation: 1,
