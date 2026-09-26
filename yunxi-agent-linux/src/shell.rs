@@ -160,6 +160,14 @@ pub(crate) enum LinuxShellCommand {
         #[arg(long, default_value = ".")]
         cwd: PathBuf,
     },
+    /// Explicitly retry one failed embedding job within its bounded budget.
+    KnowledgeRetry {
+        /// SQLite job id returned by knowledge-enqueue/knowledge-worker.
+        job_id: i64,
+        /// Workspace whose `.yunxi/knowledge/knowledge.sqlite3` is updated.
+        #[arg(long, default_value = ".")]
+        cwd: PathBuf,
+    },
     /// Process one pending local knowledge embedding job and exit.
     KnowledgeWorker {
         /// Stable worker identity used for the SQLite lease.
@@ -257,6 +265,7 @@ pub(crate) async fn run_command(command: LinuxShellCommand) -> Result<()> {
             embedding_model,
             cwd,
         } => run_knowledge_enqueue(document_id, embedding_model, cwd),
+        LinuxShellCommand::KnowledgeRetry { job_id, cwd } => run_knowledge_retry(job_id, cwd),
         LinuxShellCommand::KnowledgeWorker {
             worker_id,
             max_jobs,
@@ -354,6 +363,27 @@ fn run_knowledge_enqueue(document_id: String, embedding_model: String, cwd: Path
             "embedding_model": job.embedding_model,
             "generation": job.generation,
             "attempts": job.attempts,
+        }))?
+    );
+    Ok(())
+}
+
+fn run_knowledge_retry(job_id: i64, cwd: PathBuf) -> Result<()> {
+    let cwd = std::fs::canonicalize(&cwd)
+        .with_context(|| format!("无法访问知识工作区: {}", cwd.display()))?;
+    let store = yunxi_agent_storage::SqliteKnowledgeStore::for_workspace(&cwd);
+    let job = store.retry_embedding_job(job_id)?;
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&serde_json::json!({
+            "schema_version": 1,
+            "status": job.status.as_str(),
+            "job_id": job.job_id,
+            "document_id": job.document_id,
+            "embedding_model": job.embedding_model,
+            "generation": job.generation,
+            "attempts": job.attempts,
+            "last_error": job.last_error,
         }))?
     );
     Ok(())

@@ -8,7 +8,7 @@ use yunxi_agent_persona::{
 use yunxi_agent_storage::{
     KnowledgeChunk, KnowledgeChunkingOptions, KnowledgeDocument, KnowledgeEmbeddingJobStatus,
     KnowledgeSearchScope, KnowledgeSpaceKind, KnowledgeSpaceSpec, KnowledgeVector,
-    KnowledgeVisibility, SqliteKnowledgeStore,
+    KnowledgeVisibility, MAX_EMBEDDING_JOB_ATTEMPTS, SqliteKnowledgeStore,
 };
 
 fn space(
@@ -255,6 +255,32 @@ fn embedding_worker_rejects_a_stale_document_generation() {
             .as_deref()
             .is_some_and(|message| message.contains("generation 1 is stale"))
     );
+}
+
+#[test]
+fn failed_embedding_jobs_require_explicit_bounded_retry() {
+    let (_dir, store, document) = queue_fixture();
+    let queued = store
+        .enqueue_embedding_job(&document.document_id, "fixture-v1", 1)
+        .expect("enqueue");
+
+    for attempt in 1..=MAX_EMBEDDING_JOB_ATTEMPTS {
+        let claimed = store
+            .claim_embedding_job("worker-a")
+            .expect("claim")
+            .expect("job");
+        assert_eq!(claimed.attempts, attempt);
+        store
+            .fail_embedding_job(claimed.job_id, "worker-a", "provider unavailable")
+            .expect("fail");
+        if attempt < MAX_EMBEDDING_JOB_ATTEMPTS {
+            let retried = store.retry_embedding_job(queued.job_id).expect("retry");
+            assert_eq!(retried.status, KnowledgeEmbeddingJobStatus::Pending);
+            assert_eq!(retried.attempts, attempt);
+            assert_eq!(retried.last_error.as_deref(), Some("provider unavailable"));
+        }
+    }
+    assert!(store.retry_embedding_job(queued.job_id).is_err());
 }
 
 #[test]

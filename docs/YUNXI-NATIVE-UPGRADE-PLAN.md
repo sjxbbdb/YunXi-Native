@@ -322,6 +322,10 @@ active generation 切换，这些边界继续留在后续增量。
 会因 lease 身份不匹配而被拒绝。这里仅处理崩溃恢复，不把 `failed` 任务自动重试，
 重试策略与退避仍需后续单独设计。
 
+同时提供了显式 `retry_embedding_job`/`knowledge-retry` 恢复边界：只有 `failed` 状态
+且尚未超过三次尝试的任务才能重新排队，原始 `last_error` 会保留用于诊断。worker
+不会在 provider 故障时自行循环重试；真正的退避、告警和 daemon 调度仍留待后续设计。
+
 同时新增了无副作用的 `knowledge_ingest` 基础层：在进入存储前清理 ANSI
 终端控制符、NUL、CRLF 和多余空行，执行输入上限检查，并按段落与字符边界
 生成带稳定 hash 和 ordinal 的有界 chunk。它不读取任意路径，也不启动命令，

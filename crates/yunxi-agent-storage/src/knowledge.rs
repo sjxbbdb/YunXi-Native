@@ -14,6 +14,7 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const EMBEDDING_JOB_LEASE_MILLIS: i64 = 5 * 60 * 1_000;
+pub const MAX_EMBEDDING_JOB_ATTEMPTS: i64 = 3;
 use yunxi_agent_core::{AgentError, AgentResult};
 use yunxi_agent_persona::{MemoryEmbeddingProvider, cosine_similarity, yunxi_home_dir};
 
@@ -423,6 +424,40 @@ impl SqliteKnowledgeStore {
             KnowledgeEmbeddingJobStatus::Failed,
             Some(error_message),
         )
+    }
+
+    /// Explicitly requeue a failed job while its bounded retry budget remains.
+    ///
+    /// The previous `last_error` is intentionally retained for diagnostics;
+    /// callers can observe the reason that caused the retry before the next
+    /// worker attempt updates it.
+    pub fn retry_embedding_job(&self, job_id: i64) -> AgentResult<KnowledgeEmbeddingJob> {
+        if job_id <= 0 {
+            return Err(storage_error("embedding job id is invalid"));
+        }
+        let mut connection = self.open_connection()?;
+        initialize_schema(&connection, &self.database)?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|error| sqlite_error(&self.database, "begin embedding job retry", error))?;
+        let updated = transaction
+            .execute(
+                "UPDATE knowledge_embedding_jobs
+                 SET status = 'pending', worker_id = NULL, updated_at_millis = ?1
+                 WHERE job_id = ?2 AND status = 'failed' AND attempts < ?3",
+                params![now_millis(), job_id, MAX_EMBEDDING_JOB_ATTEMPTS],
+            )
+            .map_err(|error| sqlite_error(&self.database, "retry embedding job", error))?;
+        if updated != 1 {
+            return Err(storage_error(
+                "embedding job is not failed or has exhausted its retry budget",
+            ));
+        }
+        let job = read_embedding_job(&transaction, &self.database, job_id)?;
+        transaction
+            .commit()
+            .map_err(|error| sqlite_error(&self.database, "commit embedding job retry", error))?;
+        Ok(job)
     }
 
     /// Claim and process one pending embedding job with the supplied provider.

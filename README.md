@@ -90,7 +90,8 @@ Linux 知识库已经有独立的 `SqliteKnowledgeStore` 基础：数据库文�
 `failed`，不会覆盖已有向量。该命令是一次性、有界执行入口，不会自行扫描工作区，也不
 会替代未来的 daemon/systemd 调度器。
 领取中的任务带五分钟 lease；worker 崩溃后，下一次领取会回收过期 lease，旧 worker
-的迟到提交会被拒绝。`failed` 任务暂不自动重试，避免在 provider 故障时形成无界循环。
+的迟到提交会被拒绝。失败任务可用 `yunxi-linux knowledge-retry <job-id> --cwd .`
+显式恢复，最多三次尝试且保留 `last_error`；不会在 provider 故障时形成无界自动循环。
 
 Linux 版现在提供只读 P0 `man` 采集入口：
 `yunxi-linux knowledge-man fish --section 1 --source-version ubuntu-24.04 --cwd .`。
