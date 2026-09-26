@@ -25,3 +25,21 @@
 风险标签、撤回和权限隔离样本，并报告 MRR、source accuracy、risk-label accuracy 与
 延迟分位数。
 
+## WSL 查询延迟观测
+
+使用 `yunxi-agent-linux/tests/knowledge_latency_smoke.sh` 在 Ubuntu-24.04 WSL 的临时
+workspace 运行 12 次 FTS 查询和 12 次向量查询。脚本把第一次 CLI 调用标记为 cold，
+其余调用标记为 warm-ish；每次仍然是独立 CLI 进程，因此这里的 warm-ish 只表示文件系统
+和 SQLite 页缓存可能已经热起来，不能等同于常驻 daemon 延迟。以下是 2026-09-26
+一次观测，单位为微秒（µs）：
+
+| 路径 | cold p50 | warm-ish p50 | warm-ish p95 |
+| --- | ---: | ---: | ---: |
+| FTS 检索 | 27,919 | 25,220 | 33,205 |
+| 向量 embedding | 1,215 | 1,383 | 2,515 |
+| 向量 SQLite 检索 | 6,139 | 5,093 | 6,716 |
+| 向量总耗时 | 21,874 | 21,523 | 23,635 |
+
+这组数字是当前本地字符 n-gram provider、三份真实 `--help` 文本和本机 WSL 文件系统的
+观测，不是发布阈值或跨机器承诺。后续更换 embedding provider、增加文档规模或接入
+常驻 daemon 后，应重新运行脚本并分别记录冷启动、热查询、无命中和 generation 切换。

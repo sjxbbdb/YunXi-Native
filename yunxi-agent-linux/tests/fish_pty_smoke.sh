@@ -109,6 +109,11 @@ def read_until(needle: bytes, timeout: float = 4.0) -> bytes:
             break
         data.extend(chunk)
         if needle in data:
+            # Fish may repaint the prompt in several writes.  Let the final
+            # repaint and the hook's prompt event settle before the next
+            # command is injected, otherwise a fast host can make this PTY
+            # smoke race its own input queue.
+            time.sleep(0.15)
             return bytes(data)
     try:
         with open(log_path, encoding="utf-8") as handle:
