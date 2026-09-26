@@ -90,14 +90,15 @@ TUI 内置命令：`/help`、`/clear`、`/status`、`/exit`。工具调用仍遵
 
 ## Linux 只读工具层（Phase 3 起点）
 
-自然语言请求可以由模型路由到固定的 `linux_readonly` ToolSpec。它只允许四种操作：
+自然语言请求可以由模型路由到固定的 `linux_readonly` ToolSpec。它只允许五种操作：
 
 - `systemd_status`：读取 user 或 system manager 的 unit 状态；
 - `man_page`：以 `MANPAGER=cat` 读取单个本地手册主题；
 - `process_list`：读取有界进程快照；
 - `network_snapshot`：读取本机接口、路由或 socket 状态。
+- `pacman_info` / `pacman_search`：只读查询已安装包元数据或搜索 Arch 包数据库。
 
-这些操作不接受任意命令、路径或 shell 片段，不执行启动/停止服务、杀进程、网络配置、HTTP 探测或写文件。实际执行使用固定 argv 的直接进程 runner，经过 YunXi 现有的 ToolPolicy、审批、沙盒诊断与审计事件；缺少 `systemctl`、`man`、`ps`、`ip` 或 `ss` 时返回结构化 `unavailable`。
+这些操作不接受任意命令、路径或 shell 片段，不执行启动/停止服务、杀进程、网络配置、HTTP 探测、包安装/删除/升级、数据库刷新或写文件。实际执行使用固定 argv 的直接进程 runner，经过 YunXi 现有的 ToolPolicy、审批、沙盒诊断与审计事件；缺少 `systemctl`、`man`、`ps`、`ip`、`ss` 或 `pacman` 时返回结构化 `unavailable`。
 
 也可以直接检查 CLI 探针（用于安装和发行版诊断）：
 
@@ -107,6 +108,8 @@ yunxi-linux linux-tool processes --limit 20
 yunxi-linux linux-tool network
 yunxi-linux linux-tool systemd-status --unit yunxi-linux.service
 yunxi-linux linux-tool man fish
+yunxi-linux linux-tool pacman --info fish
+yunxi-linux linux-tool pacman --search terminal
 ```
 
 CLI 探针与模型可见的 `linux_readonly` ToolSpec 共用同一只读边界，但 CLI 输出是诊断入口，不替代 Runtime 的审批链路。
@@ -117,8 +120,8 @@ CLI 探针与模型可见的 `linux_readonly` ToolSpec 共用同一只读边界�
 bash yunxi-agent-linux/tests/linux_tool_smoke.sh ./target/release/yunxi-linux
 ```
 
-该 smoke 会校验四个 ToolSpec 的 JSON 契约、64 KiB 输出边界和参数注入拒绝；目标系统
-缺少 `systemctl`、`man`、`ip` 或 `ss` 时允许结果为结构化 `unavailable`，不会把缺少
+该 smoke 会校验五个 ToolSpec 的 JSON 契约、64 KiB 输出边界和参数注入拒绝；目标系统
+缺少 `systemctl`、`man`、`ip`、`ss` 或 `pacman` 时允许结果为结构化 `unavailable`，不会把缺少
 发行版工具误判为测试失败。
 
 ## 显式 project/private 知识空间

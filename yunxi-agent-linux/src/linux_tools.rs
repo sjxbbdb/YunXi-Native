@@ -38,6 +38,19 @@ pub(crate) enum LinuxToolCommand {
     },
     /// Read local interface and listening-socket state.
     Network,
+    /// Query the local pacman database or the configured sync databases.
+    ///
+    /// This intentionally exposes only pacman's read-only `--info` and
+    /// `--search` modes.  Package installation, removal, upgrade, database
+    /// refresh, and every other mutating mode stay outside this command.
+    Pacman {
+        /// Query metadata for an installed package (`pacman --info`).
+        #[arg(long, conflicts_with = "search", required_unless_present = "search")]
+        info: Option<String>,
+        /// Search configured package databases (`pacman --search`).
+        #[arg(long, conflicts_with = "info", required_unless_present = "info")]
+        search: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -81,6 +94,17 @@ pub(crate) fn run(command: LinuxToolCommand) -> Result<()> {
             serde_json::to_value(run_processes(limit))?
         }
         LinuxToolCommand::Network => serde_json::to_value(run_network())?,
+        LinuxToolCommand::Pacman { info, search } => {
+            if let Some(package) = info.as_deref() {
+                validate_pacman_token(package, "pacman package")?;
+                serde_json::to_value(run_pacman("--info", package))?
+            } else if let Some(query) = search.as_deref() {
+                validate_pacman_token(query, "pacman search")?;
+                serde_json::to_value(run_pacman("--search", query))?
+            } else {
+                bail!("pacman requires exactly one of --info or --search")
+            }
+        }
     };
     println!("{}", serde_json::to_string_pretty(&value)?);
     Ok(())
@@ -112,6 +136,13 @@ fn specs() -> Vec<LinuxToolSpec> {
         LinuxToolSpec {
             name: "linux.network",
             description: "Read local interface and listening-socket state.",
+            risk_class: "read_only",
+            requires_root: false,
+            mutates_system: false,
+        },
+        LinuxToolSpec {
+            name: "linux.pacman",
+            description: "Read installed package metadata or search Arch package databases.",
             risk_class: "read_only",
             requires_root: false,
             mutates_system: false,
@@ -190,6 +221,14 @@ fn run_network() -> LinuxToolResult {
     run_fixed_command("ss", vec!["-tuln".to_string()], "linux.network")
 }
 
+fn run_pacman(mode: &'static str, value: &str) -> LinuxToolResult {
+    run_fixed_command(
+        "pacman",
+        vec![mode.to_string(), "--".to_string(), value.to_string()],
+        "linux.pacman",
+    )
+}
+
 fn run_fixed_command(program: &str, args: Vec<String>, tool: &'static str) -> LinuxToolResult {
     let mut command = vec![program.to_string()];
     command.extend(args.iter().cloned());
@@ -266,6 +305,22 @@ fn validate_token(value: &str, label: &str) -> Result<()> {
     Ok(())
 }
 
+fn validate_pacman_token(value: &str, label: &str) -> Result<()> {
+    if value.is_empty()
+        || value.len() > 128
+        || !value.chars().all(|character| {
+            character.is_ascii_alphanumeric()
+                || matches!(
+                    character,
+                    '.' | '@' | '_' | ':' | '+' | '-' | '/' | '*' | '?'
+                )
+        })
+    {
+        bail!("{label} contains unsupported characters")
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -273,7 +328,7 @@ mod tests {
     #[test]
     fn catalog_is_read_only_and_non_root() {
         let specs = specs();
-        assert_eq!(specs.len(), 4);
+        assert_eq!(specs.len(), 5);
         assert!(specs.iter().all(|spec| {
             spec.risk_class == "read_only" && !spec.requires_root && !spec.mutates_system
         }));
@@ -284,6 +339,21 @@ mod tests {
         assert!(validate_token("yunxi-linux.service", "unit").is_ok());
         assert!(validate_token("systemctl; rm -rf /", "unit").is_err());
         assert!(validate_token("systemctl --user", "topic").is_err());
+    }
+
+    #[test]
+    fn pacman_queries_are_fixed_and_reject_shell_syntax() {
+        assert!(validate_pacman_token("yunxi-agent", "package").is_ok());
+        assert!(validate_pacman_token("linux-firmware*", "search").is_ok());
+        assert!(validate_pacman_token("foo; touch /tmp/yunxi", "search").is_err());
+        assert!(validate_pacman_token("pacman --info", "package").is_err());
+
+        let result = run_pacman("--info", "yunxi-agent");
+        assert_eq!(result.tool, "linux.pacman");
+        assert_eq!(result.command, ["pacman", "--info", "--", "yunxi-agent"]);
+        assert_eq!(result.risk_class, "read_only");
+        assert!(!result.requires_root);
+        assert!(!result.mutates_system);
     }
 
     #[test]

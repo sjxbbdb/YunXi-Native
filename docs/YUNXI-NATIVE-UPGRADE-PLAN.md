@@ -298,11 +298,11 @@ daemon 还对 `Hello` 与握手后的首个请求设置 5 秒超时，防止半�
 - 建立 pacman/systemd/man/process/network 的 ToolSpec、审批策略和审计事件；
 - 可选吸收 Landlock backend，不改变 YunXi 策略层。
 
-**当前增量**：已先落地 `linux_readonly` 固定 ToolSpec，覆盖 `systemd_status`、`man_page`、`process_list` 和 `network_snapshot` 四类本机只读查询。参数经过严格 schema 与 token 校验，执行使用固定 argv 的 `DirectProcessRunner`，不经过 `sh -c`，输出限制为 64 KiB，并记录 Linux tool runtime event。工具仍进入现有 `ToolRouter`、`ToolPolicy`、审批与沙盒诊断链路；缺少发行版工具时返回结构化 `unavailable`，不会把缺包误报为执行成功。当前 CLI 的 `linux-tool` 仍是便捷探针，通用 Runtime ToolSpec 是模型可见的正式入口。
+**当前增量**：已先落地 `linux_readonly` 固定 ToolSpec，覆盖 `systemd_status`、`man_page`、`process_list`、`network_snapshot` 和 Arch `pacman` 只读查询五类本机观察能力。`pacman` 只允许固定的 `--info`（已安装包元数据）和 `--search`（包数据库搜索）模式，明确排除安装、删除、升级、数据库刷新等变更操作。参数经过严格 schema 与 token 校验，执行使用固定 argv 的 `DirectProcessRunner`，不经过 `sh -c`，输出限制为 64 KiB，并记录 Linux tool runtime event。工具仍进入现有 `ToolRouter`、`ToolPolicy`、审批与沙盒诊断链路；缺少发行版工具时返回结构化 `unavailable`，不会把缺包误报为执行成功。当前 CLI 的 `linux-tool` 仍是便捷探针，通用 Runtime ToolSpec 是模型可见的正式入口。
 
-真实验收脚本 `yunxi-agent-linux/tests/linux_tool_smoke.sh` 已覆盖四个只读探针的 JSON
+真实验收脚本 `yunxi-agent-linux/tests/linux_tool_smoke.sh` 已覆盖五个只读探针的 JSON
 契约、缺少可选系统工具时的 `unavailable` 结果、64 KiB 输出边界，以及 systemd/man
-参数中的 shell 语法拒绝；它不要求 root，也不修改本机状态。
+参数中的 shell 语法拒绝（含 pacman 查询）；它不要求 root，也不修改本机状态。
 
 **门槛**：每个工具有 schema、权限矩阵、错误恢复、单元测试和至少一个真实 Linux 验收脚本。
 

@@ -26,6 +26,7 @@ assert {item["name"] for item in specs} == {
     "linux.man",
     "linux.processes",
     "linux.network",
+    "linux.pacman",
 }, specs
 assert all(
     item["risk_class"] == "read_only"
@@ -63,6 +64,8 @@ run_probe "$TMP_ROOT/processes.json" linux.processes processes --limit 0
 run_probe "$TMP_ROOT/network.json" linux.network network
 run_probe "$TMP_ROOT/systemd.json" linux.systemd_status systemd-status --unit yunxi-linux.service
 run_probe "$TMP_ROOT/man.json" linux.man man fish
+run_probe "$TMP_ROOT/pacman-info.json" linux.pacman pacman --info yunxi-agent
+run_probe "$TMP_ROOT/pacman-search.json" linux.pacman pacman --search yunxi
 
 if "$BINARY" linux-tool systemd-status --unit 'yunxi.service; touch /tmp/yunxi-smoke' >/dev/null 2>&1; then
   echo "systemd token injection unexpectedly accepted" >&2
@@ -70,6 +73,10 @@ if "$BINARY" linux-tool systemd-status --unit 'yunxi.service; touch /tmp/yunxi-s
 fi
 if "$BINARY" linux-tool man 'fish --pager' >/dev/null 2>&1; then
   echo "man token injection unexpectedly accepted" >&2
+  exit 1
+fi
+if "$BINARY" linux-tool pacman --info 'yunxi-agent; touch /tmp/yunxi-smoke' >/dev/null 2>&1; then
+  echo "pacman token injection unexpectedly accepted" >&2
   exit 1
 fi
 
