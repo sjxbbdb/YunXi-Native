@@ -607,6 +607,54 @@ impl SqliteKnowledgeStore {
         Ok(())
     }
 
+    /// Read the active search scope for a space without changing its state.
+    ///
+    /// The space generation is the active generation for the current schema.
+    /// Returning `None` for an unknown space lets first-run callers create the
+    /// space explicitly without silently inventing metadata for an existing one.
+    pub fn active_space_scope(
+        &self,
+        space_id: &str,
+        owner: &str,
+        visibility: KnowledgeVisibility,
+    ) -> AgentResult<Option<KnowledgeSearchScope>> {
+        if space_id.trim().is_empty() || owner.trim().is_empty() {
+            return Err(storage_error(
+                "active knowledge scope metadata is incomplete",
+            ));
+        }
+        let connection = self.open_connection()?;
+        initialize_schema(&connection, &self.database)?;
+        let row = connection
+            .query_row(
+                "SELECT owner, visibility, generation FROM knowledge_spaces WHERE space_id = ?1",
+                params![space_id],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, i64>(2)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(|error| sqlite_error(&self.database, "read active knowledge scope", error))?;
+        let Some((stored_owner, stored_visibility, generation)) = row else {
+            return Ok(None);
+        };
+        if stored_owner != owner || stored_visibility != visibility.as_str() {
+            return Err(storage_error(
+                "active knowledge scope does not match the requested owner or visibility",
+            ));
+        }
+        Ok(Some(KnowledgeSearchScope {
+            space_id: space_id.to_string(),
+            owner: owner.to_string(),
+            generation,
+            visibility,
+        }))
+    }
+
     pub fn upsert_document(&self, document: &KnowledgeDocument) -> AgentResult<()> {
         validate_document(document)?;
         let mut connection = self.open_connection()?;

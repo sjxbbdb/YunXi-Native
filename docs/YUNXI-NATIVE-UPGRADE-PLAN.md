@@ -296,26 +296,26 @@ knowledge_fts
 FTS 命名空间；当前提供 system/project/private 空间元数据、文档与 chunk 登记、
 active generation + owner/visibility 前置过滤的 FTS 查询，以及预留的
 `knowledge_vectors` 表，并支持按 embedding model、空间、owner、visibility 和
-generation 过滤的有界 cosine 检索。该切片还没有接入 embedding worker、Planner
-或执行器，因此知识内容仍只能作为显式检索结果，不能直接触发命令。
+generation 过滤的有界 cosine 检索。Linux 查询入口和 Runtime 会读取空间当前
+active generation，不再把 generation `1` 当作运行时事实；未知空间不会被读路径
+静默创建，因此首次使用必须先经过受控采集/初始化。
 
 当前已经提供同步的单文档 `knowledge-index` 原语和 `knowledge-vector-search` CLI，
 使用本地字符 n-gram provider 建立独立向量并支持增量跳过、快照一致性校验和原子
-替换；后台队列式 embedding worker、active generation 切换和 Planner 接入仍属于
-本 Phase 的后续工作。
+替换；generation 的 staging/原子切换和 Planner 接入仍属于本 Phase 的后续工作。
 
 本增量已补齐 durable `knowledge_embedding_jobs` 队列契约：作业关联
 `document_id`、embedding model 与 generation，入队会校验文档代际并对重复请求幂等；
 领取使用 SQLite `IMMEDIATE` 事务，`complete`/`fail` 只允许合法的 worker 状态转换，
 失败只记录队列状态并保留已有向量。当前仅落地 SQLite 表、类型与存储方法，尚未接入
-daemon、后台 worker 或 provider；实际后台执行留待后续增量。
+Planner 或执行器；实际任务执行由有界 CLI worker 提供，daemon 调度留待后续增量。
 
 当前增量已把队列接成一个可验证的最小执行闭环：`SqliteKnowledgeStore` 提供一次性
 `process_next_embedding_job`，先按 worker lease 领取，再用当前本地字符 n-gram provider
 建立整篇文档向量，成功后完成任务；provider/model 不匹配或索引失败会记录为 `failed`
 并保留旧向量。Linux CLI 暴露 `knowledge-worker` 一次只处理一条任务，便于 systemd
-timer、daemon 或人工诊断调用；它仍不是常驻调度器，也没有接入 Planner、自动重试或
-active generation 切换，这些边界继续留在后续增量。
+timer、daemon 或人工诊断调用；它仍不是常驻调度器，也没有接入 Planner 或自动重试，
+active generation 的读取边界已落地，staging/原子激活仍留在后续增量。
 
 为避免 daemon 或终端进程崩溃后留下永久 `running` 任务，领取事务还会回收超过五分钟
 未更新的 worker lease，并把它重新置为 `pending`；旧 worker 随后提交 complete/fail
@@ -325,6 +325,10 @@ active generation 切换，这些边界继续留在后续增量。
 同时提供了显式 `retry_embedding_job`/`knowledge-retry` 恢复边界：只有 `failed` 状态
 且尚未超过三次尝试的任务才能重新排队，原始 `last_error` 会保留用于诊断。worker
 不会在 provider 故障时自行循环重试；真正的退避、告警和 daemon 调度仍留待后续设计。
+
+`ensure_system_space` 只在 system 空间不存在时初始化 generation `1`，不会覆盖已有
+active generation。采集得到的文档会在写入前绑定当前 active generation，避免空间升级
+后新旧资料串代；未来引入 staging 时，采集写入与 active 激活仍需保持两个明确事务边界。
 
 采集 CLI 的成功路径现在会在 `ingest_text` 完成后为当前文档 generation 自动创建
 本地 provider 的 pending job，并在 JSON 结果中返回 job 元数据；它只入队、不启动

@@ -81,6 +81,65 @@ fn queue_fixture() -> (tempfile::TempDir, SqliteKnowledgeStore, KnowledgeDocumen
 }
 
 #[test]
+fn active_space_scope_reads_current_generation_and_enforces_identity() {
+    let dir = tempdir().expect("tempdir");
+    let store = SqliteKnowledgeStore::new(dir.path().join("knowledge.sqlite3"));
+
+    assert!(
+        store
+            .active_space_scope("system-linux", "system", KnowledgeVisibility::Public)
+            .expect("unknown space lookup")
+            .is_none()
+    );
+
+    store
+        .upsert_space(&space(
+            "system-linux",
+            KnowledgeSpaceKind::System,
+            "system",
+            KnowledgeVisibility::Public,
+            7,
+        ))
+        .expect("system space");
+    store
+        .upsert_space(&space(
+            "project-main",
+            KnowledgeSpaceKind::Project,
+            "project-owner",
+            KnowledgeVisibility::Private,
+            12,
+        ))
+        .expect("project space");
+
+    let system_scope = store
+        .active_space_scope("system-linux", "system", KnowledgeVisibility::Public)
+        .expect("system scope")
+        .expect("system scope exists");
+    assert_eq!(system_scope.generation, 7);
+    assert_eq!(system_scope.space_id, "system-linux");
+
+    let project_scope = store
+        .active_space_scope(
+            "project-main",
+            "project-owner",
+            KnowledgeVisibility::Private,
+        )
+        .expect("project scope")
+        .expect("project scope exists");
+    assert_eq!(project_scope.generation, 12);
+    assert_eq!(project_scope.owner, "project-owner");
+
+    let wrong_owner = store
+        .active_space_scope("system-linux", "someone-else", KnowledgeVisibility::Public)
+        .expect_err("owner mismatch must fail");
+    assert!(wrong_owner.to_string().contains("does not match"));
+    let wrong_visibility = store
+        .active_space_scope("project-main", "project-owner", KnowledgeVisibility::Public)
+        .expect_err("visibility mismatch must fail");
+    assert!(wrong_visibility.to_string().contains("does not match"));
+}
+
+#[test]
 fn embedding_jobs_are_idempotent_and_have_bounded_transitions() {
     let (_dir, store, document) = queue_fixture();
 

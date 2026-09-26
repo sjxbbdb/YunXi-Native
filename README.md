@@ -83,6 +83,11 @@ Linux 知识库已经有独立的 `SqliteKnowledgeStore` 基础：数据库文�
 再用 `knowledge-vector-search` 做有界召回；这是同步索引基础，不代表后台 embedding
 队列或自动执行已经启用。
 
+Linux 查询入口和 Runtime 会读取知识空间的当前 active generation，并校验 owner 与
+visibility；不会把 generation `1` 当作永久默认值。首次使用由 `knowledge-help` 或
+`knowledge-man` 受控初始化 system 空间，后续采集会绑定当时的 active generation，
+不会覆盖已有代际。未来的 staging/原子激活仍按升级计划单独实现。
+
 队列闭环现在也可显式验证：先用
 `yunxi-linux knowledge-enqueue <document-id> --cwd .` 为文档当前 generation 入队，
 再用 `yunxi-linux knowledge-worker --max-jobs 1 --cwd .` 处理有限数量的任务。worker

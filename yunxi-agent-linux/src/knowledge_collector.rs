@@ -115,6 +115,16 @@ pub fn ingest_collected_man_page(
 }
 
 pub fn ensure_system_space(store: &SqliteKnowledgeStore, _source_version: &str) -> AgentResult<()> {
+    if store
+        .active_space_scope(
+            "system-linux",
+            "system",
+            yunxi_agent_storage::KnowledgeVisibility::Public,
+        )?
+        .is_some()
+    {
+        return Ok(());
+    }
     store.upsert_space(&yunxi_agent_storage::KnowledgeSpaceSpec {
         space_id: "system-linux".to_string(),
         kind: yunxi_agent_storage::KnowledgeSpaceKind::System,

@@ -2579,12 +2579,14 @@ fn load_linux_knowledge_context(config: &AgentConfig, prompt: &str) -> Option<St
         return None;
     }
     let store = yunxi_agent_storage::SqliteKnowledgeStore::for_workspace(&config.cwd);
-    let scope = yunxi_agent_storage::KnowledgeSearchScope {
-        space_id: "system-linux".to_string(),
-        owner: "system".to_string(),
-        generation: 1,
-        visibility: yunxi_agent_storage::KnowledgeVisibility::Public,
-    };
+    let scope = store
+        .active_space_scope(
+            "system-linux",
+            "system",
+            yunxi_agent_storage::KnowledgeVisibility::Public,
+        )
+        .ok()
+        .flatten()?;
     let source_version = linux_source::detect_source_version();
     let keyword_matches = store
         .search_versioned(prompt, &scope, source_version.as_deref(), 4)
@@ -6301,7 +6303,7 @@ mod linux_knowledge_tests {
                 visibility: yunxi_agent_storage::KnowledgeVisibility::Public,
                 source: "local-linux".to_string(),
                 version: "mixed".to_string(),
-                generation: 1,
+                generation: 7,
             })
             .expect("space");
         let document = yunxi_agent_storage::KnowledgeDocument {
@@ -6310,7 +6312,7 @@ mod linux_knowledge_tests {
             title: "service recovery reference".to_string(),
             source: "local-linux".to_string(),
             version: source_version,
-            generation: 1,
+            generation: 7,
             owner: "system".to_string(),
             visibility: yunxi_agent_storage::KnowledgeVisibility::Public,
             metadata_json: r#"{"collector":"linux.fixture","risk_level":"read_only_reference"}"#
@@ -6324,7 +6326,7 @@ mod linux_knowledge_tests {
             content: "service recovery restart state".to_string(),
             source: "local-linux".to_string(),
             version: document.version.clone(),
-            generation: 1,
+            generation: 7,
             owner: "system".to_string(),
             visibility: yunxi_agent_storage::KnowledgeVisibility::Public,
             metadata_json: document.metadata_json.clone(),
@@ -6337,7 +6339,7 @@ mod linux_knowledge_tests {
                 chunk_id: chunk.chunk_id,
                 space_id: "system-linux".to_string(),
                 embedding_model: embedding.model,
-                generation: 1,
+                generation: 7,
                 vector: embedding.values,
             })
             .expect("vector");

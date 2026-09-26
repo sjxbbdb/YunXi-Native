@@ -293,11 +293,8 @@ fn run_knowledge_search(
     let cwd = std::fs::canonicalize(&cwd)
         .with_context(|| format!("无法访问知识工作区: {}", cwd.display()))?;
     let store = yunxi_agent_storage::SqliteKnowledgeStore::for_workspace(&cwd);
-    let scope = yunxi_agent_storage::KnowledgeSearchScope {
-        space_id: "system-linux".to_string(),
-        owner: "system".to_string(),
-        generation: 1,
-        visibility: yunxi_agent_storage::KnowledgeVisibility::Public,
+    let Some(scope) = active_system_scope(&store)? else {
+        bail!("Linux 知识库尚未初始化，请先运行 knowledge-help 或 knowledge-man");
     };
     let matches = store.search_versioned(&query, &scope, source_version, limit.min(50))?;
     let results = matches
@@ -438,11 +435,8 @@ fn run_knowledge_vector_search(
     let provider = yunxi_agent_persona::LocalChargramEmbedding::default();
     let embedding = yunxi_agent_persona::MemoryEmbeddingProvider::embed(&provider, &query)
         .map_err(|error| anyhow::anyhow!("知识查询 embedding 失败: {error}"))?;
-    let scope = yunxi_agent_storage::KnowledgeSearchScope {
-        space_id: "system-linux".to_string(),
-        owner: "system".to_string(),
-        generation: 1,
-        visibility: yunxi_agent_storage::KnowledgeVisibility::Public,
+    let Some(scope) = active_system_scope(&store)? else {
+        bail!("Linux 知识库尚未初始化，请先运行 knowledge-help 或 knowledge-man");
     };
     let matches = store.search_vectors_versioned(
         &embedding.values,
@@ -486,11 +480,8 @@ fn run_knowledge_retract(document_id: String, cwd: PathBuf) -> Result<()> {
     let cwd = std::fs::canonicalize(&cwd)
         .with_context(|| format!("无法访问知识工作区: {}", cwd.display()))?;
     let store = yunxi_agent_storage::SqliteKnowledgeStore::for_workspace(&cwd);
-    let scope = yunxi_agent_storage::KnowledgeSearchScope {
-        space_id: "system-linux".to_string(),
-        owner: "system".to_string(),
-        generation: 1,
-        visibility: yunxi_agent_storage::KnowledgeVisibility::Public,
+    let Some(scope) = active_system_scope(&store)? else {
+        bail!("Linux 知识库尚未初始化，请先运行 knowledge-help 或 knowledge-man");
     };
     let retracted = store.retract_document(&document_id, &scope)?;
     println!(
@@ -513,7 +504,8 @@ async fn run_knowledge_help(command: String, source_version: String, cwd: PathBu
         source_version: resolve_source_version(&source_version),
     };
     let cancellation = yunxi_agent_core::AgentCancellationToken::new();
-    let collected = knowledge_collector::collect_help_command(&request, &cwd, cancellation).await?;
+    let mut collected =
+        knowledge_collector::collect_help_command(&request, &cwd, cancellation).await?;
     let status = collected.status;
     let stderr = collected.stderr.clone();
     let mut result = serde_json::json!({
@@ -534,6 +526,8 @@ async fn run_knowledge_help(command: String, source_version: String, cwd: PathBu
 
     let store = yunxi_agent_storage::SqliteKnowledgeStore::for_workspace(&cwd);
     knowledge_collector::ensure_system_space(&store, &request.source_version)?;
+    let scope = active_system_scope(&store)?.context("Linux 知识库初始化后缺少当前生效代际")?;
+    collected.document.generation = scope.generation;
     let summary = knowledge_collector::ingest_collected_knowledge(
         &store,
         &collected,
@@ -561,7 +555,7 @@ async fn run_knowledge_man(
         source_version: resolve_source_version(&source_version),
     };
     let cancellation = yunxi_agent_core::AgentCancellationToken::new();
-    let collected = knowledge_collector::collect_man_page(&request, &cwd, cancellation).await?;
+    let mut collected = knowledge_collector::collect_man_page(&request, &cwd, cancellation).await?;
     let status = collected.status;
     let stderr = collected.stderr.clone();
     let mut result = serde_json::json!({
@@ -582,6 +576,8 @@ async fn run_knowledge_man(
 
     let store = yunxi_agent_storage::SqliteKnowledgeStore::for_workspace(&cwd);
     knowledge_collector::ensure_system_space(&store, &request.source_version)?;
+    let scope = active_system_scope(&store)?.context("Linux 知识库初始化后缺少当前生效代际")?;
+    collected.document.generation = scope.generation;
     let summary = knowledge_collector::ingest_collected_man_page(
         &store,
         &collected,
@@ -593,6 +589,18 @@ async fn run_knowledge_man(
     result["embedding_job"] = enqueue_collected_embedding(&store, &collected.document.document_id)?;
     println!("{}", serde_json::to_string_pretty(&result)?);
     Ok(())
+}
+
+fn active_system_scope(
+    store: &yunxi_agent_storage::SqliteKnowledgeStore,
+) -> Result<Option<yunxi_agent_storage::KnowledgeSearchScope>> {
+    store
+        .active_space_scope(
+            "system-linux",
+            "system",
+            yunxi_agent_storage::KnowledgeVisibility::Public,
+        )
+        .context("读取 Linux 知识库当前生效代际失败")
 }
 
 fn enqueue_collected_embedding(
