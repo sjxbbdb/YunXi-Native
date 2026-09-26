@@ -728,22 +728,18 @@ fn ready_staging_generation_activates_atomically_and_rebuilds_fts() {
         .expect("staging worker")
         .expect("staging result");
     assert_eq!(worker.job.status, KnowledgeEmbeddingJobStatus::Completed);
-    store
-        .mark_generation_ready(
-            &staging_document.space_id,
-            building.generation,
-            1,
-            1,
-            "activation-digest",
-        )
-        .expect("mark ready");
-
     let candidate_scope = KnowledgeSearchScope {
         space_id: staging_document.space_id.clone(),
         owner: staging_document.owner.clone(),
         generation: building.generation,
         visibility: staging_document.visibility,
     };
+    let sealed = store
+        .seal_generation_ready(&candidate_scope, provider.model_id(), provider.dimensions())
+        .expect("seal ready");
+    assert_eq!(sealed.expected_documents, 1);
+    assert_eq!(sealed.indexed_documents, 1);
+    assert!(sealed.content_digest.is_some());
     let activated = store
         .activate_generation(&candidate_scope, provider.model_id(), provider.dimensions())
         .expect("activate generation");
