@@ -85,6 +85,11 @@ Linux 版现在提供只读 P0 `man` 采集入口：
 space；topic/section 不允许 shell 语法或路径，缺少 man、非零退出或超时只返回结构化
 状态，不写入知识库。
 
+还提供受限的本机命令帮助采集：
+`yunxi-linux knowledge-help systemctl --source-version ubuntu-24.04 --cwd .`。
+当前只允许 `fish`、`git`、`systemctl`、`pacman`、`ip`，始终固定为
+`<命令> --help`，不会执行用户提供的路径或参数。
+
 这条边界是 Linux 原生交互的第一步：先让 YunXi 能可靠地理解并观察系统，再进入预览、可回滚修改和高风险操作。CLI 还提供 `yunxi-linux linux-tool describe|processes|network|systemd-status|man` 作为本机诊断入口；它与 Runtime ToolSpec 同样禁止写入和任意命令拼接。
 
 ## 仓库结构

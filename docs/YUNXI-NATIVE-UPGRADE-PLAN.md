@@ -319,6 +319,11 @@ FTS 内容或孤立向量；文档 hash 与分块参数都未变化时会跳过�
 `ingest_text`，缺少 man、非零退出、超时或截断不会把 stderr 当作知识正文，也不会
 进入 Planner 或执行器。
 
+在同一边界上补充了受限的 `--help` 采集器，仅允许 `fish`、`git`、`systemctl`、
+`pacman` 和 `ip` 五个命令，固定执行 `<allowlisted-command> --help`，不接受路径、
+参数或任意可执行文件。它与 `man` 采集共用 provenance、输出上限和 `ingest_text`，
+后续若扩展名单必须逐项审查副作用与版本差异。
+
 **门槛**：索引可增量更新、失败可回滚、来源可追踪、风险命令可标记、空间隔离和撤回测试通过、RAG 召回指标达标。
 
 ### Phase 5：记忆与知识协同
