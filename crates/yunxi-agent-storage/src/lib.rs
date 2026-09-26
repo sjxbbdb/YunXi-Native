@@ -25,6 +25,7 @@ use yunxi_agent_protocol::{RuntimeEvent, from_jsonl_line, to_jsonl_line};
 mod companion_mailbox;
 mod conversation_state;
 mod knowledge;
+mod knowledge_ingest;
 mod memory_vector;
 mod weixin_state;
 
@@ -36,6 +37,9 @@ pub use knowledge::{
     KnowledgeChunk, KnowledgeDocument, KnowledgeSearchResult, KnowledgeSearchScope,
     KnowledgeSpaceKind, KnowledgeSpaceSpec, KnowledgeVector, KnowledgeVectorMatch,
     KnowledgeVisibility, SqliteKnowledgeStore,
+};
+pub use knowledge_ingest::{
+    KnowledgeChunkDraft, KnowledgeChunkingOptions, chunk_knowledge_text, normalize_knowledge_text,
 };
 pub use memory_vector::{
     MemoryVectorMatch, MemoryVectorSearch, MemoryVectorSyncSummary, SqliteMemoryVectorStore,

@@ -299,6 +299,11 @@ active generation + owner/visibility 前置过滤的 FTS 查询，以及预留�
 generation 过滤的有界 cosine 检索。该切片还没有接入 embedding worker、Planner
 或执行器，因此知识内容仍只能作为显式检索结果，不能直接触发命令。
 
+同时新增了无副作用的 `knowledge_ingest` 基础层：在进入存储前清理 ANSI
+终端控制符、NUL、CRLF 和多余空行，执行输入上限检查，并按段落与字符边界
+生成带稳定 hash 和 ordinal 的有界 chunk。它不读取任意路径，也不启动命令，
+后续采集器和 embedding worker 只接收这层的确定性输出。
+
 **门槛**：索引可增量更新、失败可回滚、来源可追踪、风险命令可标记、空间隔离和撤回测试通过、RAG 召回指标达标。
 
 ### Phase 5：记忆与知识协同
