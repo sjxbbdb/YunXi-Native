@@ -165,6 +165,32 @@ with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
 print("daemon-ipc-smoke=ok")
 PY
 
+# Exercise the lock guard independently of the ready-socket fast path.  The
+# first daemon remains alive, but its temporary socket is removed so a second
+# process must consult the lock metadata instead of silently taking over.
+rm -f "$SOCKET"
+SECOND_LOG="$TMP_ROOT/second-daemon.log"
+set +e
+"$BINARY" daemon >"$SECOND_LOG" 2>&1 &
+SECOND_PID=$!
+wait "$SECOND_PID"
+SECOND_STATUS=$?
+set -e
+[[ "$SECOND_STATUS" -ne 0 ]] || {
+  echo "second daemon unexpectedly acquired the singleton lock" >&2
+  cat "$SECOND_LOG" >&2
+  exit 1
+}
+grep -Eq "单例锁|已在运行" "$SECOND_LOG" || {
+  echo "second daemon failure did not identify the singleton guard" >&2
+  cat "$SECOND_LOG" >&2
+  exit 1
+}
+[[ -f "$LOCK" ]] || {
+  echo "first daemon lock disappeared while it was still alive" >&2
+  exit 1
+}
+
 kill -TERM "$DAEMON_PID"
 for _ in $(seq 1 40); do
   if ! kill -0 "$DAEMON_PID" 2>/dev/null; then
