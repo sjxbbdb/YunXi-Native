@@ -343,7 +343,10 @@ active generation。采集得到的文档会在写入前绑定当前 active gene
 随后已增加 generation-scoped staging 文档/chunk 写入边界。staging 主键包含
 `space_id + generation + document_id`，因此同一逻辑文档可以在 active 主表和候选代际
 并存；写入只替换候选代际的文档与 chunk，不写 FTS、主向量或 `knowledge_spaces.generation`。
-下一步仍需把 embedding worker 指向 staging 表，并在 readiness 通过后实现单事务激活。
+随后已增加独立 `knowledge_staging_vectors` 表和候选代际 embedding 边界：候选向量与
+active 向量完全隔离，readiness 会按候选表统计文档、chunk 和向量覆盖，且候选代际不要求
+提前生成 active FTS。下一步仍需把 embedding worker 指向 staging 表，并在 readiness
+通过后实现单事务激活。
 
 采集 CLI 的成功路径现在会在 `ingest_text` 完成后为当前文档 generation 自动创建
 本地 provider 的 pending job，并在 JSON 结果中返回 job 元数据；它只入队、不启动

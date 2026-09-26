@@ -1039,29 +1039,68 @@ impl SqliteKnowledgeStore {
             );
         }
 
-        let actual_documents = count_scope_rows(
-            &connection,
-            &self.database,
-            "SELECT COUNT(*) FROM knowledge_documents
-             WHERE space_id = ?1 AND generation = ?2 AND owner = ?3 AND visibility = ?4",
-            scope,
-        )?;
-        let chunks = count_scope_rows(
-            &connection,
-            &self.database,
-            "SELECT COUNT(*) FROM knowledge_chunks
-             WHERE space_id = ?1 AND generation = ?2 AND owner = ?3 AND visibility = ?4",
-            scope,
-        )?;
+        let staging = active_generation != scope.generation;
+        let actual_documents = connection
+            .query_row(
+                if staging {
+                    "SELECT COUNT(*) FROM knowledge_staging_documents
+                     WHERE space_id = ?1 AND generation = ?2
+                       AND owner = ?3 AND visibility = ?4"
+                } else {
+                    "SELECT COUNT(*) FROM knowledge_documents
+                     WHERE space_id = ?1 AND generation = ?2
+                       AND owner = ?3 AND visibility = ?4"
+                },
+                params![
+                    scope.space_id,
+                    scope.generation,
+                    scope.owner,
+                    scope.visibility.as_str()
+                ],
+                |row| row.get::<_, i64>(0),
+            )
+            .map_err(|error| sqlite_error(&self.database, "count generation documents", error))?;
+        let chunks = connection
+            .query_row(
+                if staging {
+                    "SELECT COUNT(*) FROM knowledge_staging_chunks
+                     WHERE space_id = ?1 AND generation = ?2
+                       AND owner = ?3 AND visibility = ?4"
+                } else {
+                    "SELECT COUNT(*) FROM knowledge_chunks
+                     WHERE space_id = ?1 AND generation = ?2
+                       AND owner = ?3 AND visibility = ?4"
+                },
+                params![
+                    scope.space_id,
+                    scope.generation,
+                    scope.owner,
+                    scope.visibility.as_str()
+                ],
+                |row| row.get::<_, i64>(0),
+            )
+            .map_err(|error| sqlite_error(&self.database, "count generation chunks", error))?;
         let vectors = connection
             .query_row(
-                "SELECT COUNT(*) FROM knowledge_vectors v
-                 JOIN knowledge_chunks c ON c.chunk_id = v.chunk_id
-                 WHERE v.space_id = ?1 AND v.generation = ?2
-                   AND v.embedding_model = ?3 AND v.dimensions = ?4
-                   AND length(v.vector) = ?4 * 4
-                   AND c.space_id = ?1 AND c.generation = ?2
-                   AND c.owner = ?5 AND c.visibility = ?6",
+                if staging {
+                    "SELECT COUNT(*) FROM knowledge_staging_vectors v
+                     JOIN knowledge_staging_chunks c
+                       ON c.space_id = v.space_id
+                      AND c.generation = v.generation
+                      AND c.chunk_id = v.chunk_id
+                     WHERE v.space_id = ?1 AND v.generation = ?2
+                       AND v.embedding_model = ?3 AND v.dimensions = ?4
+                       AND length(v.vector) = ?4 * 4
+                       AND c.owner = ?5 AND c.visibility = ?6"
+                } else {
+                    "SELECT COUNT(*) FROM knowledge_vectors v
+                     JOIN knowledge_chunks c ON c.chunk_id = v.chunk_id
+                     WHERE v.space_id = ?1 AND v.generation = ?2
+                       AND v.embedding_model = ?3 AND v.dimensions = ?4
+                       AND length(v.vector) = ?4 * 4
+                       AND c.space_id = ?1 AND c.generation = ?2
+                       AND c.owner = ?5 AND c.visibility = ?6"
+                },
                 params![
                     scope.space_id,
                     scope.generation,
@@ -1075,13 +1114,25 @@ impl SqliteKnowledgeStore {
             .map_err(|error| sqlite_error(&self.database, "count generation vectors", error))?;
         let invalid_vectors = connection
             .query_row(
-                "SELECT COUNT(*) FROM knowledge_vectors v
-                 JOIN knowledge_chunks c ON c.chunk_id = v.chunk_id
-                 WHERE v.space_id = ?1 AND v.generation = ?2
-                   AND v.embedding_model = ?3
-                   AND (v.dimensions != ?4 OR length(v.vector) != ?4 * 4)
-                   AND c.space_id = ?1 AND c.generation = ?2
-                   AND c.owner = ?5 AND c.visibility = ?6",
+                if staging {
+                    "SELECT COUNT(*) FROM knowledge_staging_vectors v
+                     JOIN knowledge_staging_chunks c
+                       ON c.space_id = v.space_id
+                      AND c.generation = v.generation
+                      AND c.chunk_id = v.chunk_id
+                     WHERE v.space_id = ?1 AND v.generation = ?2
+                       AND v.embedding_model = ?3
+                       AND (v.dimensions != ?4 OR length(v.vector) != ?4 * 4)
+                       AND c.owner = ?5 AND c.visibility = ?6"
+                } else {
+                    "SELECT COUNT(*) FROM knowledge_vectors v
+                     JOIN knowledge_chunks c ON c.chunk_id = v.chunk_id
+                     WHERE v.space_id = ?1 AND v.generation = ?2
+                       AND v.embedding_model = ?3
+                       AND (v.dimensions != ?4 OR length(v.vector) != ?4 * 4)
+                       AND c.space_id = ?1 AND c.generation = ?2
+                       AND c.owner = ?5 AND c.visibility = ?6"
+                },
                 params![
                     scope.space_id,
                     scope.generation,
@@ -1113,23 +1164,27 @@ impl SqliteKnowledgeStore {
             reasons.push("vector coverage does not match chunk coverage".to_string());
         }
 
-        let fts_rows = connection
-            .query_row(
-                "SELECT COUNT(*) FROM knowledge_chunks_fts f
-                 JOIN knowledge_chunks c ON c.chunk_id = f.chunk_id
-                 WHERE c.space_id = ?1 AND c.generation = ?2
-                   AND c.owner = ?3 AND c.visibility = ?4",
-                params![
-                    scope.space_id,
-                    scope.generation,
-                    scope.owner,
-                    scope.visibility.as_str()
-                ],
-                |row| row.get::<_, i64>(0),
-            )
-            .map_err(|error| sqlite_error(&self.database, "count generation fts rows", error))?;
-        if fts_rows != chunks {
-            reasons.push("FTS coverage does not match chunk coverage".to_string());
+        if !staging {
+            let fts_rows = connection
+                .query_row(
+                    "SELECT COUNT(*) FROM knowledge_chunks_fts f
+                     JOIN knowledge_chunks c ON c.chunk_id = f.chunk_id
+                     WHERE c.space_id = ?1 AND c.generation = ?2
+                       AND c.owner = ?3 AND c.visibility = ?4",
+                    params![
+                        scope.space_id,
+                        scope.generation,
+                        scope.owner,
+                        scope.visibility.as_str()
+                    ],
+                    |row| row.get::<_, i64>(0),
+                )
+                .map_err(|error| {
+                    sqlite_error(&self.database, "count generation fts rows", error)
+                })?;
+            if fts_rows != chunks {
+                reasons.push("FTS coverage does not match chunk coverage".to_string());
+            }
         }
 
         let mut job_counts = [0_usize; 3];
@@ -1290,6 +1345,13 @@ impl SqliteKnowledgeStore {
             .map_err(|error| sqlite_error(&self.database, "write staging document", error))?;
         transaction
             .execute(
+                "DELETE FROM knowledge_staging_vectors
+                 WHERE space_id = ?1 AND generation = ?2 AND document_id = ?3",
+                params![document.space_id, document.generation, document.document_id],
+            )
+            .map_err(|error| sqlite_error(&self.database, "remove stale staging vectors", error))?;
+        transaction
+            .execute(
                 "DELETE FROM knowledge_staging_chunks
                  WHERE space_id = ?1 AND generation = ?2 AND document_id = ?3",
                 params![document.space_id, document.generation, document.document_id],
@@ -1340,6 +1402,252 @@ impl SqliteKnowledgeStore {
             chunks_written: drafts.len(),
             chunks_removed: usize::try_from(existing_chunks).unwrap_or(usize::MAX),
         })
+    }
+
+    /// Embed every chunk in a building generation without touching active data.
+    ///
+    /// This is intentionally a synchronous storage boundary for the first
+    /// staging-vector slice. A durable staging job worker is added separately;
+    /// this method is useful for tests and controlled rebuilds while keeping
+    /// candidate vectors isolated from `knowledge_vectors`.
+    pub fn index_staging_document_with_embeddings<P: MemoryEmbeddingProvider>(
+        &self,
+        document_id: &str,
+        generation: i64,
+        provider: &P,
+    ) -> AgentResult<KnowledgeEmbeddingSummary> {
+        if document_id.trim().is_empty() || generation < 0 {
+            return Err(storage_error(
+                "staging embedding document metadata is invalid",
+            ));
+        }
+        let connection = self.open_connection()?;
+        initialize_schema(&connection, &self.database)?;
+        let document = connection
+            .query_row(
+                "SELECT space_id, generation FROM knowledge_staging_documents
+                 WHERE document_id = ?1 AND generation = ?2",
+                params![document_id, generation],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
+            )
+            .optional()
+            .map_err(|error| {
+                sqlite_error(&self.database, "read staging embedding document", error)
+            })?
+            .ok_or_else(|| storage_error("staging embedding references an unknown document"))?;
+        let manifest_state = connection
+            .query_row(
+                "SELECT state FROM knowledge_generation_manifests
+                 WHERE space_id = ?1 AND generation = ?2",
+                params![document.0, document.1],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(|error| {
+                sqlite_error(&self.database, "read staging embedding generation", error)
+            })?;
+        if manifest_state.as_deref() != Some(KnowledgeGenerationState::Building.as_str()) {
+            return Err(storage_error(
+                "staging embedding requires a building generation manifest",
+            ));
+        }
+        let chunk_count = connection
+            .query_row(
+                "SELECT COUNT(*) FROM knowledge_staging_chunks
+                 WHERE space_id = ?1 AND generation = ?2 AND document_id = ?3",
+                params![document.0, document.1, document_id],
+                |row| row.get::<_, i64>(0),
+            )
+            .map_err(|error| {
+                sqlite_error(&self.database, "count staging embedding chunks", error)
+            })?;
+        let indexed_count = connection
+            .query_row(
+                "SELECT COUNT(*) FROM knowledge_staging_vectors
+                 WHERE space_id = ?1 AND generation = ?2 AND document_id = ?3
+                   AND embedding_model = ?4 AND dimensions = ?5
+                   AND length(vector) = dimensions * 4",
+                params![
+                    document.0,
+                    document.1,
+                    document_id,
+                    provider.model_id(),
+                    i64::try_from(provider.dimensions()).unwrap_or(i64::MAX),
+                ],
+                |row| row.get::<_, i64>(0),
+            )
+            .map_err(|error| sqlite_error(&self.database, "count indexed staging chunks", error))?;
+        if chunk_count == indexed_count {
+            return Ok(KnowledgeEmbeddingSummary {
+                document_id: document_id.to_string(),
+                embedding_model: provider.model_id().to_string(),
+                dimensions: provider.dimensions(),
+                chunks_indexed: 0,
+            });
+        }
+        let mut statement = connection
+            .prepare(
+                "SELECT chunk_id, content
+                 FROM knowledge_staging_chunks
+                 WHERE space_id = ?1 AND generation = ?2 AND document_id = ?3
+                 ORDER BY ordinal ASC, chunk_id ASC",
+            )
+            .map_err(|error| {
+                sqlite_error(&self.database, "prepare staging embedding chunks", error)
+            })?;
+        let rows = statement
+            .query_map(params![document.0, document.1, document_id], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .map_err(|error| sqlite_error(&self.database, "query staging embedding chunks", error))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| {
+                sqlite_error(&self.database, "read staging embedding chunks", error)
+            })?;
+        drop(statement);
+        let mut expected_chunks = Vec::new();
+        let mut vectors = Vec::new();
+        for (chunk_id, content) in rows {
+            expected_chunks.push((chunk_id.clone(), content_hash(&content)));
+            let embedding = provider.embed(&content).map_err(|error| {
+                storage_error(format!("staging embedding provider failed: {error}"))
+            })?;
+            if embedding.model != provider.model_id()
+                || embedding.dimensions() != provider.dimensions()
+            {
+                return Err(storage_error(
+                    "staging embedding provider returned unexpected model or dimensions",
+                ));
+            }
+            vectors.push(KnowledgeVector {
+                chunk_id,
+                space_id: document.0.clone(),
+                embedding_model: embedding.model,
+                generation: document.1,
+                vector: embedding.values,
+            });
+        }
+        let chunks_indexed = self.replace_staging_document_vectors_checked(
+            document_id,
+            &document.0,
+            document.1,
+            provider.model_id(),
+            &vectors,
+            Some(&expected_chunks),
+        )?;
+        Ok(KnowledgeEmbeddingSummary {
+            document_id: document_id.to_string(),
+            embedding_model: provider.model_id().to_string(),
+            dimensions: provider.dimensions(),
+            chunks_indexed,
+        })
+    }
+
+    fn replace_staging_document_vectors_checked(
+        &self,
+        document_id: &str,
+        space_id: &str,
+        generation: i64,
+        embedding_model: &str,
+        vectors: &[KnowledgeVector],
+        expected_chunks: Option<&[(String, String)]>,
+    ) -> AgentResult<usize> {
+        let mut connection = self.open_connection()?;
+        initialize_schema(&connection, &self.database)?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|error| sqlite_error(&self.database, "begin staging vector batch", error))?;
+        let document_exists = transaction
+            .query_row(
+                "SELECT 1 FROM knowledge_staging_documents
+                 WHERE space_id = ?1 AND generation = ?2 AND document_id = ?3",
+                params![space_id, generation, document_id],
+                |_| Ok(()),
+            )
+            .optional()
+            .map_err(|error| sqlite_error(&self.database, "read staging vector document", error))?;
+        if document_exists.is_none() {
+            return Err(storage_error(
+                "staging vector batch references an unknown document",
+            ));
+        }
+        let mut seen_chunks = HashSet::with_capacity(vectors.len());
+        for vector in vectors {
+            validate_vector(vector)?;
+            if vector.space_id != space_id
+                || vector.generation != generation
+                || vector.embedding_model != embedding_model
+                || !seen_chunks.insert(vector.chunk_id.clone())
+            {
+                return Err(storage_error(
+                    "staging vector batch metadata is inconsistent",
+                ));
+            }
+            if let Some(expected) = expected_chunks {
+                let expected_hash = expected
+                    .iter()
+                    .find(|(chunk_id, _)| chunk_id == &vector.chunk_id)
+                    .map(|(_, hash)| hash.as_str());
+                let Some(expected_hash) = expected_hash else {
+                    return Err(storage_error(
+                        "staging vector batch contains an unexpected chunk",
+                    ));
+                };
+                let actual_hash = transaction
+                    .query_row(
+                        "SELECT content FROM knowledge_staging_chunks
+                         WHERE space_id = ?1 AND generation = ?2
+                           AND chunk_id = ?3 AND document_id = ?4",
+                        params![space_id, generation, vector.chunk_id, document_id],
+                        |row| row.get::<_, String>(0),
+                    )
+                    .optional()
+                    .map_err(|error| {
+                        sqlite_error(&self.database, "read staging vector chunk", error)
+                    })?
+                    .ok_or_else(|| storage_error("staging vector references an unknown chunk"))?;
+                if content_hash(&actual_hash) != expected_hash {
+                    return Err(storage_error(
+                        "staging vector batch chunk content changed during embedding",
+                    ));
+                }
+            }
+        }
+        transaction
+            .execute(
+                "DELETE FROM knowledge_staging_vectors
+                 WHERE space_id = ?1 AND generation = ?2 AND document_id = ?3
+                   AND embedding_model = ?4",
+                params![space_id, generation, document_id, embedding_model],
+            )
+            .map_err(|error| sqlite_error(&self.database, "remove stale staging vectors", error))?;
+        let indexed_at = now_millis();
+        for vector in vectors {
+            transaction
+                .execute(
+                    "INSERT INTO knowledge_staging_vectors
+                        (space_id, generation, chunk_id, document_id, embedding_model,
+                         dimensions, vector, indexed_at_millis)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                    params![
+                        space_id,
+                        generation,
+                        vector.chunk_id,
+                        document_id,
+                        embedding_model,
+                        i64::try_from(vector.vector.len()).unwrap_or(i64::MAX),
+                        vector_to_blob(&vector.vector),
+                        indexed_at,
+                    ],
+                )
+                .map_err(|error| {
+                    sqlite_error(&self.database, "write staging vector batch", error)
+                })?;
+        }
+        transaction
+            .commit()
+            .map_err(|error| sqlite_error(&self.database, "commit staging vector batch", error))?;
+        Ok(vectors.len())
     }
 
     pub fn upsert_document(&self, document: &KnowledgeDocument) -> AgentResult<()> {
@@ -2468,26 +2776,6 @@ fn read_knowledge_generation_optional(
         .transpose()
 }
 
-fn count_scope_rows(
-    connection: &Connection,
-    path: &Path,
-    query: &str,
-    scope: &KnowledgeSearchScope,
-) -> AgentResult<i64> {
-    connection
-        .query_row(
-            query,
-            params![
-                scope.space_id,
-                scope.generation,
-                scope.owner,
-                scope.visibility.as_str()
-            ],
-            |row| row.get::<_, i64>(0),
-        )
-        .map_err(|error| sqlite_error(path, "count knowledge scope rows", error))
-}
-
 fn initialize_schema(connection: &Connection, path: &Path) -> AgentResult<()> {
     connection
         .execute_batch(
@@ -2498,7 +2786,7 @@ fn initialize_schema(connection: &Connection, path: &Path) -> AgentResult<()> {
              );
              INSERT INTO knowledge_schema(schema_version)
                 SELECT 1 WHERE NOT EXISTS (SELECT 1 FROM knowledge_schema);
-             UPDATE knowledge_schema SET schema_version = 5 WHERE schema_version < 5;
+             UPDATE knowledge_schema SET schema_version = 6 WHERE schema_version < 6;
              CREATE TABLE IF NOT EXISTS knowledge_spaces (
                 space_id TEXT PRIMARY KEY,
                 kind TEXT NOT NULL CHECK(kind IN ('system', 'project', 'private')),
@@ -2563,6 +2851,21 @@ fn initialize_schema(connection: &Connection, path: &Path) -> AgentResult<()> {
              );
              CREATE INDEX IF NOT EXISTS idx_knowledge_staging_chunks_document
                 ON knowledge_staging_chunks(space_id, generation, document_id, ordinal);
+             CREATE TABLE IF NOT EXISTS knowledge_staging_vectors (
+                space_id TEXT NOT NULL,
+                generation INTEGER NOT NULL CHECK(generation >= 0),
+                chunk_id TEXT NOT NULL,
+                document_id TEXT NOT NULL,
+                embedding_model TEXT NOT NULL,
+                dimensions INTEGER NOT NULL CHECK(dimensions > 0),
+                vector BLOB NOT NULL,
+                indexed_at_millis INTEGER NOT NULL,
+                PRIMARY KEY(space_id, generation, chunk_id, embedding_model),
+                FOREIGN KEY(space_id, generation, chunk_id)
+                    REFERENCES knowledge_staging_chunks(space_id, generation, chunk_id)
+             );
+             CREATE INDEX IF NOT EXISTS idx_knowledge_staging_vectors_scope
+                ON knowledge_staging_vectors(space_id, generation, embedding_model);
              CREATE TABLE IF NOT EXISTS knowledge_documents (
                 document_id TEXT PRIMARY KEY,
                 space_id TEXT NOT NULL REFERENCES knowledge_spaces(space_id),
@@ -2668,7 +2971,7 @@ fn initialize_schema(connection: &Connection, path: &Path) -> AgentResult<()> {
     }
     connection
         .execute(
-            "UPDATE knowledge_schema SET schema_version = 5 WHERE schema_version < 5",
+            "UPDATE knowledge_schema SET schema_version = 6 WHERE schema_version < 6",
             [],
         )
         .map_err(|error| sqlite_error(path, "update knowledge schema version", error))?;

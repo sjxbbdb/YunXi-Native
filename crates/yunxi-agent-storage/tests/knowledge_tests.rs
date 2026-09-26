@@ -316,7 +316,7 @@ fn knowledge_schema_migrates_retry_schedule_and_generation_manifest_idempotently
             row.get::<_, i64>(0)
         })
         .expect("schema version");
-    assert_eq!(version, 5);
+    assert_eq!(version, 6);
     let has_retry_schedule = connection
         .prepare("PRAGMA table_info(knowledge_embedding_jobs)")
         .expect("job table info")
@@ -345,6 +345,15 @@ fn knowledge_schema_migrates_retry_schedule_and_generation_manifest_idempotently
         )
         .expect("staging table");
     assert_eq!(staging_table_count, 1);
+    let staging_vector_table_count = connection
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master
+             WHERE type = 'table' AND name = 'knowledge_staging_vectors'",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .expect("staging vector table");
+    assert_eq!(staging_vector_table_count, 1);
 }
 
 #[test]
@@ -399,6 +408,75 @@ fn staging_document_can_shadow_active_identity_without_touching_active_tables() 
     assert_eq!(staged_documents, 1);
     assert_eq!(staged_chunks, 1);
     assert_eq!(active_title, active_document.title);
+
+    let provider = LocalChargramEmbedding::default();
+    let indexed = store
+        .index_staging_document_with_embeddings(
+            &active_document.document_id,
+            building.generation,
+            &provider,
+        )
+        .expect("index staging document");
+    assert_eq!(indexed.chunks_indexed, 1);
+    let staged_vector_count = connection
+        .query_row(
+            "SELECT COUNT(*) FROM knowledge_staging_vectors
+             WHERE space_id = 'system-linux' AND generation = ?1 AND document_id = ?2",
+            rusqlite::params![building.generation, active_document.document_id],
+            |row| row.get::<_, i64>(0),
+        )
+        .expect("staged vector count");
+    let active_vector_count = connection
+        .query_row(
+            "SELECT COUNT(*) FROM knowledge_vectors v
+             JOIN knowledge_chunks c ON c.chunk_id = v.chunk_id
+             WHERE c.document_id = ?1",
+            [&active_document.document_id],
+            |row| row.get::<_, i64>(0),
+        )
+        .expect("active vector count");
+    assert_eq!(staged_vector_count, 1);
+    assert_eq!(active_vector_count, 0);
+
+    let readiness = store
+        .inspect_generation_readiness(
+            &KnowledgeSearchScope {
+                space_id: "system-linux".to_string(),
+                owner: "system".to_string(),
+                generation: building.generation,
+                visibility: KnowledgeVisibility::Public,
+            },
+            provider.model_id(),
+            provider.dimensions(),
+        )
+        .expect("staging readiness");
+    assert_eq!(readiness.actual_documents, 1);
+    assert_eq!(readiness.chunks, 1);
+    assert_eq!(readiness.vectors, 1);
+    assert!(!readiness.ready);
+    assert!(
+        readiness
+            .reasons
+            .iter()
+            .any(|reason| reason.contains("active generation"))
+    );
+
+    store
+        .stage_text_document(
+            &staging_document,
+            "systemctl status now shows the refreshed staged service state",
+            &KnowledgeChunkingOptions::default(),
+        )
+        .expect("refresh staged document");
+    let refreshed_vector_count = connection
+        .query_row(
+            "SELECT COUNT(*) FROM knowledge_staging_vectors
+             WHERE space_id = 'system-linux' AND generation = ?1 AND document_id = ?2",
+            rusqlite::params![building.generation, active_document.document_id],
+            |row| row.get::<_, i64>(0),
+        )
+        .expect("refreshed staged vector count");
+    assert_eq!(refreshed_vector_count, 0);
 }
 
 #[test]
