@@ -4,6 +4,7 @@ set -euo pipefail
 script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 pkgbuild="$script_dir/PKGBUILD"
 service="$script_dir/yunxi-linux.service"
+worker_service="$script_dir/yunxi-knowledge-worker@.service"
 
 fail() {
   printf 'package-smoke: %s\n' "$1" >&2
@@ -12,6 +13,7 @@ fail() {
 
 [[ -f "$pkgbuild" ]] || fail "missing PKGBUILD"
 [[ -f "$service" ]] || fail "missing systemd user service"
+[[ -f "$worker_service" ]] || fail "missing knowledge worker template"
 
 grep -Eq "^_commit='[0-9a-f]{7,40}'$" "$pkgbuild" \
   || fail "PKGBUILD must pin a full hexadecimal source commit"
@@ -25,6 +27,8 @@ grep -Fq '"${pkgdir}/usr/bin/yunxi-linux"' "$pkgbuild" \
   || fail "binary install path must be /usr/bin/yunxi-linux"
 grep -Fq '"${pkgdir}/usr/lib/systemd/user/yunxi-linux.service"' "$pkgbuild" \
   || fail "user service install path is missing"
+grep -Fq '"${pkgdir}/usr/lib/systemd/user/yunxi-knowledge-worker@.service"' "$pkgbuild" \
+  || fail "knowledge worker template install path is missing"
 grep -Fq '"${pkgdir}/usr/share/doc/${pkgname}/README.md"' "$pkgbuild" \
   || fail "README install target is missing"
 grep -Fq '"${pkgdir}/usr/share/licenses/${pkgname}/LICENSE"' "$pkgbuild" \
@@ -51,6 +55,12 @@ grep -Fq 'WantedBy=default.target' "$service" \
 
 if grep -Eq 'systemctl[[:space:]]+--user[[:space:]]+enable|systemctl[[:space:]]+enable' "$pkgbuild"; then
   fail "PKGBUILD must not auto-enable the user service"
+fi
+
+grep -Fq -- '--workspace %I' "$worker_service" \
+  || fail "knowledge worker must require an explicit workspace"
+if grep -Eq '^WantedBy=' "$worker_service"; then
+  fail "knowledge worker template must not auto-enable unknown workspaces"
 fi
 
 printf 'package-smoke=ok commit=%s\n' "$(sed -n "s/^_commit='\([^']*\)'$/\1/p" "$pkgbuild")"

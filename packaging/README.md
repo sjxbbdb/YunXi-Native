@@ -50,6 +50,22 @@ yunxi-linux fish-init --print > ~/.config/fish/conf.d/yunxi.fish
 如需让 YunXi 接手所有非空提交，可改用 `yunxi-linux fish-init --takeover`；不带该
 参数时保持保守分类模式，便于在首次安装后验证和回退。
 
+知识 worker 也提供了一个不自动启用的用户级模板。它只接受用户明确选择的工作区，
+不会扫描 `$HOME`：
+
+```bash
+escaped_workspace=$(systemd-escape --path "$PWD")
+systemctl --user daemon-reload
+systemctl --user enable --now "yunxi-knowledge-worker@${escaped_workspace}.service"
+```
+
+模板会把 worker 的写入范围限制在该工作区的 `.yunxi/` 和独立的 XDG 调度状态目录，
+停止时发送 `SIGTERM`；卸载前请显式停用你启用的实例。静态检查可运行：
+
+```bash
+bash packaging/arch/yunxi-native/knowledge-worker-unit-smoke.sh
+```
+
 ## 卸载与数据边界
 
 ```bash

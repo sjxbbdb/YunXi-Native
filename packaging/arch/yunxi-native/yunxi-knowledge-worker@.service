@@ -1,0 +1,25 @@
+[Unit]
+Description=YunXi Native knowledge worker for %I
+After=default.target
+
+[Service]
+Type=simple
+WorkingDirectory=%I
+ExecStart=/usr/bin/yunxi-linux knowledge-worker --watch --interval-secs 5 --max-jobs 8 --workspace %I
+Restart=on-failure
+RestartSec=5s
+KillSignal=SIGTERM
+TimeoutStopSec=30s
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=%I/.yunxi %h/.local/state/yunxi/knowledge-worker
+MemoryHigh=1024M
+MemoryMax=1536M
+TasksMax=64
+LimitNOFILE=1024
+UMask=0077
+
+# This template has no WantedBy target on purpose. The user must explicitly
+# choose and enable each escaped workspace instance.
