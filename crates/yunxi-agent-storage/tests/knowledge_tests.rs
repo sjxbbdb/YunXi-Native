@@ -259,6 +259,86 @@ fn generation_manifest_build_and_readiness_do_not_change_active_scope() {
 }
 
 #[test]
+fn knowledge_schema_migrates_retry_schedule_and_generation_manifest_idempotently() {
+    let dir = tempdir().expect("tempdir");
+    let database = dir.path().join("knowledge.sqlite3");
+    let connection = Connection::open(&database).expect("database");
+    connection
+        .execute_batch(
+            "CREATE TABLE knowledge_schema(schema_version INTEGER NOT NULL);
+             INSERT INTO knowledge_schema(schema_version) VALUES (2);
+             CREATE TABLE knowledge_spaces(
+                space_id TEXT PRIMARY KEY,
+                kind TEXT NOT NULL,
+                owner TEXT NOT NULL,
+                visibility TEXT NOT NULL,
+                source TEXT NOT NULL,
+                version TEXT NOT NULL,
+                generation INTEGER NOT NULL,
+                created_at_millis INTEGER NOT NULL,
+                updated_at_millis INTEGER NOT NULL
+             );
+             CREATE TABLE knowledge_documents(
+                document_id TEXT PRIMARY KEY,
+                space_id TEXT NOT NULL,
+                title TEXT NOT NULL,
+                source TEXT NOT NULL,
+                version TEXT NOT NULL,
+                generation INTEGER NOT NULL,
+                owner TEXT NOT NULL,
+                visibility TEXT NOT NULL,
+                metadata_json TEXT NOT NULL,
+                created_at_millis INTEGER NOT NULL,
+                updated_at_millis INTEGER NOT NULL
+             );
+             CREATE TABLE knowledge_embedding_jobs(
+                job_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                document_id TEXT NOT NULL,
+                embedding_model TEXT NOT NULL,
+                generation INTEGER NOT NULL,
+                status TEXT NOT NULL,
+                attempts INTEGER NOT NULL,
+                worker_id TEXT,
+                last_error TEXT,
+                created_at_millis INTEGER NOT NULL,
+                updated_at_millis INTEGER NOT NULL
+             );",
+        )
+        .expect("legacy schema");
+    drop(connection);
+
+    let store = SqliteKnowledgeStore::new(&database);
+    store.initialize().expect("migrate schema");
+    store.initialize().expect("repeat migration");
+    let connection = Connection::open(database).expect("migrated database");
+    let version = connection
+        .query_row("SELECT schema_version FROM knowledge_schema", [], |row| {
+            row.get::<_, i64>(0)
+        })
+        .expect("schema version");
+    assert_eq!(version, 4);
+    let has_retry_schedule = connection
+        .prepare("PRAGMA table_info(knowledge_embedding_jobs)")
+        .expect("job table info")
+        .query_map([], |row| row.get::<_, String>(1))
+        .expect("job columns")
+        .collect::<Result<Vec<_>, _>>()
+        .expect("job column rows")
+        .into_iter()
+        .any(|name| name == "next_attempt_at_millis");
+    assert!(has_retry_schedule);
+    let manifest_table_count = connection
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master
+             WHERE type = 'table' AND name = 'knowledge_generation_manifests'",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .expect("manifest table");
+    assert_eq!(manifest_table_count, 1);
+}
+
+#[test]
 fn embedding_jobs_are_idempotent_and_have_bounded_transitions() {
     let (_dir, store, document) = queue_fixture();
 
