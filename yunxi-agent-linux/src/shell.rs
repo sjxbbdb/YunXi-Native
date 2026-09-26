@@ -2519,6 +2519,13 @@ async fn run_daemon_turn<W: tokio::io::AsyncWrite + Unpin>(
             Ok(())
         }
         Err(error) => {
+            let _ = write_frame(
+                writer,
+                &ServerFrame::Error {
+                    message: error.to_string(),
+                },
+            )
+            .await;
             guard.discard().await;
             Err(error)
         }
@@ -2969,5 +2976,49 @@ mod tests {
         assert!(result.is_err());
         assert!(path.exists(), "invalid metadata must not be deleted");
         fs::remove_file(path).expect("remove test lock");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn daemon_turn_emits_structured_error_before_returning_failure() {
+        let (mut server, mut client) = tokio::io::duplex(16 * 1024);
+        let (_tx, mut rx) = mpsc::channel(1);
+        let sessions = Arc::new(Mutex::new(HashMap::new()));
+        let replays = Arc::new(Mutex::new(ReplayStore::default()));
+
+        let error = run_daemon_turn(
+            &mut server,
+            &mut rx,
+            sessions,
+            replays,
+            "request-1".to_string(),
+            "/tmp".to_string(),
+            "test".to_string(),
+            None,
+            true,
+            true,
+            None,
+            None,
+        )
+        .await
+        .expect_err("conflicting provider flags must fail");
+        assert!(
+            error
+                .to_string()
+                .contains("--offline 与 --live 不能同时使用")
+        );
+
+        assert!(matches!(
+            read_frame::<_, ServerFrame>(&mut client).await,
+            Ok(Some(ServerFrame::RunAccepted { .. }))
+        ));
+        let frame = read_frame::<_, ServerFrame>(&mut client)
+            .await
+            .expect("read daemon error frame")
+            .expect("daemon error frame should be present");
+        let ServerFrame::Error { message } = frame else {
+            panic!("expected structured daemon error, got {frame:?}");
+        };
+        assert!(message.contains("--offline 与 --live 不能同时使用"));
     }
 }
