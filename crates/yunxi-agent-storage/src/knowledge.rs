@@ -38,11 +38,20 @@ pub enum KnowledgeSpaceKind {
 }
 
 impl KnowledgeSpaceKind {
-    fn as_str(self) -> &'static str {
+    pub fn as_str(self) -> &'static str {
         match self {
             Self::System => "system",
             Self::Project => "project",
             Self::Private => "private",
+        }
+    }
+
+    pub fn parse(value: &str) -> Result<Self, String> {
+        match value {
+            "system" => Ok(Self::System),
+            "project" => Ok(Self::Project),
+            "private" => Ok(Self::Private),
+            other => Err(format!("unknown knowledge space kind {other}")),
         }
     }
 }
@@ -56,11 +65,20 @@ pub enum KnowledgeVisibility {
 }
 
 impl KnowledgeVisibility {
-    fn as_str(self) -> &'static str {
+    pub fn as_str(self) -> &'static str {
         match self {
             Self::Public => "public",
             Self::Owner => "owner",
             Self::Private => "private",
+        }
+    }
+
+    pub fn parse(value: &str) -> Result<Self, String> {
+        match value {
+            "public" => Ok(Self::Public),
+            "owner" => Ok(Self::Owner),
+            "private" => Ok(Self::Private),
+            other => Err(format!("unknown knowledge visibility {other}")),
         }
     }
 }
@@ -1164,6 +1182,47 @@ impl SqliteKnowledgeStore {
             )
             .map_err(|error| sqlite_error(&self.database, "upsert knowledge space", error))?;
         Ok(())
+    }
+
+    /// Read one space's complete metadata without changing its state.
+    pub fn read_space(&self, space_id: &str) -> AgentResult<Option<KnowledgeSpaceSpec>> {
+        if space_id.trim().is_empty() {
+            return Err(storage_error("knowledge space id is invalid"));
+        }
+        let connection = self.open_connection()?;
+        initialize_schema(&connection, &self.database)?;
+        let row = connection
+            .query_row(
+                "SELECT kind, owner, visibility, source, version, generation
+                 FROM knowledge_spaces WHERE space_id = ?1",
+                params![space_id],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, String>(4)?,
+                        row.get::<_, i64>(5)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(|error| sqlite_error(&self.database, "read knowledge space", error))?;
+        let Some((kind, owner, visibility, source, version, generation)) = row else {
+            return Ok(None);
+        };
+        let kind = KnowledgeSpaceKind::parse(&kind).map_err(storage_error)?;
+        let visibility = KnowledgeVisibility::parse(&visibility).map_err(storage_error)?;
+        Ok(Some(KnowledgeSpaceSpec {
+            space_id: space_id.to_string(),
+            kind,
+            owner,
+            visibility,
+            source,
+            version,
+            generation,
+        }))
     }
 
     /// Read the active search scope for a space without changing its state.

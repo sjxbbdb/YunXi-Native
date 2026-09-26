@@ -156,6 +156,15 @@ pub(crate) enum LinuxShellCommand {
         /// Restrict results to one recorded distro/runtime version.
         #[arg(long)]
         source_version: Option<String>,
+        /// Explicit knowledge space; defaults to the Linux system space.
+        #[arg(long, default_value = "system-linux")]
+        space_id: String,
+        /// Owner used for the space access filter.
+        #[arg(long, default_value = "system")]
+        owner: String,
+        /// Visibility used for the space access filter.
+        #[arg(long, default_value = "public")]
+        visibility: String,
         /// Include opt-in latency and result-count diagnostics in the JSON output.
         #[arg(long)]
         diagnostics: bool,
@@ -212,9 +221,69 @@ pub(crate) enum LinuxShellCommand {
         /// Restrict results to one recorded distro/runtime version.
         #[arg(long)]
         source_version: Option<String>,
+        /// Explicit knowledge space; defaults to the Linux system space.
+        #[arg(long, default_value = "system-linux")]
+        space_id: String,
+        /// Owner used for the space access filter.
+        #[arg(long, default_value = "system")]
+        owner: String,
+        /// Visibility used for the space access filter.
+        #[arg(long, default_value = "public")]
+        visibility: String,
         /// Include opt-in latency and result-count diagnostics in the JSON output.
         #[arg(long)]
         diagnostics: bool,
+    },
+    /// Create an explicitly owned project or private knowledge space.
+    KnowledgeSpaceInit {
+        /// Stable space id; use letters, digits, '.', '_' or '-'.
+        #[arg(long)]
+        space_id: String,
+        /// Space kind: project or private.
+        #[arg(long)]
+        kind: String,
+        /// Visibility: owner or private. Project spaces currently require owner visibility.
+        #[arg(long)]
+        visibility: String,
+        /// Stable owner id used by the access filter.
+        #[arg(long)]
+        owner: String,
+        /// Provenance label for imported material.
+        #[arg(long)]
+        source: String,
+        /// User-controlled source version/revision.
+        #[arg(long)]
+        version: String,
+        /// Workspace whose knowledge database receives the space.
+        #[arg(long, default_value = ".")]
+        cwd: PathBuf,
+    },
+    /// Import one explicitly selected document from stdin into a project/private space.
+    KnowledgeImportStdin {
+        /// Existing project/private space id.
+        #[arg(long)]
+        space_id: String,
+        /// Stable document id; use letters, digits, '.', '_' or '-'.
+        #[arg(long)]
+        document_id: String,
+        /// Human-readable document title.
+        #[arg(long)]
+        title: String,
+        /// Provenance label for this document.
+        #[arg(long)]
+        source: String,
+        /// User-controlled source version/revision.
+        #[arg(long)]
+        version: String,
+        /// Owner id; must match the existing space.
+        #[arg(long)]
+        owner: String,
+        /// Visibility; must match the existing space.
+        #[arg(long)]
+        visibility: String,
+        /// Workspace whose knowledge database receives the document.
+        #[arg(long, default_value = ".")]
+        cwd: PathBuf,
     },
     /// Retract one system knowledge document and its derived index rows.
     KnowledgeRetract {
@@ -354,8 +423,20 @@ pub(crate) async fn run_command(command: LinuxShellCommand) -> Result<()> {
             cwd,
             limit,
             source_version,
+            space_id,
+            owner,
+            visibility,
             diagnostics,
-        } => run_knowledge_search(query, cwd, limit, source_version.as_deref(), diagnostics),
+        } => run_knowledge_search(
+            query,
+            cwd,
+            limit,
+            source_version.as_deref(),
+            space_id,
+            owner,
+            visibility,
+            diagnostics,
+        ),
         LinuxShellCommand::KnowledgeIndex { document_id, cwd } => {
             run_knowledge_index(document_id, cwd)
         }
@@ -375,8 +456,48 @@ pub(crate) async fn run_command(command: LinuxShellCommand) -> Result<()> {
             cwd,
             limit,
             source_version,
+            space_id,
+            owner,
+            visibility,
             diagnostics,
-        } => run_knowledge_vector_search(query, cwd, limit, source_version.as_deref(), diagnostics),
+        } => run_knowledge_vector_search(
+            query,
+            cwd,
+            limit,
+            source_version.as_deref(),
+            space_id,
+            owner,
+            visibility,
+            diagnostics,
+        ),
+        LinuxShellCommand::KnowledgeSpaceInit {
+            space_id,
+            kind,
+            visibility,
+            owner,
+            source,
+            version,
+            cwd,
+        } => run_knowledge_space_init(space_id, kind, visibility, owner, source, version, cwd),
+        LinuxShellCommand::KnowledgeImportStdin {
+            space_id,
+            document_id,
+            title,
+            source,
+            version,
+            owner,
+            visibility,
+            cwd,
+        } => run_knowledge_import_stdin(
+            space_id,
+            document_id,
+            title,
+            source,
+            version,
+            owner,
+            visibility,
+            cwd,
+        ),
         LinuxShellCommand::KnowledgeRetract { document_id, cwd } => {
             run_knowledge_retract(document_id, cwd)
         }
@@ -417,14 +538,18 @@ fn run_knowledge_search(
     cwd: PathBuf,
     limit: usize,
     source_version: Option<&str>,
+    space_id: String,
+    owner: String,
+    visibility: String,
     diagnostics: bool,
 ) -> Result<()> {
     let started = Instant::now();
     let cwd = std::fs::canonicalize(&cwd)
         .with_context(|| format!("无法访问知识工作区: {}", cwd.display()))?;
     let store = yunxi_agent_storage::SqliteKnowledgeStore::for_workspace(&cwd);
-    let Some(scope) = active_system_scope(&store)? else {
-        bail!("Linux 知识库尚未初始化，请先运行 knowledge-help 或 knowledge-man");
+    let visibility = parse_knowledge_visibility(&visibility)?;
+    let Some(scope) = active_knowledge_scope(&store, &space_id, &owner, visibility)? else {
+        bail!("知识空间尚未初始化: {space_id}");
     };
     let matches = store.search_versioned(&query, &scope, source_version, limit.min(50))?;
     let results = matches
@@ -433,6 +558,7 @@ fn run_knowledge_search(
             serde_json::json!({
                 "chunk_id": item.chunk_id,
                 "document_id": item.document_id,
+                "space_id": item.space_id,
                 "title": item.title,
                 "content": item.content,
                 "metadata_json": item.metadata_json,
@@ -447,7 +573,7 @@ fn run_knowledge_search(
         "schema_version": 1,
         "query": query,
         "source_version": source_version,
-        "space_id": "system-linux",
+        "space_id": space_id,
         "results": results,
     });
     if diagnostics {
@@ -735,6 +861,191 @@ fn canonical_knowledge_cwd(cwd: PathBuf) -> Result<PathBuf> {
     std::fs::canonicalize(&cwd).with_context(|| format!("无法访问知识工作区: {}", cwd.display()))
 }
 
+fn parse_knowledge_space_kind(value: &str) -> Result<yunxi_agent_storage::KnowledgeSpaceKind> {
+    yunxi_agent_storage::KnowledgeSpaceKind::parse(value)
+        .map_err(|error| anyhow::anyhow!("知识空间 kind 无效: {error}"))
+}
+
+fn parse_knowledge_visibility(value: &str) -> Result<yunxi_agent_storage::KnowledgeVisibility> {
+    yunxi_agent_storage::KnowledgeVisibility::parse(value)
+        .map_err(|error| anyhow::anyhow!("知识空间 visibility 无效: {error}"))
+}
+
+fn validate_knowledge_identifier(name: &str, value: &str) -> Result<()> {
+    if value.is_empty()
+        || value.len() > 128
+        || !value
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || "._-".contains(character))
+    {
+        bail!("{name} 必须是 1 到 128 字节的字母、数字、'.'、'_' 或 '-' 组合")
+    }
+    Ok(())
+}
+
+fn validate_knowledge_metadata(name: &str, value: &str) -> Result<()> {
+    if value.trim().is_empty() || value.chars().count() > 512 {
+        bail!("{name} 不能为空且不能超过 512 个字符")
+    }
+    Ok(())
+}
+
+fn run_knowledge_space_init(
+    space_id: String,
+    kind: String,
+    visibility: String,
+    owner: String,
+    source: String,
+    version: String,
+    cwd: PathBuf,
+) -> Result<()> {
+    validate_knowledge_identifier("space_id", &space_id)?;
+    validate_knowledge_metadata("owner", &owner)?;
+    validate_knowledge_metadata("source", &source)?;
+    validate_knowledge_metadata("version", &version)?;
+    let kind = parse_knowledge_space_kind(&kind)?;
+    let visibility = parse_knowledge_visibility(&visibility)?;
+    if kind == yunxi_agent_storage::KnowledgeSpaceKind::System {
+        bail!("knowledge-space-init 只允许创建 project 或 private 空间")
+    }
+    if kind == yunxi_agent_storage::KnowledgeSpaceKind::Project
+        && visibility != yunxi_agent_storage::KnowledgeVisibility::Owner
+    {
+        bail!("project 空间当前只允许 owner visibility")
+    }
+    if kind == yunxi_agent_storage::KnowledgeSpaceKind::Private
+        && visibility == yunxi_agent_storage::KnowledgeVisibility::Public
+    {
+        bail!("private 空间不能使用 public visibility")
+    }
+    let cwd = canonical_knowledge_cwd(cwd)?;
+    let store = yunxi_agent_storage::SqliteKnowledgeStore::for_workspace(&cwd);
+    let spec = yunxi_agent_storage::KnowledgeSpaceSpec {
+        space_id,
+        kind,
+        owner,
+        visibility,
+        source,
+        version,
+        generation: 1,
+    };
+    let status = match store.read_space(&spec.space_id)? {
+        Some(existing) if existing == spec => "existing",
+        Some(_) => bail!("知识空间已存在但 metadata 不一致；拒绝静默覆盖"),
+        None => {
+            store.upsert_space(&spec)?;
+            "created"
+        }
+    };
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&serde_json::json!({
+            "schema_version": 1,
+            "status": status,
+            "space_id": spec.space_id,
+            "kind": spec.kind.as_str(),
+            "owner": spec.owner,
+            "visibility": spec.visibility.as_str(),
+            "source": spec.source,
+            "version": spec.version,
+            "generation": spec.generation,
+            "database": cwd.join(".yunxi/knowledge/knowledge.sqlite3"),
+        }))?
+    );
+    Ok(())
+}
+
+fn run_knowledge_import_stdin(
+    space_id: String,
+    document_id: String,
+    title: String,
+    source: String,
+    version: String,
+    owner: String,
+    visibility: String,
+    cwd: PathBuf,
+) -> Result<()> {
+    validate_knowledge_identifier("space_id", &space_id)?;
+    validate_knowledge_identifier("document_id", &document_id)?;
+    validate_knowledge_metadata("title", &title)?;
+    validate_knowledge_metadata("source", &source)?;
+    validate_knowledge_metadata("version", &version)?;
+    validate_knowledge_metadata("owner", &owner)?;
+    let visibility = parse_knowledge_visibility(&visibility)?;
+    let cwd = canonical_knowledge_cwd(cwd)?;
+    let store = yunxi_agent_storage::SqliteKnowledgeStore::for_workspace(&cwd);
+    let existing = store
+        .read_space(&space_id)?
+        .with_context(|| format!("知识空间不存在: {space_id}；请先运行 knowledge-space-init"))?;
+    if existing.kind == yunxi_agent_storage::KnowledgeSpaceKind::System {
+        bail!("knowledge-import-stdin 不允许写入 system 空间")
+    }
+    if existing.owner != owner || existing.visibility != visibility {
+        bail!("导入 metadata 与知识空间 owner/visibility 不一致")
+    }
+    if existing.source != source || existing.version != version {
+        bail!("导入 source/version 必须与知识空间 metadata 一致")
+    }
+    let scope = store
+        .active_space_scope(&space_id, &owner, visibility)?
+        .context("知识空间没有可用的 active generation")?;
+    let mut input = String::new();
+    io::stdin()
+        .read_to_string(&mut input)
+        .context("读取知识导入 stdin 失败")?;
+    let normalized = yunxi_agent_storage::normalize_knowledge_text(
+        &input,
+        yunxi_agent_storage::KnowledgeChunkingOptions::default().max_input_chars,
+    )?;
+    if normalized.is_empty() {
+        bail!("知识导入内容不能为空")
+    }
+    let document = yunxi_agent_storage::KnowledgeDocument {
+        document_id,
+        space_id: space_id.clone(),
+        title,
+        source,
+        version,
+        generation: scope.generation,
+        owner,
+        visibility,
+        metadata_json: serde_json::json!({
+            "import": "stdin",
+            "space_kind": existing.kind.as_str(),
+        })
+        .to_string(),
+    };
+    let summary = store.ingest_text(
+        &document,
+        &normalized,
+        &yunxi_agent_storage::KnowledgeChunkingOptions::default(),
+    )?;
+    let job = store.enqueue_current_document_embedding_job(
+        &document.document_id,
+        yunxi_agent_persona::LOCAL_MEMORY_EMBEDDING_MODEL,
+    )?;
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&serde_json::json!({
+            "schema_version": 1,
+            "status": "imported",
+            "space_id": document.space_id,
+            "document_id": document.document_id,
+            "generation": document.generation,
+            "content_hash": summary.content_hash,
+            "chunks_written": summary.chunks_written,
+            "chunks_removed": summary.chunks_removed,
+            "embedding_job": {
+                "job_id": job.job_id,
+                "status": job.status.as_str(),
+                "embedding_model": job.embedding_model,
+                "generation": job.generation,
+            },
+        }))?
+    );
+    Ok(())
+}
+
 fn run_knowledge_index(document_id: String, cwd: PathBuf) -> Result<()> {
     let cwd = std::fs::canonicalize(&cwd)
         .with_context(|| format!("无法访问知识工作区: {}", cwd.display()))?;
@@ -841,6 +1152,9 @@ fn run_knowledge_vector_search(
     cwd: PathBuf,
     limit: usize,
     source_version: Option<&str>,
+    space_id: String,
+    owner: String,
+    visibility: String,
     diagnostics: bool,
 ) -> Result<()> {
     let started = Instant::now();
@@ -852,8 +1166,9 @@ fn run_knowledge_vector_search(
     let embedding = yunxi_agent_persona::MemoryEmbeddingProvider::embed(&provider, &query)
         .map_err(|error| anyhow::anyhow!("知识查询 embedding 失败: {error}"))?;
     let embedding_latency_us = embedding_started.elapsed().as_micros() as u64;
-    let Some(scope) = active_system_scope(&store)? else {
-        bail!("Linux 知识库尚未初始化，请先运行 knowledge-help 或 knowledge-man");
+    let visibility = parse_knowledge_visibility(&visibility)?;
+    let Some(scope) = active_knowledge_scope(&store, &space_id, &owner, visibility)? else {
+        bail!("知识空间尚未初始化: {space_id}");
     };
     let retrieval_started = Instant::now();
     let matches = store.search_vectors_versioned(
@@ -870,6 +1185,7 @@ fn run_knowledge_vector_search(
             serde_json::json!({
                 "chunk_id": item.chunk_id,
                 "document_id": item.document_id,
+                "space_id": item.space_id,
                 "title": item.title,
                 "content": item.content,
                 "metadata_json": item.metadata_json,
@@ -887,7 +1203,7 @@ fn run_knowledge_vector_search(
         "query": query,
         "source_version": source_version,
         "embedding_model": provider.model_id(),
-        "space_id": "system-linux",
+        "space_id": space_id,
         "results": results,
     });
     if diagnostics {
@@ -1020,13 +1336,23 @@ async fn run_knowledge_man(
 fn active_system_scope(
     store: &yunxi_agent_storage::SqliteKnowledgeStore,
 ) -> Result<Option<yunxi_agent_storage::KnowledgeSearchScope>> {
+    active_knowledge_scope(
+        store,
+        "system-linux",
+        "system",
+        yunxi_agent_storage::KnowledgeVisibility::Public,
+    )
+}
+
+fn active_knowledge_scope(
+    store: &yunxi_agent_storage::SqliteKnowledgeStore,
+    space_id: &str,
+    owner: &str,
+    visibility: yunxi_agent_storage::KnowledgeVisibility,
+) -> Result<Option<yunxi_agent_storage::KnowledgeSearchScope>> {
     store
-        .active_space_scope(
-            "system-linux",
-            "system",
-            yunxi_agent_storage::KnowledgeVisibility::Public,
-        )
-        .context("读取 Linux 知识库当前生效代际失败")
+        .active_space_scope(space_id, owner, visibility)
+        .context("读取知识空间当前生效代际失败")
 }
 
 fn enqueue_collected_embedding(

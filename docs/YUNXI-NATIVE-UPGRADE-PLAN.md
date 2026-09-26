@@ -305,7 +305,7 @@ daemon 还对 `Hello` 与握手后的首个请求设置 5 秒超时，防止半�
 
 - 建立知识空间、访问控制、P0/P1/P2 采集器、规范化器、chunker、embedding worker、SQLite+FTS 索引和 generation 切换；
 - 先覆盖 shell/coreutils/fish/systemd/pacman/git/网络诊断；
-- 预留 project/private 导入适配器，首版不默认读取用户目录；
+- 提供 project/private 的显式创建与 stdin 导入适配器，首版不默认读取用户目录；
 - 将 RAG 证据接入 Planner，不直接接入执行器；
 - 建立 200+ 任务集和离线评测报告。
 
@@ -318,10 +318,20 @@ generation 过滤的有界 cosine 检索。Linux 查询入口和 Runtime 会读�
 active generation，不再把 generation `1` 当作运行时事实；未知空间不会被读路径
 静默创建，因此首次使用必须先经过受控采集/初始化。
 
+本增量已把 project/private 的受控入口落地：`knowledge-space-init` 只允许用户显式创建
+非 system 空间，重复初始化必须完全匹配 metadata；`knowledge-import-stdin` 只读 stdin，
+不扫描路径、不执行导入内容，并把文档绑定到空间当前 generation 后入队 embedding job。
+project 首版仅允许 owner visibility，private 允许 owner/private；source/version 必须与
+空间一致。`knowledge-search` 与 `knowledge-vector-search` 支持显式 `--space-id`、
+`--owner`、`--visibility`，不匹配的访问身份会被拒绝，导入的 project/private 证据不会
+自动进入 Linux Planner。真实验收脚本为
+`yunxi-agent-linux/tests/knowledge_project_private_smoke.sh`，覆盖重复导入、向量闭环、
+空间隔离和长期记忆数据库未被触碰。
+
 当前已经提供同步的单文档 `knowledge-index` 原语和 `knowledge-vector-search` CLI，
 使用本地字符 n-gram provider 建立独立向量并支持增量跳过、快照一致性校验和原子
-替换；generation 的 staging 文档、独立向量/任务队列和原子切换已经落地，Planner
-接入仍属于本 Phase 的后续工作。
+替换；generation 的 staging 文档、独立向量/任务队列和原子切换已经落地，system 空间
+的 Planner 只读召回已接入，project/private 仍保持显式查询边界。
 
 本增量已补齐 durable `knowledge_embedding_jobs` 队列契约：作业关联
 `document_id`、embedding model 与 generation，入队会校验文档代际并对重复请求幂等；

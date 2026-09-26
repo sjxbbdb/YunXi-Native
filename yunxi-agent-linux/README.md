@@ -111,6 +111,35 @@ yunxi-linux linux-tool man fish
 
 CLI 探针与模型可见的 `linux_readonly` ToolSpec 共用同一只读边界，但 CLI 输出是诊断入口，不替代 Runtime 的审批链路。
 
+## 显式 project/private 知识空间
+
+Linux 知识库现在支持由用户显式创建的 `project` 与 `private` 空间。它们不会自动扫描
+用户目录，也不会默认进入 Linux Planner；只有通过 stdin 明确导入的内容才会入库。空间
+的 owner、visibility、source 和 version 是访问与 provenance 边界，重复初始化必须完全
+匹配，否则命令会拒绝静默覆盖。
+
+```bash
+./target/release/yunxi-linux knowledge-space-init \
+  --space-id project-demo --kind project --visibility owner \
+  --owner local-user --source project-notes --version v1 --cwd .
+
+printf '%s\n' '项目约定：先 dry-run，再申请审批。' | \
+  ./target/release/yunxi-linux knowledge-import-stdin \
+  --space-id project-demo --document-id project-guide --title 'Project Guide' \
+  --source project-notes --version v1 --owner local-user --visibility owner --cwd .
+
+./target/release/yunxi-linux knowledge-search 'dry-run' \
+  --space-id project-demo --owner local-user --visibility owner --cwd .
+./target/release/yunxi-linux knowledge-worker --max-jobs 10 --cwd .
+./target/release/yunxi-linux knowledge-vector-search '审批' \
+  --space-id project-demo --owner local-user --visibility owner --cwd .
+```
+
+`project` 首版只允许 `owner` visibility；`private` 允许 `owner` 或 `private`。stdin 导入
+受默认输入上限与 chunking 约束，文档必须与空间的 source/version 一致；重复 document id
+会在事务内替换旧 chunks、向量和 embedding job，不留下孤立索引。长期记忆数据库与
+`knowledge.sqlite3` 始终保持物理分离。
+
 ## fish 接管（Miyu 风格）
 
 安装 fish hook：
@@ -207,6 +236,12 @@ bash yunxi-agent-linux/tests/daemon_ipc_smoke.sh ./target/release/yunxi-linux
 空闲握手连接的超时关闭，以及 SIGTERM 后 socket 清理。脚本使用临时 XDG 目录，结束后会
 自动删除测试状态；同时会发送超大 frame 和截断 JSON，确认坏连接只被丢弃而不会拖垮
 daemon 或影响后续 Ping。
+
+project/private 知识空间的 stdin 导入、owner/visibility 隔离、重复导入和向量闭环可用：
+
+```bash
+bash yunxi-agent-linux/tests/knowledge_project_private_smoke.sh ./target/release/yunxi-linux
+```
 
 知识查询延迟可用同一套临时知识库测量（输出冷查询与后续 warm-ish 查询的
 p50/p95，不设置跨机器硬阈值）：

@@ -140,6 +140,23 @@ fn active_space_scope_reads_current_generation_and_enforces_identity() {
 }
 
 #[test]
+fn read_space_round_trips_metadata_without_overwriting_conflicts() {
+    let dir = tempdir().expect("tempdir");
+    let store = SqliteKnowledgeStore::new(dir.path().join("knowledge.sqlite3"));
+    let spec = space(
+        "private-notes",
+        KnowledgeSpaceKind::Private,
+        "alice",
+        KnowledgeVisibility::Private,
+        3,
+    );
+    store.upsert_space(&spec).expect("space");
+    assert_eq!(store.read_space("private-notes").expect("read"), Some(spec));
+    assert!(store.read_space("missing").expect("missing read").is_none());
+    assert!(store.read_space("").is_err());
+}
+
+#[test]
 fn generation_manifest_build_and_readiness_do_not_change_active_scope() {
     let (dir, store, document) = queue_fixture();
     let building = store
