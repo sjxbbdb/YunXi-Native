@@ -98,6 +98,10 @@ Linux Runtime 会有限召回同一空间的 FTS 证据并把它标记为不可�
 `index_document_with_embeddings` 批量生成 `knowledge_vectors`；这与长期记忆向量库
 继续保持不同数据库、不同表和不同检索边界。
 
+CLI 验证路径：先运行 `yunxi-linux knowledge-index <document-id> --cwd .`，再运行
+`yunxi-linux knowledge-vector-search <query> --cwd . --limit 5`。当前默认模型为
+`yunxi-local-chargram-v1`，这是可替换的本地 provider，不代表最终 embedding 选型。
+
 这条边界是 Linux 原生交互的第一步：先让 YunXi 能可靠地理解并观察系统，再进入预览、可回滚修改和高风险操作。CLI 还提供 `yunxi-linux linux-tool describe|processes|network|systemd-status|man` 作为本机诊断入口；它与 Runtime ToolSpec 同样禁止写入和任意命令拼接。
 
 ## 仓库结构

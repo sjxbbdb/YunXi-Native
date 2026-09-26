@@ -333,6 +333,11 @@ Linux Runtime 已增加只读 `knowledge-search` 入口，并在 Linux 目标构
 有限召回 system 空间的 FTS 证据。证据被明确标记为不可信参考材料，不能覆盖
 Tool/Approval/Sandbox 规则，也不会直接进入执行器；Windows Runtime 不启用该分支。
 
+CLI 还提供 `knowledge-index` 和 `knowledge-vector-search`：前者使用当前本地
+字符 n-gram provider 为已登记文档建立独立向量，后者在相同 system 空间内进行
+有界 cosine 召回。两者都不读取或写入长期记忆向量库，后续接入更强 embedding
+模型时仍通过 provider + 批量替换契约。
+
 **门槛**：索引可增量更新、失败可回滚、来源可追踪、风险命令可标记、空间隔离和撤回测试通过、RAG 召回指标达标。
 
 ### Phase 5：记忆与知识协同

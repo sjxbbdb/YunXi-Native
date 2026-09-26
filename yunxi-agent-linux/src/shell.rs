@@ -41,6 +41,7 @@ use yunxi_agent_core::{
     Agent, AgentConfig, AgentEvent, AgentInput, AgentRunApprovalDecision, AgentRunControl,
     AgentRunStatus, AgentRunUserInputResponse,
 };
+use yunxi_agent_persona::MemoryEmbeddingProvider;
 #[cfg(unix)]
 use yunxi_agent_protocol::linux_ipc::{
     LINUX_IPC_MAX_FRAME_BYTES, LINUX_IPC_PROTOCOL_VERSION, decode_json_frame, encode_json_frame,
@@ -137,6 +138,25 @@ pub(crate) enum LinuxShellCommand {
         #[arg(long, default_value_t = 10)]
         limit: usize,
     },
+    /// Build local embeddings for one already ingested knowledge document.
+    KnowledgeIndex {
+        /// Stable document id returned by knowledge-man/knowledge-help.
+        document_id: String,
+        /// Workspace whose `.yunxi/knowledge/knowledge.sqlite3` is updated.
+        #[arg(long, default_value = ".")]
+        cwd: PathBuf,
+    },
+    /// Search the isolated knowledge vector index with the local provider.
+    KnowledgeVectorSearch {
+        /// Query text embedded by the local character n-gram provider.
+        query: String,
+        /// Workspace whose `.yunxi/knowledge/knowledge.sqlite3` is queried.
+        #[arg(long, default_value = ".")]
+        cwd: PathBuf,
+        /// Maximum number of matches to return.
+        #[arg(long, default_value_t = 10)]
+        limit: usize,
+    },
     /// Hidden long-lived process used by shell-intercept.
     #[command(hide = true)]
     Daemon,
@@ -189,6 +209,12 @@ pub(crate) async fn run_command(command: LinuxShellCommand) -> Result<()> {
         LinuxShellCommand::KnowledgeSearch { query, cwd, limit } => {
             run_knowledge_search(query, cwd, limit)
         }
+        LinuxShellCommand::KnowledgeIndex { document_id, cwd } => {
+            run_knowledge_index(document_id, cwd)
+        }
+        LinuxShellCommand::KnowledgeVectorSearch { query, cwd, limit } => {
+            run_knowledge_vector_search(query, cwd, limit)
+        }
         LinuxShellCommand::Daemon => run_daemon().await,
     }
 }
@@ -223,6 +249,73 @@ fn run_knowledge_search(query: String, cwd: PathBuf, limit: usize) -> Result<()>
         serde_json::to_string_pretty(&serde_json::json!({
             "schema_version": 1,
             "query": query,
+            "space_id": "system-linux",
+            "results": results,
+        }))?
+    );
+    Ok(())
+}
+
+fn run_knowledge_index(document_id: String, cwd: PathBuf) -> Result<()> {
+    let cwd = std::fs::canonicalize(&cwd)
+        .with_context(|| format!("无法访问知识工作区: {}", cwd.display()))?;
+    let store = yunxi_agent_storage::SqliteKnowledgeStore::for_workspace(&cwd);
+    let provider = yunxi_agent_persona::LocalChargramEmbedding::default();
+    let summary = store.index_document_with_embeddings(&document_id, &provider)?;
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&serde_json::json!({
+            "schema_version": 1,
+            "status": "ok",
+            "document_id": summary.document_id,
+            "embedding_model": summary.embedding_model,
+            "dimensions": summary.dimensions,
+            "chunks_indexed": summary.chunks_indexed,
+        }))?
+    );
+    Ok(())
+}
+
+fn run_knowledge_vector_search(query: String, cwd: PathBuf, limit: usize) -> Result<()> {
+    let cwd = std::fs::canonicalize(&cwd)
+        .with_context(|| format!("无法访问知识工作区: {}", cwd.display()))?;
+    let store = yunxi_agent_storage::SqliteKnowledgeStore::for_workspace(&cwd);
+    let provider = yunxi_agent_persona::LocalChargramEmbedding::default();
+    let embedding = yunxi_agent_persona::MemoryEmbeddingProvider::embed(&provider, &query)
+        .map_err(|error| anyhow::anyhow!("知识查询 embedding 失败: {error}"))?;
+    let scope = yunxi_agent_storage::KnowledgeSearchScope {
+        space_id: "system-linux".to_string(),
+        owner: "system".to_string(),
+        generation: 1,
+        visibility: yunxi_agent_storage::KnowledgeVisibility::Public,
+    };
+    let matches = store.search_vectors(
+        &embedding.values,
+        provider.model_id(),
+        &scope,
+        limit.min(50),
+    )?;
+    let results = matches
+        .into_iter()
+        .map(|item| {
+            serde_json::json!({
+                "chunk_id": item.chunk_id,
+                "document_id": item.document_id,
+                "title": item.title,
+                "content": item.content,
+                "source": item.source,
+                "generation": item.generation,
+                "score": item.score,
+                "embedding_model": item.embedding_model,
+            })
+        })
+        .collect::<Vec<_>>();
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&serde_json::json!({
+            "schema_version": 1,
+            "query": query,
+            "embedding_model": provider.model_id(),
             "space_id": "system-linux",
             "results": results,
         }))?
