@@ -82,9 +82,12 @@ fi
 
 python3 - "$FAKE_LOG" <<'PY'
 import os
+import fcntl
 import pty
 import select
+import struct
 import sys
+import termios
 import time
 
 log_path = sys.argv[1]
@@ -123,6 +126,22 @@ def read_until(needle: bytes, timeout: float = 4.0) -> bytes:
     raise AssertionError(f"timed out waiting for {needle!r}; got {bytes(data)!r}; log={debug_log!r}")
 
 read_until(b"> ")
+
+# Ctrl+C at the editable prompt must cancel the pending natural-language
+# buffer locally; it must not invoke shell-intercept or leave stale input for
+# the next prompt.
+os.write(fd, "这条请求会被取消".encode())
+time.sleep(0.1)
+os.write(fd, b"\x03")
+read_until(b"> ")
+
+# A terminal resize is a normal PTY lifecycle event. Fish should repaint and
+# remain usable without changing the hook's routing decision.
+fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", 48, 140, 0, 0))
+os.write(fd, b"printf 'resized-ok\\n'\r")
+read_until(b"resized-ok")
+read_until(b"> ")
+
 os.write(fd, b"set h (__yunxi_first_token_raw \"printf 'fish-command\\n'\"); echo h:$h; __yunxi_fish_knows_head $h; echo knows:$status\r")
 read_until(b"knows:")
 read_until(b"> ")
@@ -168,6 +187,12 @@ os.write(fd, b"echo missing-status:$status\r")
 read_until(b"missing-status:127")
 read_until(b"> ")
 
+# A normal shell command still owns its exit code; interception must not
+# rewrite fish's `$status` semantics.
+os.write(fd, b"false; echo false-status:$status\r")
+read_until(b"false-status:1")
+read_until(b"> ")
+
 os.write(fd, "你好，帮我看看项目".encode() + b"\r")
 read_until(b"[yunxi intercepted]")
 read_until(b"> ")
@@ -197,6 +222,7 @@ assert any(line.startswith("intercept:fish-") and line.endswith(":你好，帮�
 assert any(line.startswith("intercept:fish-") and line.endswith(":第一行\\n第二行") for line in lines), lines
 assert any(line.startswith("intercept:fish-") and line.endswith(":missing_yunxi_command") for line in lines), lines
 assert any(line.startswith("intercept:fish-") and line.endswith(":command_not_found_probe") for line in lines), lines
+assert not any("这条请求会被取消" in line for line in lines if line.startswith("intercept:")), lines
 assert not any(
     line.startswith("intercept:")
     and any(token in line for token in ("sub:%s", "redirect-ok", "pipe-ok"))
