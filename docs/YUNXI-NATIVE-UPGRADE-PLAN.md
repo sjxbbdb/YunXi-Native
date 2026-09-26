@@ -304,6 +304,10 @@ generation 过滤的有界 cosine 检索。该切片还没有接入 embedding wo
 生成带稳定 hash 和 ordinal 的有界 chunk。它不读取任意路径，也不启动命令，
 后续采集器和 embedding worker 只接收这层的确定性输出。
 
+`SqliteKnowledgeStore::ingest_text` 已将这条路径接到存储边界：文档元数据、chunk
+替换和旧 chunk 对应向量的清理在同一 SQLite 事务中完成。重复导入不会留下旧的
+FTS 内容或孤立向量；事务失败时旧版本仍保持可检索。
+
 **门槛**：索引可增量更新、失败可回滚、来源可追踪、风险命令可标记、空间隔离和撤回测试通过、RAG 召回指标达标。
 
 ### Phase 5：记忆与知识协同

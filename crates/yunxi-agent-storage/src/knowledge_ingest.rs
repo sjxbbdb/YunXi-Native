@@ -34,6 +34,14 @@ pub struct KnowledgeChunkDraft {
     pub content_hash: String,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct KnowledgeIngestSummary {
+    pub document_id: String,
+    pub content_hash: String,
+    pub chunks_written: usize,
+    pub chunks_removed: usize,
+}
+
 pub fn normalize_knowledge_text(input: &str, max_input_chars: usize) -> AgentResult<String> {
     if max_input_chars == 0 {
         return Err(ingest_error("knowledge input limit must be positive"));
@@ -180,6 +188,10 @@ fn stable_content_hash(content: &str) -> String {
         hash = hash.wrapping_mul(0x100000001b3);
     }
     format!("{hash:016x}")
+}
+
+pub(crate) fn content_hash(content: &str) -> String {
+    stable_content_hash(content)
 }
 
 fn ingest_error(message: impl Into<String>) -> AgentError {

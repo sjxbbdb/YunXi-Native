@@ -1,8 +1,9 @@
 use rusqlite::Connection;
 use tempfile::tempdir;
 use yunxi_agent_storage::{
-    KnowledgeChunk, KnowledgeDocument, KnowledgeSearchScope, KnowledgeSpaceKind,
-    KnowledgeSpaceSpec, KnowledgeVector, KnowledgeVisibility, SqliteKnowledgeStore,
+    KnowledgeChunk, KnowledgeChunkingOptions, KnowledgeDocument, KnowledgeSearchScope,
+    KnowledgeSpaceKind, KnowledgeSpaceSpec, KnowledgeVector, KnowledgeVisibility,
+    SqliteKnowledgeStore,
 };
 
 fn space(
@@ -336,5 +337,70 @@ fn knowledge_vectors_reject_invalid_values_and_mismatched_chunks() {
         store
             .search_vectors(&[f32::INFINITY, 0.0], "fixture-v1", &scope, 1)
             .is_err()
+    );
+}
+
+#[test]
+fn ingest_text_replaces_stale_chunks_and_vectors_atomically() {
+    let dir = tempdir().expect("tempdir");
+    let store = SqliteKnowledgeStore::new(dir.path().join("knowledge.sqlite3"));
+    store
+        .upsert_space(&space(
+            "system-linux",
+            KnowledgeSpaceKind::System,
+            "system",
+            KnowledgeVisibility::Public,
+            1,
+        ))
+        .expect("space");
+    let document = KnowledgeDocument {
+        document_id: "ingested-doc".to_string(),
+        space_id: "system-linux".to_string(),
+        title: "ingested command notes".to_string(),
+        source: "fixture".to_string(),
+        version: "2026.09".to_string(),
+        generation: 1,
+        owner: "system".to_string(),
+        visibility: KnowledgeVisibility::Public,
+        metadata_json: "{}".to_string(),
+    };
+    let options = KnowledgeChunkingOptions {
+        max_input_chars: 100,
+        max_chunk_chars: 20,
+        overlap_chars: 2,
+    };
+    let first = store
+        .ingest_text(&document, "old systemctl note", &options)
+        .expect("first ingest");
+    assert_eq!(first.chunks_written, 1);
+    assert_eq!(first.chunks_removed, 0);
+    store
+        .upsert_vector(&KnowledgeVector {
+            chunk_id: "ingested-doc#chunk-0".to_string(),
+            space_id: "system-linux".to_string(),
+            embedding_model: "fixture-v1".to_string(),
+            generation: 1,
+            vector: vec![1.0, 0.0],
+        })
+        .expect("old vector");
+
+    let second = store
+        .ingest_text(&document, "new ip route note", &options)
+        .expect("second ingest");
+    assert_eq!(second.chunks_written, 1);
+    assert_eq!(second.chunks_removed, 1);
+    let scope = KnowledgeSearchScope {
+        space_id: "system-linux".to_string(),
+        owner: "system".to_string(),
+        generation: 1,
+        visibility: KnowledgeVisibility::Public,
+    };
+    assert!(store.search("systemctl", &scope, 5).unwrap().is_empty());
+    assert_eq!(store.search("ip route", &scope, 5).unwrap().len(), 1);
+    assert!(
+        store
+            .search_vectors(&[1.0, 0.0], "fixture-v1", &scope, 5)
+            .unwrap()
+            .is_empty()
     );
 }

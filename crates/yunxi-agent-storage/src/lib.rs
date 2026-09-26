@@ -39,7 +39,8 @@ pub use knowledge::{
     KnowledgeVisibility, SqliteKnowledgeStore,
 };
 pub use knowledge_ingest::{
-    KnowledgeChunkDraft, KnowledgeChunkingOptions, chunk_knowledge_text, normalize_knowledge_text,
+    KnowledgeChunkDraft, KnowledgeChunkingOptions, KnowledgeIngestSummary, chunk_knowledge_text,
+    normalize_knowledge_text,
 };
 pub use memory_vector::{
     MemoryVectorMatch, MemoryVectorSearch, MemoryVectorSyncSummary, SqliteMemoryVectorStore,

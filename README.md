@@ -77,7 +77,7 @@ Linux 版已经开始把系统能力接入为固定的 `linux_readonly` ToolSpec
 
 ### 知识库边界（Phase 4 基础切片）
 
-Linux 知识库已经有独立的 `SqliteKnowledgeStore` 基础：数据库文件为 `knowledge.sqlite3`，与长期记忆的 `long-term-vectors.sqlite3` 物理分离。知识空间、文档、chunk、generation、owner 和 visibility 会在检索前校验，当前支持 FTS5 和按模型隔离的有界向量检索。采集前会经过确定性的文本规范化和分块，不读取任意路径。它还没有接入 Planner 或执行器，知识文本不会被当作 shell 命令直接运行。
+Linux 知识库已经有独立的 `SqliteKnowledgeStore` 基础：数据库文件为 `knowledge.sqlite3`，与长期记忆的 `long-term-vectors.sqlite3` 物理分离。知识空间、文档、chunk、generation、owner 和 visibility 会在检索前校验，当前支持 FTS5 和按模型隔离的有界向量检索。采集前会经过确定性的文本规范化和分块，不读取任意路径；`ingest_text` 在单事务内替换文档 chunk 并清理旧向量，避免索引与向量残留。它还没有接入 Planner 或执行器，知识文本不会被当作 shell 命令直接运行。
 
 这条边界是 Linux 原生交互的第一步：先让 YunXi 能可靠地理解并观察系统，再进入预览、可回滚修改和高风险操作。CLI 还提供 `yunxi-linux linux-tool describe|processes|network|systemd-status|man` 作为本机诊断入口；它与 Runtime ToolSpec 同样禁止写入和任意命令拼接。
 

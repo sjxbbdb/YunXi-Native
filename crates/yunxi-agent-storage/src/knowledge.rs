@@ -4,6 +4,10 @@
 //! owns `knowledge.sqlite3` and only stores curated documents and their chunks;
 //! it never imports, writes, or searches `memory_vectors`.
 
+use crate::knowledge_ingest::{
+    KnowledgeChunkingOptions, KnowledgeIngestSummary, chunk_knowledge_text, content_hash,
+    normalize_knowledge_text,
+};
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -376,6 +380,121 @@ impl SqliteKnowledgeStore {
         transaction
             .commit()
             .map_err(|error| sqlite_error(&self.database, "commit knowledge vector", error))
+    }
+
+    pub fn ingest_text(
+        &self,
+        document: &KnowledgeDocument,
+        input: &str,
+        options: &KnowledgeChunkingOptions,
+    ) -> AgentResult<KnowledgeIngestSummary> {
+        validate_document(document)?;
+        let normalized = normalize_knowledge_text(input, options.max_input_chars)?;
+        let drafts = chunk_knowledge_text(&normalized, options)?;
+        let document_hash = content_hash(&normalized);
+        let mut connection = self.open_connection()?;
+        initialize_schema(&connection, &self.database)?;
+        let transaction = connection
+            .transaction()
+            .map_err(|error| sqlite_error(&self.database, "begin knowledge ingest", error))?;
+        ensure_space_metadata(&transaction, document)?;
+        let now = now_millis();
+        transaction
+            .execute(
+                "INSERT INTO knowledge_documents
+                    (document_id, space_id, title, source, version, generation, owner,
+                     visibility, metadata_json, created_at_millis, updated_at_millis)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?10)
+                 ON CONFLICT(document_id) DO UPDATE SET
+                    space_id = excluded.space_id,
+                    title = excluded.title,
+                    source = excluded.source,
+                    version = excluded.version,
+                    generation = excluded.generation,
+                    owner = excluded.owner,
+                    visibility = excluded.visibility,
+                    metadata_json = excluded.metadata_json,
+                    updated_at_millis = excluded.updated_at_millis",
+                params![
+                    document.document_id,
+                    document.space_id,
+                    document.title,
+                    document.source,
+                    document.version,
+                    document.generation,
+                    document.owner,
+                    document.visibility.as_str(),
+                    document.metadata_json,
+                    now,
+                ],
+            )
+            .map_err(|error| sqlite_error(&self.database, "upsert ingested document", error))?;
+        let chunks_removed = transaction
+            .query_row(
+                "SELECT COUNT(*) FROM knowledge_chunks WHERE document_id = ?1",
+                params![document.document_id],
+                |row| row.get::<_, i64>(0),
+            )
+            .map_err(|error| sqlite_error(&self.database, "count stale knowledge chunks", error))?;
+        transaction
+            .execute(
+                "DELETE FROM knowledge_vectors
+                 WHERE chunk_id IN (SELECT chunk_id FROM knowledge_chunks WHERE document_id = ?1)",
+                params![document.document_id],
+            )
+            .map_err(|error| {
+                sqlite_error(&self.database, "remove stale knowledge vectors", error)
+            })?;
+        transaction
+            .execute(
+                "DELETE FROM knowledge_chunks WHERE document_id = ?1",
+                params![document.document_id],
+            )
+            .map_err(|error| {
+                sqlite_error(&self.database, "remove stale knowledge chunks", error)
+            })?;
+        for draft in &drafts {
+            let chunk_id = format!("{}#chunk-{}", document.document_id, draft.ordinal);
+            let metadata_json = serde_json::json!({
+                "content_hash": draft.content_hash,
+                "document_hash": document_hash,
+            })
+            .to_string();
+            transaction
+                .execute(
+                    "INSERT INTO knowledge_chunks
+                        (chunk_id, document_id, space_id, ordinal, content, source, version,
+                         generation, owner, visibility, metadata_json, created_at_millis,
+                         updated_at_millis)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?12)",
+                    params![
+                        chunk_id,
+                        document.document_id,
+                        document.space_id,
+                        draft.ordinal,
+                        draft.content,
+                        document.source,
+                        document.version,
+                        document.generation,
+                        document.owner,
+                        document.visibility.as_str(),
+                        metadata_json,
+                        now,
+                    ],
+                )
+                .map_err(|error| {
+                    sqlite_error(&self.database, "write ingested knowledge chunk", error)
+                })?;
+        }
+        transaction
+            .commit()
+            .map_err(|error| sqlite_error(&self.database, "commit knowledge ingest", error))?;
+        Ok(KnowledgeIngestSummary {
+            document_id: document.document_id.clone(),
+            content_hash: document_hash,
+            chunks_written: drafts.len(),
+            chunks_removed: usize::try_from(chunks_removed).unwrap_or(usize::MAX),
+        })
     }
 
     pub fn search(
