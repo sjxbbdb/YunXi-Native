@@ -192,6 +192,24 @@ fn generation_manifest_build_and_readiness_do_not_change_active_scope() {
             .mark_generation_ready("system-linux", building.generation, 2, 1, "digest-v1")
             .is_err()
     );
+    let candidate_scope = KnowledgeSearchScope {
+        space_id: "system-linux".to_string(),
+        owner: "system".to_string(),
+        generation: building.generation,
+        visibility: KnowledgeVisibility::Public,
+    };
+    let readiness = store
+        .inspect_generation_readiness(&candidate_scope, "fixture-v1", 2)
+        .expect("inspect candidate readiness");
+    assert!(!readiness.ready);
+    assert_eq!(readiness.expected_documents, 2);
+    assert_eq!(readiness.actual_documents, 0);
+    assert!(
+        readiness
+            .reasons
+            .iter()
+            .any(|reason| reason.contains("active generation"))
+    );
 }
 
 #[test]

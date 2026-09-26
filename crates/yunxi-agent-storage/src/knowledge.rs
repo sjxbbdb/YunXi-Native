@@ -165,6 +165,20 @@ pub struct KnowledgeGeneration {
     pub completed_at_millis: Option<i64>,
 }
 
+/// Read-only completeness report for a generation candidate.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct KnowledgeGenerationReadiness {
+    pub ready: bool,
+    pub expected_documents: usize,
+    pub actual_documents: usize,
+    pub chunks: usize,
+    pub vectors: usize,
+    pub pending_jobs: usize,
+    pub running_jobs: usize,
+    pub failed_jobs: usize,
+    pub reasons: Vec<String>,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct KnowledgeSearchResult {
     pub chunk_id: String,
@@ -934,6 +948,248 @@ impl SqliteKnowledgeStore {
         let connection = self.open_connection()?;
         initialize_schema(&connection, &self.database)?;
         read_knowledge_generation_optional(&connection, &self.database, space_id, generation)
+    }
+
+    /// Inspect whether a generation is complete enough for a future activation.
+    ///
+    /// This is intentionally read-only. It never changes the active space
+    /// pointer and does not promote a manifest from `building` to `ready`.
+    pub fn inspect_generation_readiness(
+        &self,
+        scope: &KnowledgeSearchScope,
+        embedding_model: &str,
+        dimensions: usize,
+    ) -> AgentResult<KnowledgeGenerationReadiness> {
+        validate_search_scope(scope)?;
+        if embedding_model.trim().is_empty() || dimensions == 0 {
+            return Err(storage_error(
+                "knowledge readiness embedding metadata is invalid",
+            ));
+        }
+        let connection = self.open_connection()?;
+        initialize_schema(&connection, &self.database)?;
+        let mut reasons = Vec::new();
+        let manifest = connection
+            .query_row(
+                "SELECT gm.state, gm.expected_documents, gm.indexed_documents,
+                        gm.embedding_model, gm.vector_dimensions,
+                        s.owner, s.visibility, s.generation
+                 FROM knowledge_generation_manifests gm
+                 JOIN knowledge_spaces s ON s.space_id = gm.space_id
+                 WHERE gm.space_id = ?1 AND gm.generation = ?2",
+                params![scope.space_id, scope.generation],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, i64>(1)?,
+                        row.get::<_, i64>(2)?,
+                        row.get::<_, Option<String>>(3)?,
+                        row.get::<_, Option<i64>>(4)?,
+                        row.get::<_, String>(5)?,
+                        row.get::<_, String>(6)?,
+                        row.get::<_, i64>(7)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(|error| {
+                sqlite_error(&self.database, "read generation readiness manifest", error)
+            })?;
+        let Some((
+            state,
+            expected_documents,
+            indexed_documents,
+            manifest_model,
+            manifest_dimensions,
+            owner,
+            visibility,
+            active_generation,
+        )) = manifest
+        else {
+            return Ok(KnowledgeGenerationReadiness {
+                ready: false,
+                expected_documents: 0,
+                actual_documents: 0,
+                chunks: 0,
+                vectors: 0,
+                pending_jobs: 0,
+                running_jobs: 0,
+                failed_jobs: 0,
+                reasons: vec!["generation manifest is missing".to_string()],
+            });
+        };
+        if owner != scope.owner || visibility != scope.visibility.as_str() {
+            return Err(storage_error(
+                "generation readiness scope does not match its space",
+            ));
+        }
+        if active_generation != scope.generation {
+            reasons.push("space active generation differs from inspected generation".to_string());
+        }
+        if state != KnowledgeGenerationState::Ready.as_str() {
+            reasons.push(format!("generation manifest state is {state}"));
+        }
+        if manifest_model.as_deref() != Some(embedding_model) {
+            reasons
+                .push("generation embedding model does not match the requested model".to_string());
+        }
+        if manifest_dimensions != Some(i64::try_from(dimensions).unwrap_or(i64::MAX)) {
+            reasons.push(
+                "generation vector dimensions do not match the requested dimensions".to_string(),
+            );
+        }
+
+        let actual_documents = count_scope_rows(
+            &connection,
+            &self.database,
+            "SELECT COUNT(*) FROM knowledge_documents
+             WHERE space_id = ?1 AND generation = ?2 AND owner = ?3 AND visibility = ?4",
+            scope,
+        )?;
+        let chunks = count_scope_rows(
+            &connection,
+            &self.database,
+            "SELECT COUNT(*) FROM knowledge_chunks
+             WHERE space_id = ?1 AND generation = ?2 AND owner = ?3 AND visibility = ?4",
+            scope,
+        )?;
+        let vectors = connection
+            .query_row(
+                "SELECT COUNT(*) FROM knowledge_vectors v
+                 JOIN knowledge_chunks c ON c.chunk_id = v.chunk_id
+                 WHERE v.space_id = ?1 AND v.generation = ?2
+                   AND v.embedding_model = ?3 AND v.dimensions = ?4
+                   AND length(v.vector) = ?4 * 4
+                   AND c.space_id = ?1 AND c.generation = ?2
+                   AND c.owner = ?5 AND c.visibility = ?6",
+                params![
+                    scope.space_id,
+                    scope.generation,
+                    embedding_model,
+                    i64::try_from(dimensions).unwrap_or(i64::MAX),
+                    scope.owner,
+                    scope.visibility.as_str(),
+                ],
+                |row| row.get::<_, i64>(0),
+            )
+            .map_err(|error| sqlite_error(&self.database, "count generation vectors", error))?;
+        let invalid_vectors = connection
+            .query_row(
+                "SELECT COUNT(*) FROM knowledge_vectors v
+                 JOIN knowledge_chunks c ON c.chunk_id = v.chunk_id
+                 WHERE v.space_id = ?1 AND v.generation = ?2
+                   AND v.embedding_model = ?3
+                   AND (v.dimensions != ?4 OR length(v.vector) != ?4 * 4)
+                   AND c.space_id = ?1 AND c.generation = ?2
+                   AND c.owner = ?5 AND c.visibility = ?6",
+                params![
+                    scope.space_id,
+                    scope.generation,
+                    embedding_model,
+                    i64::try_from(dimensions).unwrap_or(i64::MAX),
+                    scope.owner,
+                    scope.visibility.as_str(),
+                ],
+                |row| row.get::<_, i64>(0),
+            )
+            .map_err(|error| {
+                sqlite_error(&self.database, "count invalid generation vectors", error)
+            })?;
+        if expected_documents < 0 || indexed_documents < 0 {
+            reasons.push("generation manifest contains negative document counts".to_string());
+        }
+        if usize::try_from(expected_documents).unwrap_or(usize::MAX)
+            != usize::try_from(actual_documents).unwrap_or(usize::MAX)
+            || indexed_documents != actual_documents
+        {
+            reasons.push("generation document count does not match its manifest".to_string());
+        }
+        if invalid_vectors > 0 {
+            reasons.push(format!(
+                "{invalid_vectors} vectors have invalid dimensions or blobs"
+            ));
+        }
+        if vectors != chunks {
+            reasons.push("vector coverage does not match chunk coverage".to_string());
+        }
+
+        let fts_rows = connection
+            .query_row(
+                "SELECT COUNT(*) FROM knowledge_chunks_fts f
+                 JOIN knowledge_chunks c ON c.chunk_id = f.chunk_id
+                 WHERE c.space_id = ?1 AND c.generation = ?2
+                   AND c.owner = ?3 AND c.visibility = ?4",
+                params![
+                    scope.space_id,
+                    scope.generation,
+                    scope.owner,
+                    scope.visibility.as_str()
+                ],
+                |row| row.get::<_, i64>(0),
+            )
+            .map_err(|error| sqlite_error(&self.database, "count generation fts rows", error))?;
+        if fts_rows != chunks {
+            reasons.push("FTS coverage does not match chunk coverage".to_string());
+        }
+
+        let mut job_counts = [0_usize; 3];
+        let mut jobs = connection
+            .prepare(
+                "SELECT j.status, COUNT(*) FROM knowledge_embedding_jobs j
+                 JOIN knowledge_documents d ON d.document_id = j.document_id
+                 WHERE d.space_id = ?1 AND d.generation = ?2
+                   AND d.owner = ?3 AND d.visibility = ?4
+                   AND j.generation = ?2 AND j.embedding_model = ?5
+                 GROUP BY j.status",
+            )
+            .map_err(|error| {
+                sqlite_error(&self.database, "prepare generation job counts", error)
+            })?;
+        let rows = jobs
+            .query_map(
+                params![
+                    scope.space_id,
+                    scope.generation,
+                    scope.owner,
+                    scope.visibility.as_str(),
+                    embedding_model,
+                ],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
+            )
+            .map_err(|error| sqlite_error(&self.database, "query generation job counts", error))?;
+        for row in rows {
+            let (status, count) = row.map_err(|error| {
+                sqlite_error(&self.database, "read generation job count", error)
+            })?;
+            let index = match status.as_str() {
+                "pending" => Some(0),
+                "running" => Some(1),
+                "failed" => Some(2),
+                _ => None,
+            };
+            if let Some(index) = index {
+                job_counts[index] = usize::try_from(count).unwrap_or(usize::MAX);
+            }
+        }
+        if job_counts.iter().any(|count| *count > 0) {
+            reasons.push("generation still has incomplete embedding jobs".to_string());
+        }
+
+        let expected_documents = usize::try_from(expected_documents).unwrap_or_default();
+        let actual_documents = usize::try_from(actual_documents).unwrap_or_default();
+        let chunks = usize::try_from(chunks).unwrap_or_default();
+        let vectors = usize::try_from(vectors).unwrap_or_default();
+        Ok(KnowledgeGenerationReadiness {
+            ready: reasons.is_empty(),
+            expected_documents,
+            actual_documents,
+            chunks,
+            vectors,
+            pending_jobs: job_counts[0],
+            running_jobs: job_counts[1],
+            failed_jobs: job_counts[2],
+            reasons,
+        })
     }
 
     pub fn upsert_document(&self, document: &KnowledgeDocument) -> AgentResult<()> {
@@ -2060,6 +2316,26 @@ fn read_knowledge_generation_optional(
         .map_err(|error| sqlite_error(path, "read optional knowledge generation", error))?;
     row.map(|row| knowledge_generation_from_row(row, path))
         .transpose()
+}
+
+fn count_scope_rows(
+    connection: &Connection,
+    path: &Path,
+    query: &str,
+    scope: &KnowledgeSearchScope,
+) -> AgentResult<i64> {
+    connection
+        .query_row(
+            query,
+            params![
+                scope.space_id,
+                scope.generation,
+                scope.owner,
+                scope.visibility.as_str()
+            ],
+            |row| row.get::<_, i64>(0),
+        )
+        .map_err(|error| sqlite_error(path, "count knowledge scope rows", error))
 }
 
 fn initialize_schema(connection: &Connection, path: &Path) -> AgentResult<()> {
