@@ -313,6 +313,12 @@ FTS 内容或孤立向量；文档 hash 与分块参数都未变化时会跳过�
 空间、generation、chunk 引用和维度，再在一个事务内替换指定模型的向量集合，拒绝
 批次时旧索引保持不变。
 
+当前还新增了 Linux P0 `man` 采集器：只接受经过 token 校验的 topic/section，使用
+固定 `man --locale=C -P cat` argv、只读执行策略、`MANPAGER/PAGER/TERM` 固定环境和
+64 KiB 输出上限；成功结果带稳定的 `system-man:<section>:<topic>` 文档身份并调用
+`ingest_text`，缺少 man、非零退出、超时或截断不会把 stderr 当作知识正文，也不会
+进入 Planner 或执行器。
+
 **门槛**：索引可增量更新、失败可回滚、来源可追踪、风险命令可标记、空间隔离和撤回测试通过、RAG 召回指标达标。
 
 ### Phase 5：记忆与知识协同

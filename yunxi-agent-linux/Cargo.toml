@@ -16,8 +16,11 @@ serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
 yunxi-agent-core = { path = "../crates/yunxi-agent-core" }
+yunxi-agent-exec = { path = "../crates/yunxi-agent-exec" }
 yunxi-agent-persona = { path = "../crates/yunxi-agent-persona" }
 yunxi-agent-protocol = { path = "../crates/yunxi-agent-protocol" }
 yunxi-agent-provider = { path = "../crates/yunxi-agent-provider" }
 yunxi-agent-runtime = { path = "../crates/yunxi-agent-runtime" }
+yunxi-agent-sandbox = { path = "../crates/yunxi-agent-sandbox" }
+yunxi-agent-storage = { path = "../crates/yunxi-agent-storage" }
 yunxi-agent-tui = { path = "../crates/yunxi-agent-tui" }

@@ -49,6 +49,8 @@ use yunxi_agent_protocol::linux_ipc::{
 #[cfg(unix)]
 use yunxi_agent_runtime::YunXiRuntimeBackend;
 
+#[path = "knowledge_collector.rs"]
+mod knowledge_collector;
 #[path = "linux_tools.rs"]
 mod linux_tools;
 use linux_tools::LinuxToolCommand;
@@ -99,6 +101,20 @@ pub(crate) enum LinuxShellCommand {
         #[command(subcommand)]
         command: LinuxToolCommand,
     },
+    /// Collect one local man page into the isolated system knowledge space.
+    KnowledgeMan {
+        /// Man topic such as `fish` or `systemctl`.
+        topic: String,
+        /// Optional man section, for example `1` or `8`.
+        #[arg(long)]
+        section: Option<String>,
+        /// Explicit distro/runtime version recorded as provenance.
+        #[arg(long, default_value = "unknown")]
+        source_version: String,
+        /// Workspace whose `.yunxi/knowledge/knowledge.sqlite3` receives the document.
+        #[arg(long, default_value = ".")]
+        cwd: PathBuf,
+    },
     /// Hidden long-lived process used by shell-intercept.
     #[command(hide = true)]
     Daemon,
@@ -137,8 +153,60 @@ pub(crate) async fn run_command(command: LinuxShellCommand) -> Result<()> {
             Ok(())
         }
         LinuxShellCommand::LinuxTool { command } => linux_tools::run(command),
+        LinuxShellCommand::KnowledgeMan {
+            topic,
+            section,
+            source_version,
+            cwd,
+        } => run_knowledge_man(topic, section, source_version, cwd).await,
         LinuxShellCommand::Daemon => run_daemon().await,
     }
+}
+
+async fn run_knowledge_man(
+    topic: String,
+    section: Option<String>,
+    source_version: String,
+    cwd: PathBuf,
+) -> Result<()> {
+    let cwd = std::fs::canonicalize(&cwd)
+        .with_context(|| format!("无法访问知识工作区: {}", cwd.display()))?;
+    let request = knowledge_collector::ManPageRequest {
+        topic,
+        section,
+        source_version,
+    };
+    let cancellation = yunxi_agent_core::AgentCancellationToken::new();
+    let collected = knowledge_collector::collect_man_page(&request, &cwd, cancellation).await?;
+    let status = collected.status;
+    let stderr = collected.stderr.clone();
+    let mut result = serde_json::json!({
+        "schema_version": 1,
+        "collector": "linux.man",
+        "status": status,
+        "document_id": collected.document.document_id,
+        "argv": collected.argv,
+        "exit_code": collected.exit_code,
+        "truncated": collected.truncated,
+    });
+    if status != knowledge_collector::CollectionStatus::Ok {
+        result["stderr"] = serde_json::Value::String(stderr);
+        println!("{}", serde_json::to_string_pretty(&result)?);
+        return Ok(());
+    }
+
+    let store = yunxi_agent_storage::SqliteKnowledgeStore::for_workspace(&cwd);
+    knowledge_collector::ensure_system_space(&store, &request.source_version)?;
+    let summary = knowledge_collector::ingest_collected_man_page(
+        &store,
+        &collected,
+        &yunxi_agent_storage::KnowledgeChunkingOptions::default(),
+    )?;
+    result["content_hash"] = serde_json::Value::String(summary.content_hash);
+    result["chunks_written"] = serde_json::json!(summary.chunks_written);
+    result["chunks_removed"] = serde_json::json!(summary.chunks_removed);
+    println!("{}", serde_json::to_string_pretty(&result)?);
+    Ok(())
 }
 
 const SYSTEMD_UNIT: &str = include_str!("../packaging/systemd/yunxi-linux.service");

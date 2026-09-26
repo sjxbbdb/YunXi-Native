@@ -2120,10 +2120,13 @@ dependencies = [
  "serde_json",
  "tokio",
  "yunxi-agent-core",
+ "yunxi-agent-exec",
  "yunxi-agent-persona",
  "yunxi-agent-protocol",
  "yunxi-agent-provider",
  "yunxi-agent-runtime",
+ "yunxi-agent-sandbox",
+ "yunxi-agent-storage",
  "yunxi-agent-tui",
 ]
 
