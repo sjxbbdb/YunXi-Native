@@ -111,6 +111,16 @@ yunxi-linux linux-tool man fish
 
 CLI 探针与模型可见的 `linux_readonly` ToolSpec 共用同一只读边界，但 CLI 输出是诊断入口，不替代 Runtime 的审批链路。
 
+真实 Linux 验收可运行：
+
+```bash
+bash yunxi-agent-linux/tests/linux_tool_smoke.sh ./target/release/yunxi-linux
+```
+
+该 smoke 会校验四个 ToolSpec 的 JSON 契约、64 KiB 输出边界和参数注入拒绝；目标系统
+缺少 `systemctl`、`man`、`ip` 或 `ss` 时允许结果为结构化 `unavailable`，不会把缺少
+发行版工具误判为测试失败。
+
 ## 显式 project/private 知识空间
 
 Linux 知识库现在支持由用户显式创建的 `project` 与 `private` 空间。它们不会自动扫描
