@@ -520,6 +520,11 @@ scope、source、预算、丢弃原因和召回数量。两者只共享本轮上
 - systemd user service、日志轮转、资源上限、离线运行和恢复文档；
 - 兼容第二个发行版前先冻结 Host/Tool adapter 接口。
 
+当前增量：已新增 `packaging/arch/yunxi-native/PKGBUILD` 与配套用户级 systemd unit，
+固定源码 commit 后从 workspace 构建 `/usr/bin/yunxi-linux`，不自动启用服务、不创建 root
+daemon、不删除用户数据。`packaging/README.md` 明确了 Arch 构建、fish hook、卸载和数据
+边界；安装/升级/回滚的完整可重复流水线仍未宣称完成。
+
 **门槛**：冷启动/热查询/常驻 RSS/p95 延迟有基线；安装、升级、回滚和卸载可重复执行。
 
 ## 7. 风险与回滚
