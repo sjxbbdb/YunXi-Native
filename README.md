@@ -80,8 +80,8 @@ Linux 版已经开始把系统能力接入为固定的 `linux_readonly` ToolSpec
 Linux 知识库已经有独立的 `SqliteKnowledgeStore` 基础：数据库文件为 `knowledge.sqlite3`，与长期记忆的 `long-term-vectors.sqlite3` 物理分离。知识空间、文档、chunk、generation、owner 和 visibility 会在检索前校验，当前支持 FTS5 和按模型隔离的有界向量检索。采集前会经过确定性的文本规范化和分块，不读取任意路径；`ingest_text` 在单事务内替换文档 chunk 并清理旧向量，文档 hash 与分块参数未变化时会跳过重建，避免索引与向量残留；`replace_document_vectors` 可为 embedding worker 原子替换一个文档的模型向量集合。Runtime 通过只读 Planner 证据边界消费它，知识文本不会被当作 shell 命令直接运行。
 
 当前可通过 Linux CLI 的 `knowledge-index` 为已登记文档建立本地字符 n-gram 向量，
-再用 `knowledge-vector-search` 做有界召回；这是同步索引基础，不代表后台 embedding
-队列或自动执行已经启用。
+再用 `knowledge-vector-search` 做有界召回；采集/import 还会创建 durable embedding
+job，可由一次性 `knowledge-worker` 或显式 `knowledge-worker --watch` 轮询处理。
 
 Linux 查询入口和 Runtime 会读取知识空间的当前 active generation，并校验 owner 与
 visibility；不会把 generation `1` 当作永久默认值。首次使用由 `knowledge-help` 或
@@ -122,15 +122,16 @@ yunxi-linux knowledge-generation-activate --generation <N> --cwd .
 `knowledge-generation-readiness` 输出 manifest、文档/chunk/vector/job 计数和失败原因；
 `knowledge-generation-seal` 只会在候选文档、chunk、vector 和 job 完整时将 manifest 标记
 为 ready；未达到 ready 时激活会拒绝并保留旧代际。采集命令只接受既有的 allowlist 和固定 argv，
-worker 是一次性有界进程，后续可由 systemd timer 或 daemon 调度，但不会在本阶段偷偷
-变成长驻后台服务。
+worker 默认是一次性有界进程；需要常驻时必须显式使用 `knowledge-worker --watch`，由
+systemd、supervisor 或终端托管，并绑定一个明确 workspace，不会在后台偷偷扫描其他空间。
 
 队列闭环现在也可显式验证：先用
 `yunxi-linux knowledge-enqueue <document-id> --cwd .` 为文档当前 generation 入队，
 再用 `yunxi-linux knowledge-worker --max-jobs 1 --cwd .` 处理有限数量的任务。worker
 只使用当前本地 provider，成功后才完成任务；模型不匹配、代际过期或索引失败会记录为
-`failed`，不会覆盖已有向量。该命令是一次性、有界执行入口，不会自行扫描工作区，也不
-会替代未来的 daemon/systemd 调度器。
+`failed`，不会覆盖已有向量。该命令默认是一次性、有界执行入口，不会自行扫描工作区，
+也不替代未来的跨 workspace daemon/systemd 调度器；显式 `--watch` 只在传入的 workspace
+内轮询。
 领取中的任务带五分钟 lease；worker 崩溃后，下一次领取会回收过期 lease，旧 worker
 的迟到提交会被拒绝。失败任务可用 `yunxi-linux knowledge-retry <job-id> --cwd .`
 显式恢复，最多三次尝试且保留 `last_error`。对于 provider/索引临时失败，worker 会

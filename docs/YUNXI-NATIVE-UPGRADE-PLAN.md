@@ -341,15 +341,16 @@ space/owner/visibility，并在同一存储边界内清理文档、FTS、向量�
 本增量已补齐 durable `knowledge_embedding_jobs` 队列契约：作业关联
 `document_id`、embedding model 与 generation，入队会校验文档代际并对重复请求幂等；
 领取使用 SQLite `IMMEDIATE` 事务，`complete`/`fail` 只允许合法的 worker 状态转换，
-失败只记录队列状态并保留已有向量。当前仅落地 SQLite 表、类型与存储方法，尚未接入
-Planner 或执行器；实际任务执行由有界 CLI worker 提供，daemon 调度留待后续增量。
+失败只记录队列状态并保留已有向量。实际任务执行由有界 CLI worker 提供；system
+knowledge 的 Planner 只读召回已经接入，project/private 仍保持显式查询边界，daemon
+级跨 workspace 调度留待后续增量。
 
-当前增量已把队列接成一个可验证的最小执行闭环：`SqliteKnowledgeStore` 提供一次性
+当前增量已把队列接成一个可验证的最小执行闭环：`SqliteKnowledgeStore` 提供有界的
 `process_next_embedding_job`，先按 worker lease 领取，再用当前本地字符 n-gram provider
 建立整篇文档向量，成功后完成任务；provider/model 不匹配或索引失败会记录为 `failed`
-并保留旧向量。Linux CLI 暴露 `knowledge-worker` 一次只处理一条任务，便于 systemd
-timer、daemon 或人工诊断调用；它仍不是常驻调度器，也没有接入 Planner 或自动重试，
-active generation 的读取边界、staging worker 和原子激活已经落地。
+并保留旧向量。Linux CLI 默认一次性处理有限 batch；显式 `--watch` 才会在一个明确
+workspace 内按间隔轮询，便于 systemd/supervisor 托管。active generation 的读取边界、
+staging worker 和原子激活已经落地。
 
 为避免 daemon 或终端进程崩溃后留下永久 `running` 任务，领取事务还会回收超过五分钟
 未更新的 worker lease，并把它重新置为 `pending`；旧 worker 随后提交 complete/fail
