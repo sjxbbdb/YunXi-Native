@@ -360,6 +360,7 @@ fn run_knowledge_enqueue(document_id: String, embedding_model: String, cwd: Path
             "embedding_model": job.embedding_model,
             "generation": job.generation,
             "attempts": job.attempts,
+            "next_attempt_at_millis": job.next_attempt_at_millis,
         }))?
     );
     Ok(())
@@ -380,6 +381,7 @@ fn run_knowledge_retry(job_id: i64, cwd: PathBuf) -> Result<()> {
             "embedding_model": job.embedding_model,
             "generation": job.generation,
             "attempts": job.attempts,
+            "next_attempt_at_millis": job.next_attempt_at_millis,
             "last_error": job.last_error,
         }))?
     );
@@ -408,6 +410,7 @@ fn run_knowledge_worker(worker_id: Option<String>, max_jobs: usize, cwd: PathBuf
             "embedding_model": result.job.embedding_model,
             "generation": result.job.generation,
             "attempts": result.job.attempts,
+            "next_attempt_at_millis": result.job.next_attempt_at_millis,
             "chunks_indexed": result.chunks_indexed,
             "last_error": result.job.last_error,
         }));

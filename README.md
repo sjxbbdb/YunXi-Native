@@ -96,7 +96,10 @@ visibility；不会把 generation `1` 当作永久默认值。首次使用由 `k
 会替代未来的 daemon/systemd 调度器。
 领取中的任务带五分钟 lease；worker 崩溃后，下一次领取会回收过期 lease，旧 worker
 的迟到提交会被拒绝。失败任务可用 `yunxi-linux knowledge-retry <job-id> --cwd .`
-显式恢复，最多三次尝试且保留 `last_error`；不会在 provider 故障时形成无界自动循环。
+显式恢复，最多三次尝试且保留 `last_error`。对于 provider/索引临时失败，worker 会
+写入持久化 `next_attempt_at_millis`，按有界指数退避自动到期重试；代际过期、文档
+缺失和模型不匹配会直接终态失败，不会在错误条件下形成无界自动循环。worker 仍是
+一次性有界 CLI，不会自行变成长驻调度器。
 成功的 `knowledge-man`/`knowledge-help` 采集会在写入文档后自动创建当前 provider 的
 pending job，并在 JSON 中返回 job 元数据；随后可用 `knowledge-worker` 有界处理。
 如果文档正文变化，旧向量与旧 job 会在同一 ingest 事务中失效，下一次采集会重新入队。

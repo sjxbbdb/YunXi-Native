@@ -14,7 +14,16 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const EMBEDDING_JOB_LEASE_MILLIS: i64 = 5 * 60 * 1_000;
+const EMBEDDING_RETRY_BASE_MILLIS: i64 = 1_000;
+const EMBEDDING_RETRY_MAX_MILLIS: i64 = 60 * 1_000;
 pub const MAX_EMBEDDING_JOB_ATTEMPTS: i64 = 3;
+
+fn embedding_retry_delay_millis(attempts: i64) -> i64 {
+    let exponent = attempts.saturating_sub(1).min(16) as u32;
+    EMBEDDING_RETRY_BASE_MILLIS
+        .saturating_mul(1_i64.checked_shl(exponent).unwrap_or(i64::MAX))
+        .min(EMBEDDING_RETRY_MAX_MILLIS)
+}
 use yunxi_agent_core::{AgentError, AgentResult};
 use yunxi_agent_persona::{MemoryEmbeddingProvider, cosine_similarity, yunxi_home_dir};
 
@@ -200,6 +209,7 @@ pub struct KnowledgeEmbeddingJob {
     pub attempts: i64,
     pub worker_id: Option<String>,
     pub last_error: Option<String>,
+    pub next_attempt_at_millis: i64,
     pub created_at_millis: i64,
     pub updated_at_millis: i64,
 }
@@ -285,8 +295,9 @@ impl SqliteKnowledgeStore {
             .execute(
                 "INSERT INTO knowledge_embedding_jobs
                     (document_id, embedding_model, generation, status, attempts,
-                     worker_id, last_error, created_at_millis, updated_at_millis)
-                 VALUES (?1, ?2, ?3, 'pending', 0, NULL, NULL, ?4, ?4)
+                     worker_id, last_error, next_attempt_at_millis,
+                     created_at_millis, updated_at_millis)
+                 VALUES (?1, ?2, ?3, 'pending', 0, NULL, NULL, ?4, ?4, ?4)
                  ON CONFLICT(document_id, embedding_model, generation) DO NOTHING",
                 params![document_id, embedding_model, generation, now],
             )
@@ -352,19 +363,32 @@ impl SqliteKnowledgeStore {
             .execute(
                 "UPDATE knowledge_embedding_jobs
                  SET status = 'pending', worker_id = NULL,
-                     last_error = 'embedding worker lease expired', updated_at_millis = ?1
+                     last_error = 'embedding worker lease expired',
+                     next_attempt_at_millis = ?1, updated_at_millis = ?1
                  WHERE status = 'running' AND updated_at_millis <= ?2",
                 params![now, lease_cutoff],
             )
             .map_err(|error| {
                 sqlite_error(&self.database, "reclaim expired embedding jobs", error)
             })?;
+        transaction
+            .execute(
+                "UPDATE knowledge_embedding_jobs
+                 SET status = 'pending', worker_id = NULL,
+                     next_attempt_at_millis = ?1, updated_at_millis = ?1
+                 WHERE status = 'failed' AND attempts < ?2
+                   AND next_attempt_at_millis <= ?1",
+                params![now, MAX_EMBEDDING_JOB_ATTEMPTS],
+            )
+            .map_err(|error| {
+                sqlite_error(&self.database, "promote due embedding retries", error)
+            })?;
         let job_id = transaction
             .query_row(
                 "SELECT job_id FROM knowledge_embedding_jobs
-                 WHERE status = 'pending'
+                 WHERE status = 'pending' AND next_attempt_at_millis <= ?1
                  ORDER BY created_at_millis ASC, job_id ASC LIMIT 1",
-                [],
+                params![now],
                 |row| row.get::<_, i64>(0),
             )
             .optional()
@@ -405,6 +429,7 @@ impl SqliteKnowledgeStore {
             worker_id,
             KnowledgeEmbeddingJobStatus::Completed,
             None,
+            false,
         )
     }
 
@@ -418,11 +443,22 @@ impl SqliteKnowledgeStore {
         if error_message.trim().is_empty() || error_message.chars().count() > 4096 {
             return Err(storage_error("embedding job failure message is invalid"));
         }
+        self.fail_embedding_job_with_policy(job_id, worker_id, error_message, false)
+    }
+
+    fn fail_embedding_job_with_policy(
+        &self,
+        job_id: i64,
+        worker_id: &str,
+        error_message: &str,
+        retryable: bool,
+    ) -> AgentResult<KnowledgeEmbeddingJob> {
         self.finish_embedding_job(
             job_id,
             worker_id,
             KnowledgeEmbeddingJobStatus::Failed,
             Some(error_message),
+            retryable,
         )
     }
 
@@ -443,7 +479,8 @@ impl SqliteKnowledgeStore {
         let updated = transaction
             .execute(
                 "UPDATE knowledge_embedding_jobs
-                 SET status = 'pending', worker_id = NULL, updated_at_millis = ?1
+                 SET status = 'pending', worker_id = NULL,
+                     next_attempt_at_millis = ?1, updated_at_millis = ?1
                  WHERE job_id = ?2 AND status = 'failed' AND attempts < ?3",
                 params![now_millis(), job_id, MAX_EMBEDDING_JOB_ATTEMPTS],
             )
@@ -475,39 +512,49 @@ impl SqliteKnowledgeStore {
             return Ok(None);
         };
         let outcome = match self.read_document_generation(&job.document_id) {
-            Err(error) => Err(storage_error(error.to_string())),
-            Ok(None) => Err(storage_error("embedding job document no longer exists")),
-            Ok(Some(generation)) if generation != job.generation => Err(storage_error(format!(
-                "embedding job generation {} is stale; current document generation differs",
-                job.generation
-            ))),
-            Ok(Some(_)) if job.embedding_model != provider.model_id() => {
+            Err(error) => (false, Err(storage_error(error.to_string()))),
+            Ok(None) => (
+                false,
+                Err(storage_error("embedding job document no longer exists")),
+            ),
+            Ok(Some(generation)) if generation != job.generation => (
+                false,
+                Err(storage_error(format!(
+                    "embedding job generation {} is stale; current document generation differs",
+                    job.generation
+                ))),
+            ),
+            Ok(Some(_)) if job.embedding_model != provider.model_id() => (
+                false,
                 Err(storage_error(format!(
                     "embedding provider model {} does not match queued model {}",
                     provider.model_id(),
                     job.embedding_model
-                )))
-            }
-            Ok(Some(_)) => self
-                .index_document_with_embeddings(&job.document_id, provider)
-                .map(|summary| summary.chunks_indexed),
+                ))),
+            ),
+            Ok(Some(_)) => (
+                true,
+                self.index_document_with_embeddings(&job.document_id, provider)
+                    .map(|summary| summary.chunks_indexed),
+            ),
         };
         match outcome {
-            Ok(chunks_indexed) => {
+            (_, Ok(chunks_indexed)) => {
                 let completed = self.complete_embedding_job(job.job_id, worker_id)?;
                 Ok(Some(KnowledgeEmbeddingWorkerResult {
                     job: completed,
                     chunks_indexed,
                 }))
             }
-            Err(error) => {
+            (retryable, Err(error)) => {
                 let message = error.to_string();
                 let message = if message.chars().count() > 4096 {
                     message.chars().take(4096).collect::<String>()
                 } else {
                     message
                 };
-                let failed = self.fail_embedding_job(job.job_id, worker_id, &message)?;
+                let failed = self
+                    .fail_embedding_job_with_policy(job.job_id, worker_id, &message, retryable)?;
                 Ok(Some(KnowledgeEmbeddingWorkerResult {
                     job: failed,
                     chunks_indexed: 0,
@@ -535,6 +582,7 @@ impl SqliteKnowledgeStore {
         worker_id: &str,
         status: KnowledgeEmbeddingJobStatus,
         error_message: Option<&str>,
+        retryable: bool,
     ) -> AgentResult<KnowledgeEmbeddingJob> {
         if job_id <= 0 {
             return Err(storage_error("embedding job id is invalid"));
@@ -547,15 +595,40 @@ impl SqliteKnowledgeStore {
             .map_err(|error| {
                 sqlite_error(&self.database, "begin embedding job transition", error)
             })?;
+        let attempts = transaction
+            .query_row(
+                "SELECT attempts FROM knowledge_embedding_jobs
+                 WHERE job_id = ?1 AND status = 'running' AND worker_id = ?2",
+                params![job_id, worker_id],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()
+            .map_err(|error| sqlite_error(&self.database, "read embedding job attempts", error))?
+            .ok_or_else(|| {
+                storage_error("embedding job is not running under the requested worker")
+            })?;
+        let now = now_millis();
+        let next_attempt_at_millis = if status == KnowledgeEmbeddingJobStatus::Failed
+            && retryable
+            && attempts < MAX_EMBEDDING_JOB_ATTEMPTS
+        {
+            now.saturating_add(embedding_retry_delay_millis(attempts))
+        } else if status == KnowledgeEmbeddingJobStatus::Failed {
+            i64::MAX
+        } else {
+            now
+        };
         let updated = transaction
             .execute(
                 "UPDATE knowledge_embedding_jobs
-                 SET status = ?1, last_error = ?2, updated_at_millis = ?3
-                 WHERE job_id = ?4 AND status = 'running' AND worker_id = ?5",
+                 SET status = ?1, last_error = ?2, next_attempt_at_millis = ?3,
+                     updated_at_millis = ?4
+                 WHERE job_id = ?5 AND status = 'running' AND worker_id = ?6",
                 params![
                     status.as_str(),
                     error_message,
-                    now_millis(),
+                    next_attempt_at_millis,
+                    now,
                     job_id,
                     worker_id
                 ],
@@ -1640,7 +1713,8 @@ fn read_embedding_job(
     let row = transaction
         .query_row(
             "SELECT job_id, document_id, embedding_model, generation, status,
-                    attempts, worker_id, last_error, created_at_millis, updated_at_millis
+                    attempts, worker_id, last_error, next_attempt_at_millis,
+                    created_at_millis, updated_at_millis
              FROM knowledge_embedding_jobs WHERE job_id = ?1",
             params![job_id],
             |row| {
@@ -1655,6 +1729,7 @@ fn read_embedding_job(
                     row.get::<_, Option<String>>(7)?,
                     row.get::<_, i64>(8)?,
                     row.get::<_, i64>(9)?,
+                    row.get::<_, i64>(10)?,
                 ))
             },
         )
@@ -1668,8 +1743,9 @@ fn read_embedding_job(
         attempts: row.5,
         worker_id: row.6,
         last_error: row.7,
-        created_at_millis: row.8,
-        updated_at_millis: row.9,
+        next_attempt_at_millis: row.8,
+        created_at_millis: row.9,
+        updated_at_millis: row.10,
     })
 }
 
@@ -1683,7 +1759,7 @@ fn initialize_schema(connection: &Connection, path: &Path) -> AgentResult<()> {
              );
              INSERT INTO knowledge_schema(schema_version)
                 SELECT 1 WHERE NOT EXISTS (SELECT 1 FROM knowledge_schema);
-             UPDATE knowledge_schema SET schema_version = 2 WHERE schema_version < 2;
+             UPDATE knowledge_schema SET schema_version = 3 WHERE schema_version < 3;
              CREATE TABLE IF NOT EXISTS knowledge_spaces (
                 space_id TEXT PRIMARY KEY,
                 kind TEXT NOT NULL CHECK(kind IN ('system', 'project', 'private')),
@@ -1719,6 +1795,7 @@ fn initialize_schema(connection: &Connection, path: &Path) -> AgentResult<()> {
                 attempts INTEGER NOT NULL CHECK(attempts >= 0),
                 worker_id TEXT,
                 last_error TEXT,
+                next_attempt_at_millis INTEGER NOT NULL DEFAULT 0,
                 created_at_millis INTEGER NOT NULL,
                 updated_at_millis INTEGER NOT NULL,
                 UNIQUE(document_id, embedding_model, generation)
@@ -1777,7 +1854,41 @@ fn initialize_schema(connection: &Connection, path: &Path) -> AgentResult<()> {
                 DELETE FROM knowledge_chunks_fts WHERE rowid = old.rowid;
              END;",
         )
-        .map_err(|error| sqlite_error(path, "initialize knowledge schema", error))
+        .map_err(|error| sqlite_error(path, "initialize knowledge schema", error))?;
+    let has_retry_schedule = connection
+        .prepare("PRAGMA table_info(knowledge_embedding_jobs)")
+        .and_then(|mut statement| {
+            statement
+                .query_map([], |row| row.get::<_, String>(1))?
+                .collect::<Result<Vec<_>, _>>()
+        })
+        .map_err(|error| sqlite_error(path, "inspect embedding job schema", error))?
+        .into_iter()
+        .any(|name| name == "next_attempt_at_millis");
+    if !has_retry_schedule {
+        connection
+            .execute(
+                "ALTER TABLE knowledge_embedding_jobs
+                 ADD COLUMN next_attempt_at_millis INTEGER NOT NULL DEFAULT 0",
+                [],
+            )
+            .map_err(|error| sqlite_error(path, "migrate embedding retry schedule", error))?;
+    }
+    connection
+        .execute(
+            "UPDATE knowledge_schema SET schema_version = 3 WHERE schema_version < 3",
+            [],
+        )
+        .map_err(|error| sqlite_error(path, "update knowledge schema version", error))?;
+    connection
+        .execute_batch(
+            "DROP INDEX IF EXISTS idx_knowledge_embedding_jobs_pending;
+             CREATE INDEX IF NOT EXISTS idx_knowledge_embedding_jobs_pending
+                ON knowledge_embedding_jobs(status, next_attempt_at_millis,
+                                            created_at_millis, job_id);",
+        )
+        .map_err(|error| sqlite_error(path, "refresh embedding retry index", error))?;
+    Ok(())
 }
 
 fn ensure_space_metadata(

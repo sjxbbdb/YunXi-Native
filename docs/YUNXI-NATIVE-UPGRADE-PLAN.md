@@ -323,8 +323,13 @@ active generation 的读取边界已落地，staging/原子激活仍留在后续
 重试策略与退避仍需后续单独设计。
 
 同时提供了显式 `retry_embedding_job`/`knowledge-retry` 恢复边界：只有 `failed` 状态
-且尚未超过三次尝试的任务才能重新排队，原始 `last_error` 会保留用于诊断。worker
-不会在 provider 故障时自行循环重试；真正的退避、告警和 daemon 调度仍留待后续设计。
+且尚未超过三次尝试的任务才能重新排队，原始 `last_error` 会保留用于诊断。它是
+人工强制恢复入口，真正的常驻 daemon 调度、告警和跨任务退避仍留待后续设计。
+
+队列现在为每个任务持久化 `next_attempt_at_millis`。provider 或索引临时失败会按
+有界指数退避自动到期重试（最多三次），而文档缺失、generation 过期和 provider
+model 不匹配被视为终态失败；lease 回收仍立即恢复，不套用退避。常驻 daemon 的
+调度、告警和跨任务退避策略仍不在本切片范围内。
 
 `ensure_system_space` 只在 system 空间不存在时初始化 generation `1`，不会覆盖已有
 active generation。采集得到的文档会在写入前绑定当前 active generation，避免空间升级

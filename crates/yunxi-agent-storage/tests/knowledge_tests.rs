@@ -342,6 +342,89 @@ fn failed_embedding_jobs_require_explicit_bounded_retry() {
     assert!(store.retry_embedding_job(queued.job_id).is_err());
 }
 
+#[derive(Clone)]
+struct FailingEmbeddingProvider;
+
+impl MemoryEmbeddingProvider for FailingEmbeddingProvider {
+    fn model_id(&self) -> &str {
+        "fixture-v1"
+    }
+
+    fn dimensions(&self) -> usize {
+        2
+    }
+
+    fn embed(&self, _text: &str) -> Result<MemoryEmbedding, MemoryEmbeddingError> {
+        Err(MemoryEmbeddingError::Provider(
+            "temporary embedding outage".to_string(),
+        ))
+    }
+}
+
+#[test]
+fn retryable_embedding_failures_wait_for_due_time_and_stop_at_budget() {
+    let (dir, store, document) = queue_fixture();
+    store
+        .upsert_chunk(&chunk(
+            &document.document_id,
+            "system",
+            KnowledgeVisibility::Public,
+            "systemctl status service",
+        ))
+        .expect("chunk");
+    let provider = FailingEmbeddingProvider;
+    let queued = store
+        .enqueue_embedding_job(&document.document_id, provider.model_id(), 1)
+        .expect("enqueue");
+
+    let first = store
+        .process_next_embedding_job("worker-a", &provider)
+        .expect("first worker step")
+        .expect("first failed job");
+    assert_eq!(first.job.status, KnowledgeEmbeddingJobStatus::Failed);
+    assert_eq!(first.job.attempts, 1);
+    assert!(first.job.next_attempt_at_millis > first.job.updated_at_millis);
+    assert!(
+        store
+            .claim_embedding_job("worker-b")
+            .expect("retry is not due")
+            .is_none()
+    );
+
+    let connection = Connection::open(dir.path().join("knowledge.sqlite3")).expect("database");
+    connection
+        .execute(
+            "UPDATE knowledge_embedding_jobs SET next_attempt_at_millis = 0 WHERE job_id = ?1",
+            [queued.job_id],
+        )
+        .expect("make retry due");
+    let second = store
+        .process_next_embedding_job("worker-b", &provider)
+        .expect("second worker step")
+        .expect("second failed job");
+    assert_eq!(second.job.attempts, 2);
+    assert!(second.job.next_attempt_at_millis > second.job.updated_at_millis);
+
+    connection
+        .execute(
+            "UPDATE knowledge_embedding_jobs SET next_attempt_at_millis = 0 WHERE job_id = ?1",
+            [queued.job_id],
+        )
+        .expect("make final retry due");
+    let third = store
+        .process_next_embedding_job("worker-c", &provider)
+        .expect("third worker step")
+        .expect("third failed job");
+    assert_eq!(third.job.attempts, MAX_EMBEDDING_JOB_ATTEMPTS);
+    assert_eq!(third.job.next_attempt_at_millis, i64::MAX);
+    assert!(
+        store
+            .claim_embedding_job("worker-d")
+            .expect("exhausted retry")
+            .is_none()
+    );
+}
+
 #[test]
 fn changed_ingest_invalidates_completed_embedding_job_before_reenqueue() {
     let (_dir, store, document) = queue_fixture();
