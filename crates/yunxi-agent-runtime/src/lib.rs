@@ -1,6 +1,15 @@
 mod general_companion;
 #[cfg(target_os = "linux")]
 mod linux_source;
+
+/// Detect the bounded Linux host source version used by knowledge provenance.
+///
+/// This is intentionally a narrow facade over `os-release`; callers should
+/// treat `None` as unknown rather than guessing a distribution.
+#[cfg(target_os = "linux")]
+pub fn detect_linux_source_version() -> Option<String> {
+    linux_source::detect_source_version()
+}
 mod love_letter;
 mod runtime_state;
 mod session_driver;

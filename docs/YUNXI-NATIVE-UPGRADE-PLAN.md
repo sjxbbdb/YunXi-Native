@@ -339,6 +339,9 @@ chunk 的旧向量，保证增量索引不会复用过期 embedding。
 project/private 空间不采用这一例外，文档版本必须与空间版本一致，防止私有
 知识在版本不匹配时被静默写入。
 
+`knowledge-man` 与 `knowledge-help` 默认使用同一份有界 `os-release` 探测结果，
+显式 `--source-version` 仍可覆盖；探测失败只记录 `unknown`，不猜测发行版。
+
 Linux Runtime 已增加只读 `knowledge-search` 入口，并在 Linux 目标构建 prompt 时
 有限召回 system 空间的 FTS 证据。证据被明确标记为不可信参考材料，不能覆盖
 Tool/Approval/Sandbox 规则，也不会直接进入执行器；Windows Runtime 不启用该分支。

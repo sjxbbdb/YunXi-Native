@@ -109,8 +109,8 @@ pub(crate) enum LinuxShellCommand {
         /// Optional man section, for example `1` or `8`.
         #[arg(long)]
         section: Option<String>,
-        /// Explicit distro/runtime version recorded as provenance.
-        #[arg(long, default_value = "unknown")]
+        /// Distro/runtime version recorded as provenance; `auto` reads os-release.
+        #[arg(long, default_value = "auto")]
         source_version: String,
         /// Workspace whose `.yunxi/knowledge/knowledge.sqlite3` receives the document.
         #[arg(long, default_value = ".")]
@@ -120,8 +120,8 @@ pub(crate) enum LinuxShellCommand {
     KnowledgeHelp {
         /// Allowlisted command: fish, git, systemctl, pacman, or ip.
         command: String,
-        /// Explicit distro/runtime version recorded as provenance.
-        #[arg(long, default_value = "unknown")]
+        /// Distro/runtime version recorded as provenance; `auto` reads os-release.
+        #[arg(long, default_value = "auto")]
         source_version: String,
         /// Workspace whose `.yunxi/knowledge/knowledge.sqlite3` receives the document.
         #[arg(long, default_value = ".")]
@@ -390,7 +390,7 @@ async fn run_knowledge_help(command: String, source_version: String, cwd: PathBu
         .with_context(|| format!("无法访问知识工作区: {}", cwd.display()))?;
     let request = knowledge_collector::CommandHelpRequest {
         command,
-        source_version,
+        source_version: resolve_source_version(&source_version),
     };
     let cancellation = yunxi_agent_core::AgentCancellationToken::new();
     let collected = knowledge_collector::collect_help_command(&request, &cwd, cancellation).await?;
@@ -436,7 +436,7 @@ async fn run_knowledge_man(
     let request = knowledge_collector::ManPageRequest {
         topic,
         section,
-        source_version,
+        source_version: resolve_source_version(&source_version),
     };
     let cancellation = yunxi_agent_core::AgentCancellationToken::new();
     let collected = knowledge_collector::collect_man_page(&request, &cwd, cancellation).await?;
@@ -469,6 +469,21 @@ async fn run_knowledge_man(
     result["chunks_removed"] = serde_json::json!(summary.chunks_removed);
     println!("{}", serde_json::to_string_pretty(&result)?);
     Ok(())
+}
+
+fn resolve_source_version(requested: &str) -> String {
+    if requested != "auto" {
+        return requested.to_string();
+    }
+    #[cfg(target_os = "linux")]
+    {
+        return yunxi_agent_runtime::detect_linux_source_version()
+            .unwrap_or_else(|| "unknown".to_string());
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        "unknown".to_string()
+    }
 }
 
 const SYSTEMD_UNIT: &str = include_str!("../packaging/systemd/yunxi-linux.service");
@@ -2361,6 +2376,23 @@ mod tests {
         assert_eq!(parse_daemon_lock_owner("42"), Some((42, None)));
         assert_eq!(parse_daemon_lock_owner(""), None);
         assert_eq!(parse_daemon_lock_owner(r#"{"pid":"#), None);
+    }
+
+    #[test]
+    fn source_version_resolution_preserves_explicit_values() {
+        assert_eq!(resolve_source_version("arch-rolling"), "arch-rolling");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn source_version_resolution_auto_uses_a_safe_value() {
+        let value = resolve_source_version("auto");
+        assert!(!value.is_empty());
+        assert!(
+            value
+                .chars()
+                .all(|character| character.is_ascii_alphanumeric() || ".@_:+-".contains(character))
+        );
     }
 
     #[cfg(unix)]
