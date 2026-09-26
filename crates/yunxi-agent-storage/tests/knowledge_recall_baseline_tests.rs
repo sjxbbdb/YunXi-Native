@@ -1,4 +1,5 @@
 use tempfile::tempdir;
+use yunxi_agent_persona::{LocalChargramEmbedding, MemoryEmbeddingProvider};
 use yunxi_agent_storage::{
     KnowledgeDocument, KnowledgeSearchScope, KnowledgeSpaceKind, KnowledgeSpaceSpec,
     KnowledgeVisibility, SqliteKnowledgeStore,
@@ -49,10 +50,7 @@ fn scope() -> KnowledgeSearchScope {
     }
 }
 
-#[test]
-fn linux_knowledge_recall_baseline_covers_two_hundred_tasks() {
-    let dir = tempdir().expect("tempdir");
-    let store = SqliteKnowledgeStore::new(dir.path().join("knowledge.sqlite3"));
+fn seed_baseline_store(store: &SqliteKnowledgeStore) {
     store
         .upsert_space(&KnowledgeSpaceSpec {
             space_id: "system-linux".to_string(),
@@ -90,6 +88,13 @@ fn linux_knowledge_recall_baseline_covers_two_hundred_tasks() {
             )
             .expect("document");
     }
+}
+
+#[test]
+fn linux_knowledge_recall_baseline_covers_two_hundred_tasks() {
+    let dir = tempdir().expect("tempdir");
+    let store = SqliteKnowledgeStore::new(dir.path().join("knowledge.sqlite3"));
+    seed_baseline_store(&store);
 
     let scope = scope();
     let mut top1 = 0usize;
@@ -117,4 +122,49 @@ fn linux_knowledge_recall_baseline_covers_two_hundred_tasks() {
         top1, total,
         "the deterministic baseline must rank source first"
     );
+}
+
+#[test]
+fn linux_knowledge_vector_recall_baseline_covers_two_hundred_tasks() {
+    let dir = tempdir().expect("tempdir");
+    let store = SqliteKnowledgeStore::new(dir.path().join("knowledge.sqlite3"));
+    seed_baseline_store(&store);
+    let provider = LocalChargramEmbedding::default();
+
+    for (command, _) in COMMANDS {
+        store
+            .index_document_with_embeddings(&format!("eval-linux-{command}"), &provider)
+            .expect("vector index");
+    }
+
+    let scope = scope();
+    let mut top1 = 0usize;
+    let mut top5 = 0usize;
+    let total = COMMANDS.len() * INTENTS.len();
+    for (command, _) in COMMANDS {
+        let expected = format!("eval-linux-{command}");
+        for intent in INTENTS {
+            let query = provider
+                .embed(&format!("{command} {intent}"))
+                .expect("query embedding");
+            let results = store
+                .search_vectors_versioned(&query.values, provider.model_id(), &scope, None, 5)
+                .expect("vector search");
+            assert!(
+                !results.is_empty(),
+                "no vector result for {command} / {intent}"
+            );
+            if results[0].document_id == expected {
+                top1 += 1;
+            }
+            if results.iter().any(|item| item.document_id == expected) {
+                top5 += 1;
+            }
+        }
+    }
+
+    assert_eq!(total, 200);
+    eprintln!("vector baseline: top1={top1}/{total}, top5={top5}/{total}");
+    assert_eq!(top5, 180, "vector baseline regression in Recall@5");
+    assert_eq!(top1, 99, "vector baseline regression in Recall@1");
 }

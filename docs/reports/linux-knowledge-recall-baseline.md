@@ -20,6 +20,11 @@
 | Recall@5 | 200/200 = 1.00 |
 | 运行方式 | `cargo test -p yunxi-agent-storage --test knowledge_recall_baseline_tests --locked` |
 
+同一夹具还会用 `yunxi-local-chargram-v1` 建立独立向量并运行相同的 200 条查询。当前
+向量-only 基线为 Recall@1 `99/200 = 0.495`、Recall@5 `180/200 = 0.900`；这是一条
+防回归基线，不冒充最终质量门。运行时使用 FTS + 向量的混合召回，后续更换 embedding
+模型或 rerank 策略时必须重新报告并解释这两个指标。
+
 该结果是本地字符/FTS 基线的回归门，不代表真实发行版文档上的最终质量，也不替代后续
 人工整理的 200+ 真实任务集。下一步应加入真实 `man`/`--help` 文本、版本差异、危险命令
 风险标签、撤回和权限隔离样本，并报告 MRR、source accuracy、risk-label accuracy 与
