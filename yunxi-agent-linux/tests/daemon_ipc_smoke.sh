@@ -201,6 +201,15 @@ with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
     except socket.timeout:
         raise AssertionError("daemon kept an idle pre-handshake connection open")
 
+with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
+    sock.settimeout(8)
+    sock.connect(socket_path)
+    hello(sock)
+    try:
+        sock.recv(1)
+    except socket.timeout:
+        raise AssertionError("daemon kept a post-handshake idle connection open")
+
 print("daemon-ipc-smoke=ok")
 PY
 
