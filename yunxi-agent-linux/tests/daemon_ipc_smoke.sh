@@ -26,6 +26,7 @@ export XDG_CONFIG_HOME="$HOME/.config"
 export XDG_STATE_HOME="$HOME/.local/state"
 mkdir -p "$HOME" "$XDG_CONFIG_HOME" "$XDG_STATE_HOME"
 SOCKET="$RUNTIME_DIR/yunxi/yunxi.sock"
+LOCK="$RUNTIME_DIR/yunxi/yunxi.lock"
 DAEMON_LOG="$TMP_ROOT/daemon.log"
 DAEMON_PID=""
 
@@ -48,6 +49,18 @@ done
 [[ -S "$SOCKET" ]] || {
   echo "daemon socket did not appear" >&2
   cat "$DAEMON_LOG" >&2
+  exit 1
+}
+[[ "$(stat -c '%a' "$(dirname "$SOCKET")")" == "700" ]] || {
+  echo "daemon runtime directory is not mode 700" >&2
+  exit 1
+}
+[[ "$(stat -c '%a' "$SOCKET")" == "600" ]] || {
+  echo "daemon socket is not mode 600" >&2
+  exit 1
+}
+[[ -f "$LOCK" ]] || {
+  echo "daemon lock did not appear" >&2
   exit 1
 }
 
@@ -95,15 +108,21 @@ def hello(sock):
     frame = recv(sock)
     assert frame["kind"] == "hello_ack", frame
     assert frame["protocol_version"] == protocol_version, frame
+    assert frame["max_frame_bytes"] == 24 * 1024 * 1024, frame
+    assert {"ping", "turn", "cancel", "follow_resync", "follow_replay"}.issubset(
+        frame["capabilities"]
+    ), frame
 
 
 with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
+    sock.settimeout(5)
     sock.connect(socket_path)
     hello(sock)
     send(sock, {"kind": "ping", "request_id": "ping-1"})
     assert recv(sock) == {"kind": "pong", "request_id": "ping-1"}
 
 with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
+    sock.settimeout(5)
     sock.connect(socket_path)
     hello(sock)
     send(
@@ -120,6 +139,7 @@ with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
     assert frame["run_id"] == "missing-run", frame
 
 with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
+    sock.settimeout(5)
     sock.connect(socket_path)
     hello(sock)
     send(
@@ -146,6 +166,19 @@ print("daemon-ipc-smoke=ok")
 PY
 
 kill -TERM "$DAEMON_PID"
+for _ in $(seq 1 40); do
+  if ! kill -0 "$DAEMON_PID" 2>/dev/null; then
+    break
+  fi
+  sleep 0.05
+done
+if kill -0 "$DAEMON_PID" 2>/dev/null; then
+  echo "daemon did not exit within 2 seconds after SIGTERM" >&2
+  cat "$DAEMON_LOG" >&2
+  kill -KILL "$DAEMON_PID" 2>/dev/null || true
+  wait "$DAEMON_PID" 2>/dev/null || true
+  exit 1
+fi
 set +e
 wait "$DAEMON_PID"
 STATUS=$?
@@ -158,6 +191,10 @@ if [[ "$STATUS" -ne 0 ]]; then
 fi
 [[ ! -e "$SOCKET" ]] || {
   echo "daemon socket remained after SIGTERM" >&2
+  exit 1
+}
+[[ ! -e "$LOCK" ]] || {
+  echo "daemon lock remained after SIGTERM" >&2
   exit 1
 }
 trap - EXIT
