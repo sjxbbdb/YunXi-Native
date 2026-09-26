@@ -2546,7 +2546,7 @@ async fn run_shell_intercept(
     send_client_frame(
         &mut writer,
         &ClientFrame::Turn {
-            request_id,
+            request_id: request_id.clone(),
             cwd: cwd.display().to_string(),
             prompt,
             session_id: session_id.or_else(|| std::env::var("YUNXI_SHELL_SESSION").ok()),
@@ -2557,8 +2557,29 @@ async fn run_shell_intercept(
         },
     )
     .await?;
+    let interrupt = tokio::signal::ctrl_c();
+    tokio::pin!(interrupt);
+    let mut cancel_sent = false;
     loop {
-        let Some(frame) = read_frame::<_, ServerFrame>(&mut reader).await? else {
+        let frame = if cancel_sent {
+            read_frame::<_, ServerFrame>(&mut reader).await?
+        } else {
+            tokio::select! {
+                result = &mut interrupt => {
+                    result.context("等待 fish shell 回合的 Ctrl+C 信号失败")?;
+                    send_client_frame(
+                        &mut writer,
+                        &ClientFrame::Cancel {
+                            request_id: request_id.clone(),
+                        },
+                    ).await?;
+                    cancel_sent = true;
+                    continue;
+                }
+                frame = read_frame::<_, ServerFrame>(&mut reader) => frame?,
+            }
+        };
+        let Some(frame) = frame else {
             bail!("YunXi shell daemon 在回合完成前断开连接");
         };
         match frame {
@@ -2613,6 +2634,9 @@ async fn run_shell_intercept(
                 .await?;
             }
             ServerFrame::Done { status } => {
+                if cancel_sent && status == "cancelled" {
+                    return Ok(());
+                }
                 if status != "completed" {
                     bail!("yunxi {status}");
                 }
@@ -2624,6 +2648,9 @@ async fn run_shell_intercept(
                     eprintln!("[yunxi session {thread_id}]");
                 }
                 ServerFrame::Done { status } => {
+                    if cancel_sent && status == "cancelled" {
+                        return Ok(());
+                    }
                     if status != "completed" {
                         bail!("yunxi {status}");
                     }
