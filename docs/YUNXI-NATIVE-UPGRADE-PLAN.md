@@ -443,9 +443,13 @@ Embedding 计算与批量写入之间若发生 chunk 更新，替换事务会再
 进入 Planner 或执行器。
 
 在同一边界上补充了受限的 `--help` 采集器，仅允许 `fish`、`git`、`systemctl`、
-`pacman` 和 `ip` 五个命令，固定执行 `<allowlisted-command> --help`，不接受路径、
-参数或任意可执行文件。它与 `man` 采集共用 provenance、输出上限和 `ingest_text`，
-后续若扩展名单必须逐项审查副作用与版本差异。
+`pacman`、`ip` 以及 `awk`、`cat`、`cp`、`find`、`grep`、`ls`、`rm`、`sed`、`tar`。
+它始终固定执行 `<allowlisted-command> --help`，不接受路径、参数或任意可执行文件，
+并与 `man` 采集共用 provenance、输出上限和 `ingest_text`；后续若扩展名单必须逐项
+审查副作用与版本差异。
+真实 Linux 验收脚本 `yunxi-agent-linux/tests/knowledge_help_smoke.sh` 会逐项检查这些
+命令的文档身份、source version、固定 `[command, --help]` argv，以及缺少工具时的
+结构化状态，并拒绝带路径、参数或 shell 语法的伪命令。
 
 `system-linux` 空间本身使用 `mixed` 版本标记，以便同时收纳 Ubuntu、Arch 等
 发行版的系统资料；实际的发行版/运行时版本仍逐文档、逐 chunk 保存并随召回结果

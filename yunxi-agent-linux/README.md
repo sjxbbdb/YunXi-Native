@@ -289,4 +289,10 @@ p50/p95，不设置跨机器硬阈值）：
 bash yunxi-agent-linux/tests/knowledge_latency_smoke.sh ./target/release/yunxi-linux
 ```
 
+命令帮助采集器的完整 allowlist、固定 argv 和缺失工具回退可用真实 Linux smoke 验证：
+
+```bash
+bash yunxi-agent-linux/tests/knowledge_help_smoke.sh ./target/release/yunxi-linux
+```
+
 Linux 发行构建只使用本子项目的 `yunxi-linux` 二进制；Windows/Web/语音/微信参考源码位于仓库的 `references/`，不作为依赖构建。

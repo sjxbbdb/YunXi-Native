@@ -134,7 +134,8 @@ pub(crate) enum LinuxShellCommand {
     },
     /// Collect help text from an explicitly allowlisted local command.
     KnowledgeHelp {
-        /// Allowlisted command: fish, git, systemctl, pacman, or ip.
+        /// Allowlisted command: fish, git, systemctl, pacman, ip, or a small
+        /// fixed set of read-only shell/coreutils help commands.
         command: String,
         /// Distro/runtime version recorded as provenance; `auto` reads os-release.
         #[arg(long, default_value = "auto")]
@@ -322,7 +323,8 @@ pub(crate) enum LinuxShellCommand {
     },
     /// Collect allowlisted help text into a candidate generation.
     KnowledgeStageHelp {
-        /// Allowlisted command: fish, git, systemctl, pacman, or ip.
+        /// Allowlisted command: fish, git, systemctl, pacman, ip, or a small
+        /// fixed set of read-only shell/coreutils help commands.
         command: String,
         /// Candidate generation returned by knowledge-generation-begin.
         #[arg(long)]

@@ -150,7 +150,8 @@ space；topic/section 不允许 shell 语法或路径，缺少 man、非零退�
 
 还提供受限的本机命令帮助采集：
 `yunxi-linux knowledge-help systemctl --source-version ubuntu-24.04 --cwd .`。
-当前只允许 `fish`、`git`、`systemctl`、`pacman`、`ip`，始终固定为
+当前只允许 `fish`、`git`、`systemctl`、`pacman`、`ip` 以及固定的
+`awk`、`cat`、`cp`、`find`、`grep`、`ls`、`rm`、`sed`、`tar`，始终固定为
 `<命令> --help`，不会执行用户提供的路径或参数。
 
 `system-linux` 是可容纳多发行版资料的混合版本空间：空间自身标记为 `mixed`，

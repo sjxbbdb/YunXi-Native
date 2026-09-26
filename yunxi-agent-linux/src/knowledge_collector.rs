@@ -257,7 +257,22 @@ fn validate_request(request: &ManPageRequest) -> AgentResult<()> {
 }
 
 fn validate_help_request(request: &CommandHelpRequest) -> AgentResult<()> {
-    const ALLOWED_COMMANDS: &[&str] = &["fish", "git", "systemctl", "pacman", "ip"];
+    const ALLOWED_COMMANDS: &[&str] = &[
+        "fish",
+        "git",
+        "systemctl",
+        "pacman",
+        "ip",
+        "awk",
+        "cat",
+        "cp",
+        "find",
+        "grep",
+        "ls",
+        "rm",
+        "sed",
+        "tar",
+    ];
     if !ALLOWED_COMMANDS.contains(&request.command.as_str()) {
         return Err(yunxi_agent_core::AgentError::Execution {
             message: format!("command help is not allowlisted: {}", request.command),
@@ -481,6 +496,25 @@ mod tests {
             source_version: "ubuntu-24.04".to_string(),
         };
         assert!(validate_help_request(&invalid).is_err());
+    }
+
+    #[test]
+    fn coreutils_help_commands_are_allowlisted_without_opening_arbitrary_paths() {
+        for command in ["awk", "cat", "cp", "find", "grep", "ls", "rm", "sed", "tar"] {
+            let request = CommandHelpRequest {
+                command: command.to_string(),
+                source_version: "ubuntu-24.04".to_string(),
+            };
+            assert!(validate_help_request(&request).is_ok(), "{command}");
+            assert_eq!(help_argv(&request), vec![command, "--help"]);
+        }
+        for command in ["./cat", "/usr/bin/grep", "grep --help", "cat;id"] {
+            let request = CommandHelpRequest {
+                command: command.to_string(),
+                source_version: "ubuntu-24.04".to_string(),
+            };
+            assert!(validate_help_request(&request).is_err(), "{command}");
+        }
     }
 
     #[test]
