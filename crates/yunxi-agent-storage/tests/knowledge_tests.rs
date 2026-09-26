@@ -141,7 +141,7 @@ fn active_space_scope_reads_current_generation_and_enforces_identity() {
 
 #[test]
 fn generation_manifest_build_and_readiness_do_not_change_active_scope() {
-    let (_dir, store, _document) = queue_fixture();
+    let (dir, store, document) = queue_fixture();
     let building = store
         .begin_generation_build(
             "system-linux",
@@ -210,6 +210,52 @@ fn generation_manifest_build_and_readiness_do_not_change_active_scope() {
             .iter()
             .any(|reason| reason.contains("active generation"))
     );
+
+    let fixture_chunk = chunk(
+        &document.document_id,
+        "system",
+        KnowledgeVisibility::Public,
+        "systemctl status service",
+    );
+    store.upsert_chunk(&fixture_chunk).expect("active chunk");
+    let provider = LocalChargramEmbedding::default();
+    let embedding = provider.embed(&fixture_chunk.content).expect("embedding");
+    store
+        .upsert_vector(&KnowledgeVector {
+            chunk_id: fixture_chunk.chunk_id,
+            space_id: document.space_id.clone(),
+            embedding_model: embedding.model,
+            generation: 1,
+            vector: embedding.values,
+        })
+        .expect("active vector");
+    let connection = Connection::open(dir.path().join("knowledge.sqlite3")).expect("database");
+    connection
+        .execute(
+            "INSERT INTO knowledge_generation_manifests
+                (space_id, generation, state, embedding_model, vector_dimensions,
+                 expected_documents, indexed_documents, content_digest,
+                 created_at_millis, completed_at_millis)
+             VALUES ('system-linux', 1, 'ready', ?1, ?2, 1, 1, 'active-digest', 1, 1)",
+            rusqlite::params![provider.model_id(), provider.dimensions() as i64],
+        )
+        .expect("active manifest");
+    let active_readiness = store
+        .inspect_generation_readiness(
+            &KnowledgeSearchScope {
+                space_id: "system-linux".to_string(),
+                owner: "system".to_string(),
+                generation: 1,
+                visibility: KnowledgeVisibility::Public,
+            },
+            provider.model_id(),
+            provider.dimensions(),
+        )
+        .expect("inspect active readiness");
+    assert!(active_readiness.ready, "{:?}", active_readiness.reasons);
+    assert_eq!(active_readiness.actual_documents, 1);
+    assert_eq!(active_readiness.chunks, 1);
+    assert_eq!(active_readiness.vectors, 1);
 }
 
 #[test]
