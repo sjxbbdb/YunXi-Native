@@ -129,7 +129,10 @@ pub fn ensure_system_space(store: &SqliteKnowledgeStore, _source_version: &str) 
 pub fn document_for(request: &ManPageRequest) -> KnowledgeDocument {
     let section = request.section.as_deref().unwrap_or("default");
     KnowledgeDocument {
-        document_id: format!("system-man:{section}:{}", request.topic),
+        document_id: format!(
+            "system-man:{section}:{}@{}",
+            request.topic, request.source_version
+        ),
         space_id: "system-linux".to_string(),
         title: match request.section.as_deref() {
             Some(section) => format!("man {section} {}", request.topic),
@@ -154,7 +157,7 @@ pub fn document_for(request: &ManPageRequest) -> KnowledgeDocument {
 
 fn help_document_for(request: &CommandHelpRequest) -> KnowledgeDocument {
     KnowledgeDocument {
-        document_id: format!("system-help:{}", request.command),
+        document_id: format!("system-help:{}@{}", request.command, request.source_version),
         space_id: "system-linux".to_string(),
         title: format!("{} --help", request.command),
         source: "local-linux".to_string(),
@@ -196,14 +199,7 @@ fn validate_request(request: &ManPageRequest) -> AgentResult<()> {
     if let Some(section) = &request.section {
         validate_token(section, "man section")?;
     }
-    if request.source_version.trim().is_empty()
-        || request.source_version.chars().count() > MAX_TOKEN_CHARS
-        || request.source_version.contains(['\r', '\n'])
-    {
-        return Err(yunxi_agent_core::AgentError::Execution {
-            message: "man source version is invalid".to_string(),
-        });
-    }
+    validate_source_version(&request.source_version, "man source version")?;
     Ok(())
 }
 
@@ -214,12 +210,19 @@ fn validate_help_request(request: &CommandHelpRequest) -> AgentResult<()> {
             message: format!("command help is not allowlisted: {}", request.command),
         });
     }
-    if request.source_version.trim().is_empty()
-        || request.source_version.chars().count() > MAX_TOKEN_CHARS
-        || request.source_version.contains(['\r', '\n'])
+    validate_source_version(&request.source_version, "command help source version")?;
+    Ok(())
+}
+
+fn validate_source_version(value: &str, label: &str) -> AgentResult<()> {
+    if value.is_empty()
+        || value.chars().count() > MAX_TOKEN_CHARS
+        || !value
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || ".@_:+-".contains(character))
     {
         return Err(yunxi_agent_core::AgentError::Execution {
-            message: "command help source version is invalid".to_string(),
+            message: format!("{label} is invalid"),
         });
     }
     Ok(())
@@ -380,7 +383,7 @@ mod tests {
     #[test]
     fn document_identity_and_provenance_are_stable() {
         let document = document_for(&request());
-        assert_eq!(document.document_id, "system-man:1:fish");
+        assert_eq!(document.document_id, "system-man:1:fish@ubuntu-24.04");
         assert_eq!(document.source, "local-linux");
         assert_eq!(document.owner, "system");
         assert_eq!(
@@ -404,7 +407,7 @@ mod tests {
         assert_eq!(help_argv(&request), vec!["systemctl", "--help"]);
         assert_eq!(
             help_document_for(&request).document_id,
-            "system-help:systemctl"
+            "system-help:systemctl@ubuntu-24.04"
         );
         let metadata: serde_json::Value = serde_json::from_str(
             &help_document_for(&CommandHelpRequest {
@@ -422,6 +425,16 @@ mod tests {
             source_version: "ubuntu-24.04".to_string(),
         };
         assert!(validate_help_request(&invalid).is_err());
+    }
+
+    #[test]
+    fn source_version_is_part_of_document_identity() {
+        let ubuntu = document_for(&request());
+        let mut arch_request = request();
+        arch_request.source_version = "arch-rolling".to_string();
+        let arch = document_for(&arch_request);
+        assert_ne!(ubuntu.document_id, arch.document_id);
+        assert_eq!(ubuntu.title, arch.title);
     }
 
     #[test]

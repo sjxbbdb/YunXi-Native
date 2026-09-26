@@ -92,7 +92,8 @@ space；topic/section 不允许 shell 语法或路径，缺少 man、非零退�
 
 `system-linux` 是可容纳多发行版资料的混合版本空间：空间自身标记为 `mixed`，
 但每个文档和 chunk 仍保留采集时传入的发行版/运行时版本（例如
-`ubuntu-24.04` 或 `arch-rolling`）。project/private 空间则继续要求文档版本与
+`ubuntu-24.04` 或 `arch-rolling`）；`man/help` 采集器也把该版本纳入文档 ID，
+因此同一主题的不同发行版资料可以并存。project/private 空间则继续要求文档版本与
 空间版本严格一致，避免私有资料发生静默串版本。
 
 采集后的 system 知识可以用 `yunxi-linux knowledge-search <query> --cwd .` 只读检查；

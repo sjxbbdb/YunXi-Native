@@ -320,7 +320,7 @@ FTS 内容或孤立向量；文档 hash 与分块参数都未变化时会跳过�
 
 当前还新增了 Linux P0 `man` 采集器：只接受经过 token 校验的 topic/section，使用
 固定 `man --locale=C -P cat` argv、只读执行策略、`MANPAGER/PAGER/TERM` 固定环境和
-64 KiB 输出上限；成功结果带稳定的 `system-man:<section>:<topic>` 文档身份并调用
+64 KiB 输出上限；成功结果带稳定的 `system-man:<section>:<topic>@<source-version>` 文档身份并调用
 `ingest_text`，缺少 man、非零退出、超时或截断不会把 stderr 当作知识正文，也不会
 进入 Planner 或执行器。
 
@@ -331,7 +331,8 @@ FTS 内容或孤立向量；文档 hash 与分块参数都未变化时会跳过�
 
 `system-linux` 空间本身使用 `mixed` 版本标记，以便同时收纳 Ubuntu、Arch 等
 发行版的系统资料；实际的发行版/运行时版本仍逐文档、逐 chunk 保存并随召回结果
-保留。project/private 空间不采用这一例外，文档版本必须与空间版本一致，防止私有
+保留，且 P0 `man/help` 文档 ID 包含 source version，避免同主题跨发行版互相覆盖。
+project/private 空间不采用这一例外，文档版本必须与空间版本一致，防止私有
 知识在版本不匹配时被静默写入。
 
 Linux Runtime 已增加只读 `knowledge-search` 入口，并在 Linux 目标构建 prompt 时
