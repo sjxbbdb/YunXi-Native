@@ -34,6 +34,16 @@ grep -Fq 'ExecStart=/usr/bin/yunxi-linux daemon' "$service" \
   || fail "service must use the packaged absolute binary"
 grep -Fq 'NoNewPrivileges=yes' "$service" \
   || fail "service must set NoNewPrivileges"
+grep -Fq 'MemoryHigh=1536M' "$service" \
+  || fail "service must set the memory soft limit"
+grep -Fq 'MemoryMax=2G' "$service" \
+  || fail "service must set the memory hard limit"
+grep -Fq 'TasksMax=128' "$service" \
+  || fail "service must cap daemon task count"
+grep -Fq 'LimitNOFILE=4096' "$service" \
+  || fail "service must cap open files"
+grep -Fq 'OOMPolicy=stop' "$service" \
+  || fail "service must define OOM behavior"
 grep -Fq 'UMask=0077' "$service" \
   || fail "service must set a private umask"
 grep -Fq 'WantedBy=default.target' "$service" \

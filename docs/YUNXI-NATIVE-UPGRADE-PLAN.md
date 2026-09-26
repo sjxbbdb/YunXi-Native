@@ -521,9 +521,12 @@ scope、source、预算、丢弃原因和召回数量。两者只共享本轮上
 - 兼容第二个发行版前先冻结 Host/Tool adapter 接口。
 
 当前增量：已新增 `packaging/arch/yunxi-native/PKGBUILD` 与配套用户级 systemd unit，
-固定源码 commit 后从 workspace 构建 `/usr/bin/yunxi-linux`，不自动启用服务、不创建 root
-daemon、不删除用户数据。`packaging/README.md` 明确了 Arch 构建、fish hook、卸载和数据
-边界；安装/升级/回滚的完整可重复流水线仍未宣称完成。
+固定源码 commit 后从 workspace 构建 `/usr/bin/yunxi-linux`；service 对 daemon 设置
+`MemoryHigh=1536M`、`MemoryMax=2G`、`TasksMax=128`、`LimitNOFILE=4096` 和
+`OOMPolicy=stop`，不自动启用服务、不创建 root daemon、不删除用户数据。配套的
+`package-smoke.sh` 可在无 Arch 环境中静态验证这些安装、安全和生命周期边界。
+`packaging/README.md` 明确了 Arch 构建、fish hook、卸载和数据边界；安装/升级/回滚的
+完整可重复流水线仍未宣称完成。
 
 **门槛**：冷启动/热查询/常驻 RSS/p95 延迟有基线；安装、升级、回滚和卸载可重复执行。
 

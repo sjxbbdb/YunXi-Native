@@ -11,6 +11,11 @@ KillSignal=SIGTERM
 TimeoutStopSec=10s
 NoNewPrivileges=yes
 PrivateTmp=yes
+OOMPolicy=stop
+MemoryHigh=1536M
+MemoryMax=2G
+TasksMax=128
+LimitNOFILE=4096
 UMask=0077
 
 [Install]

@@ -3,11 +3,23 @@
 `packaging/arch/yunxi-native/PKGBUILD` 是面向 Arch Linux 的源码构建包，当前定位为
 可审计的发行工程骨架，不是已经发布到 AUR 的二进制包。
 
+用户级 service 默认对 daemon 自身设置保守的资源边界：`MemoryHigh=1536M`、
+`MemoryMax=2G`、`TasksMax=128`、`LimitNOFILE=4096`，并在越界触发 OOM 时停止该服务。
+这些限制只约束 YunXi daemon，不会替外部 Provider 进程设限；需要调整时应在本机复制
+service 到用户配置目录后显式覆盖，不修改打包文件中的安全基线。
+
 在没有 Arch `makepkg` 的环境中，可以先运行静态打包验收，检查源码 pin、安装路径、
 user service 安全项以及“不自动启用服务”的边界：
 
 ```bash
 bash packaging/arch/yunxi-native/package-smoke.sh
+```
+
+在具备 `systemd-analyze` 的 Linux 环境中，还可以验证 user service 的完整语法和
+绝对 `ExecStart` 路径；脚本只使用临时 root，不启动服务：
+
+```bash
+bash packaging/arch/yunxi-native/systemd-unit-smoke.sh
 ```
 
 ## 构建与安装
