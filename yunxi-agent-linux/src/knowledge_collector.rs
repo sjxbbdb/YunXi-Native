@@ -114,6 +114,49 @@ pub fn ingest_collected_man_page(
     ingest_collected_knowledge(store, collected, options)
 }
 
+/// Stage one successful collection into a building generation.
+///
+/// The collector keeps the same validation boundary as active ingestion, but
+/// delegates to storage's generation-scoped tables so the active knowledge
+/// index remains untouched until an explicit activation command is used.
+pub fn stage_collected_knowledge(
+    store: &SqliteKnowledgeStore,
+    collected: &CollectedKnowledge,
+    generation: i64,
+    options: &KnowledgeChunkingOptions,
+) -> AgentResult<KnowledgeIngestSummary> {
+    if collected.status != CollectionStatus::Ok
+        || collected.exit_code != Some(0)
+        || collected.truncated
+    {
+        return Err(yunxi_agent_core::AgentError::Execution {
+            message: "cannot stage an unsuccessful or truncated knowledge collection".to_string(),
+        });
+    }
+    if collected.text.trim().is_empty() {
+        return Err(yunxi_agent_core::AgentError::Execution {
+            message: "cannot stage an empty knowledge collection".to_string(),
+        });
+    }
+    if generation < 0 {
+        return Err(yunxi_agent_core::AgentError::Execution {
+            message: "knowledge generation must be non-negative".to_string(),
+        });
+    }
+    let mut document = collected.document.clone();
+    document.generation = generation;
+    store.stage_text_document(&document, &collected.text, options)
+}
+
+pub fn stage_collected_man_page(
+    store: &SqliteKnowledgeStore,
+    collected: &CollectedKnowledge,
+    generation: i64,
+    options: &KnowledgeChunkingOptions,
+) -> AgentResult<KnowledgeIngestSummary> {
+    stage_collected_knowledge(store, collected, generation, options)
+}
+
 pub fn ensure_system_space(store: &SqliteKnowledgeStore, _source_version: &str) -> AgentResult<()> {
     if store
         .active_space_scope(

@@ -202,6 +202,82 @@ pub(crate) enum LinuxShellCommand {
         #[arg(long, default_value = ".")]
         cwd: PathBuf,
     },
+    /// Start a new system knowledge generation without changing the active one.
+    KnowledgeGenerationBegin {
+        /// Workspace whose knowledge database receives the candidate manifest.
+        #[arg(long, default_value = ".")]
+        cwd: PathBuf,
+    },
+    /// Collect allowlisted help text into a candidate generation.
+    KnowledgeStageHelp {
+        /// Allowlisted command: fish, git, systemctl, pacman, or ip.
+        command: String,
+        /// Candidate generation returned by knowledge-generation-begin.
+        #[arg(long)]
+        generation: i64,
+        /// Distro/runtime version recorded as provenance; `auto` reads os-release.
+        #[arg(long, default_value = "auto")]
+        source_version: String,
+        /// Workspace whose knowledge database receives the staging document.
+        #[arg(long, default_value = ".")]
+        cwd: PathBuf,
+    },
+    /// Collect one local man page into a candidate generation.
+    KnowledgeStageMan {
+        /// Man topic such as `fish` or `systemctl`.
+        topic: String,
+        /// Candidate generation returned by knowledge-generation-begin.
+        #[arg(long)]
+        generation: i64,
+        /// Optional man section, for example `1` or `8`.
+        #[arg(long)]
+        section: Option<String>,
+        /// Distro/runtime version recorded as provenance; `auto` reads os-release.
+        #[arg(long, default_value = "auto")]
+        source_version: String,
+        /// Workspace whose knowledge database receives the staging document.
+        #[arg(long, default_value = ".")]
+        cwd: PathBuf,
+    },
+    /// Process one pending staging-generation embedding job and exit.
+    KnowledgeGenerationWorker {
+        /// Stable worker identity used for the SQLite lease.
+        #[arg(long)]
+        worker_id: Option<String>,
+        /// Maximum number of pending staging jobs to process in this invocation.
+        #[arg(long, default_value_t = 1)]
+        max_jobs: usize,
+        /// Workspace whose knowledge database is processed.
+        #[arg(long, default_value = ".")]
+        cwd: PathBuf,
+    },
+    /// Inspect whether a candidate generation is ready for explicit activation.
+    KnowledgeGenerationReadiness {
+        /// Candidate generation returned by knowledge-generation-begin.
+        #[arg(long)]
+        generation: i64,
+        /// Workspace whose knowledge database is inspected.
+        #[arg(long, default_value = ".")]
+        cwd: PathBuf,
+    },
+    /// Seal a complete building generation as ready without changing active state.
+    KnowledgeGenerationSeal {
+        /// Candidate generation returned by knowledge-generation-begin.
+        #[arg(long)]
+        generation: i64,
+        /// Workspace whose knowledge database is updated.
+        #[arg(long, default_value = ".")]
+        cwd: PathBuf,
+    },
+    /// Atomically activate a ready candidate generation.
+    KnowledgeGenerationActivate {
+        /// Candidate generation returned by knowledge-generation-begin.
+        #[arg(long)]
+        generation: i64,
+        /// Workspace whose knowledge database is updated.
+        #[arg(long, default_value = ".")]
+        cwd: PathBuf,
+    },
     /// Hidden long-lived process used by shell-intercept.
     #[command(hide = true)]
     Daemon,
@@ -280,6 +356,34 @@ pub(crate) async fn run_command(command: LinuxShellCommand) -> Result<()> {
         LinuxShellCommand::KnowledgeRetract { document_id, cwd } => {
             run_knowledge_retract(document_id, cwd)
         }
+        LinuxShellCommand::KnowledgeGenerationBegin { cwd } => run_knowledge_generation_begin(cwd),
+        LinuxShellCommand::KnowledgeStageHelp {
+            command,
+            generation,
+            source_version,
+            cwd,
+        } => run_knowledge_stage_help(command, generation, source_version, cwd).await,
+        LinuxShellCommand::KnowledgeStageMan {
+            topic,
+            generation,
+            section,
+            source_version,
+            cwd,
+        } => run_knowledge_stage_man(topic, generation, section, source_version, cwd).await,
+        LinuxShellCommand::KnowledgeGenerationWorker {
+            worker_id,
+            max_jobs,
+            cwd,
+        } => run_knowledge_generation_worker(worker_id, max_jobs, cwd),
+        LinuxShellCommand::KnowledgeGenerationReadiness { generation, cwd } => {
+            run_knowledge_generation_readiness(generation, cwd)
+        }
+        LinuxShellCommand::KnowledgeGenerationSeal { generation, cwd } => {
+            run_knowledge_generation_seal(generation, cwd)
+        }
+        LinuxShellCommand::KnowledgeGenerationActivate { generation, cwd } => {
+            run_knowledge_generation_activate(generation, cwd)
+        }
         LinuxShellCommand::Daemon => run_daemon().await,
     }
 }
@@ -323,6 +427,281 @@ fn run_knowledge_search(
         }))?
     );
     Ok(())
+}
+
+fn run_knowledge_generation_begin(cwd: PathBuf) -> Result<()> {
+    let cwd = canonical_knowledge_cwd(cwd)?;
+    let store = yunxi_agent_storage::SqliteKnowledgeStore::for_workspace(&cwd);
+    knowledge_collector::ensure_system_space(&store, "mixed")?;
+    let provider = yunxi_agent_persona::LocalChargramEmbedding::default();
+    let generation = store.begin_generation_build(
+        "system-linux",
+        "system",
+        yunxi_agent_storage::KnowledgeVisibility::Public,
+        Some(provider.model_id()),
+        Some(provider.dimensions()),
+    )?;
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&serde_json::json!({
+            "schema_version": 1,
+            "status": "building",
+            "space_id": generation.space_id,
+            "generation": generation.generation,
+            "embedding_model": generation.embedding_model,
+            "dimensions": generation.vector_dimensions,
+            "active_generation_unchanged": true,
+        }))?
+    );
+    Ok(())
+}
+
+async fn run_knowledge_stage_help(
+    command: String,
+    generation: i64,
+    source_version: String,
+    cwd: PathBuf,
+) -> Result<()> {
+    let cwd = canonical_knowledge_cwd(cwd)?;
+    let request = knowledge_collector::CommandHelpRequest {
+        command,
+        source_version: resolve_source_version(&source_version),
+    };
+    let cancellation = yunxi_agent_core::AgentCancellationToken::new();
+    let collected = knowledge_collector::collect_help_command(&request, &cwd, cancellation).await?;
+    run_staged_collection_result(&cwd, generation, &collected, "linux.command_help")
+}
+
+async fn run_knowledge_stage_man(
+    topic: String,
+    generation: i64,
+    section: Option<String>,
+    source_version: String,
+    cwd: PathBuf,
+) -> Result<()> {
+    let cwd = canonical_knowledge_cwd(cwd)?;
+    let request = knowledge_collector::ManPageRequest {
+        topic,
+        section,
+        source_version: resolve_source_version(&source_version),
+    };
+    let cancellation = yunxi_agent_core::AgentCancellationToken::new();
+    let collected = knowledge_collector::collect_man_page(&request, &cwd, cancellation).await?;
+    run_staged_collection_result(&cwd, generation, &collected, "linux.man")
+}
+
+fn run_staged_collection_result(
+    cwd: &Path,
+    generation: i64,
+    collected: &knowledge_collector::CollectedKnowledge,
+    collector: &str,
+) -> Result<()> {
+    let mut result = serde_json::json!({
+        "schema_version": 1,
+        "collector": collector,
+        "status": collected.status,
+        "document_id": collected.document.document_id,
+        "generation": generation,
+        "argv": collected.argv,
+        "exit_code": collected.exit_code,
+        "truncated": collected.truncated,
+        "active_generation_unchanged": true,
+    });
+    if collected.status != knowledge_collector::CollectionStatus::Ok {
+        result["stderr"] = serde_json::Value::String(collected.stderr.clone());
+        println!("{}", serde_json::to_string_pretty(&result)?);
+        return Ok(());
+    }
+
+    let store = yunxi_agent_storage::SqliteKnowledgeStore::for_workspace(cwd);
+    let provider = yunxi_agent_persona::LocalChargramEmbedding::default();
+    let options = yunxi_agent_storage::KnowledgeChunkingOptions::default();
+    let summary = if collector == "linux.man" {
+        knowledge_collector::stage_collected_man_page(&store, collected, generation, &options)?
+    } else {
+        knowledge_collector::stage_collected_knowledge(&store, collected, generation, &options)?
+    };
+    let job = store.enqueue_staging_embedding_job(
+        "system-linux",
+        &collected.document.document_id,
+        provider.model_id(),
+        generation,
+    )?;
+    result["content_hash"] = serde_json::Value::String(summary.content_hash);
+    result["chunks_written"] = serde_json::json!(summary.chunks_written);
+    result["chunks_removed"] = serde_json::json!(summary.chunks_removed);
+    result["embedding_job"] = serde_json::json!({
+        "status": job.status.as_str(),
+        "job_id": job.job_id,
+        "embedding_model": job.embedding_model,
+        "generation": job.generation,
+        "attempts": job.attempts,
+    });
+    println!("{}", serde_json::to_string_pretty(&result)?);
+    Ok(())
+}
+
+fn run_knowledge_generation_worker(
+    worker_id: Option<String>,
+    max_jobs: usize,
+    cwd: PathBuf,
+) -> Result<()> {
+    if max_jobs == 0 || max_jobs > 1_000 {
+        bail!("--max-jobs 必须在 1 到 1000 之间");
+    }
+    let cwd = canonical_knowledge_cwd(cwd)?;
+    let store = yunxi_agent_storage::SqliteKnowledgeStore::for_workspace(&cwd);
+    let provider = yunxi_agent_persona::LocalChargramEmbedding::default();
+    let worker_id =
+        worker_id.unwrap_or_else(|| format!("yunxi-linux-staging-worker-{}", std::process::id()));
+    let mut jobs = Vec::new();
+    for _ in 0..max_jobs {
+        let Some(result) = store.process_next_staging_embedding_job(&worker_id, &provider)? else {
+            break;
+        };
+        jobs.push(serde_json::json!({
+            "status": result.job.status.as_str(),
+            "job_id": result.job.job_id,
+            "space_id": result.job.space_id,
+            "document_id": result.job.document_id,
+            "embedding_model": result.job.embedding_model,
+            "generation": result.job.generation,
+            "attempts": result.job.attempts,
+            "next_attempt_at_millis": result.job.next_attempt_at_millis,
+            "chunks_indexed": result.chunks_indexed,
+            "last_error": result.job.last_error,
+        }));
+    }
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&serde_json::json!({
+            "schema_version": 1,
+            "status": if jobs.is_empty() { "idle" } else { "processed" },
+            "worker_id": worker_id,
+            "embedding_model": provider.model_id(),
+            "jobs": jobs,
+            "active_generation_unchanged": true,
+        }))?
+    );
+    Ok(())
+}
+
+fn run_knowledge_generation_readiness(generation: i64, cwd: PathBuf) -> Result<()> {
+    let cwd = canonical_knowledge_cwd(cwd)?;
+    let store = yunxi_agent_storage::SqliteKnowledgeStore::for_workspace(&cwd);
+    let active = active_system_scope(&store)?
+        .context("Linux 知识库尚未初始化，请先运行 knowledge-generation-begin")?;
+    let scope = yunxi_agent_storage::KnowledgeSearchScope {
+        generation,
+        ..active
+    };
+    let provider = yunxi_agent_persona::LocalChargramEmbedding::default();
+    let readiness =
+        store.inspect_generation_readiness(&scope, provider.model_id(), provider.dimensions())?;
+    let manifest = store.generation_manifest("system-linux", generation)?;
+    let manifest_json = manifest.as_ref().map(|manifest| {
+        serde_json::json!({
+            "space_id": manifest.space_id,
+            "generation": manifest.generation,
+            "state": manifest.state.as_str(),
+            "embedding_model": manifest.embedding_model,
+            "vector_dimensions": manifest.vector_dimensions,
+            "expected_documents": manifest.expected_documents,
+            "indexed_documents": manifest.indexed_documents,
+            "content_digest": manifest.content_digest,
+            "created_at_millis": manifest.created_at_millis,
+            "completed_at_millis": manifest.completed_at_millis,
+        })
+    });
+    let readiness_json = serde_json::json!({
+        "ready": readiness.ready,
+        "expected_documents": readiness.expected_documents,
+        "actual_documents": readiness.actual_documents,
+        "chunks": readiness.chunks,
+        "vectors": readiness.vectors,
+        "pending_jobs": readiness.pending_jobs,
+        "running_jobs": readiness.running_jobs,
+        "failed_jobs": readiness.failed_jobs,
+        "reasons": readiness.reasons,
+    });
+    let candidate_sealed = manifest
+        .as_ref()
+        .is_some_and(|manifest| manifest.state.as_str() == "ready");
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&serde_json::json!({
+            "schema_version": 1,
+            "space_id": "system-linux",
+            "generation": generation,
+            "manifest": manifest_json,
+            "readiness": readiness_json,
+            "active_generation": active.generation,
+            "candidate_sealed": candidate_sealed,
+            "activation_required": candidate_sealed && active.generation != generation,
+        }))?
+    );
+    Ok(())
+}
+
+fn run_knowledge_generation_seal(generation: i64, cwd: PathBuf) -> Result<()> {
+    let cwd = canonical_knowledge_cwd(cwd)?;
+    let store = yunxi_agent_storage::SqliteKnowledgeStore::for_workspace(&cwd);
+    let active = active_system_scope(&store)?
+        .context("Linux 知识库尚未初始化，请先运行 knowledge-generation-begin")?;
+    let scope = yunxi_agent_storage::KnowledgeSearchScope {
+        generation,
+        ..active
+    };
+    let provider = yunxi_agent_persona::LocalChargramEmbedding::default();
+    let generation =
+        store.seal_generation_ready(&scope, provider.model_id(), provider.dimensions())?;
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&serde_json::json!({
+            "schema_version": 1,
+            "status": "ready",
+            "space_id": generation.space_id,
+            "generation": generation.generation,
+            "embedding_model": generation.embedding_model,
+            "dimensions": generation.vector_dimensions,
+            "expected_documents": generation.expected_documents,
+            "indexed_documents": generation.indexed_documents,
+            "content_digest": generation.content_digest,
+            "active_generation_unchanged": true,
+        }))?
+    );
+    Ok(())
+}
+
+fn run_knowledge_generation_activate(generation: i64, cwd: PathBuf) -> Result<()> {
+    let cwd = canonical_knowledge_cwd(cwd)?;
+    let store = yunxi_agent_storage::SqliteKnowledgeStore::for_workspace(&cwd);
+    let active = active_system_scope(&store)?
+        .context("Linux 知识库尚未初始化，请先运行 knowledge-generation-begin")?;
+    let scope = yunxi_agent_storage::KnowledgeSearchScope {
+        generation,
+        ..active.clone()
+    };
+    let provider = yunxi_agent_persona::LocalChargramEmbedding::default();
+    let generation =
+        store.activate_generation(&scope, provider.model_id(), provider.dimensions())?;
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&serde_json::json!({
+            "schema_version": 1,
+            "status": "activated",
+            "space_id": generation.space_id,
+            "generation": generation.generation,
+            "embedding_model": generation.embedding_model,
+            "dimensions": generation.vector_dimensions,
+            "active_generation": generation.generation,
+        }))?
+    );
+    Ok(())
+}
+
+fn canonical_knowledge_cwd(cwd: PathBuf) -> Result<PathBuf> {
+    std::fs::canonicalize(&cwd).with_context(|| format!("无法访问知识工作区: {}", cwd.display()))
 }
 
 fn run_knowledge_index(document_id: String, cwd: PathBuf) -> Result<()> {

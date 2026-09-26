@@ -1356,6 +1356,97 @@ impl SqliteKnowledgeStore {
         Ok(generation)
     }
 
+    /// Compute a deterministic digest for the documents staged in one
+    /// candidate generation. The digest is a manifest marker, not an
+    /// authorization boundary; access is still enforced by the scope.
+    pub fn staging_generation_content_digest(
+        &self,
+        scope: &KnowledgeSearchScope,
+    ) -> AgentResult<String> {
+        validate_search_scope(scope)?;
+        let connection = self.open_connection()?;
+        initialize_schema(&connection, &self.database)?;
+        let mut statement = connection
+            .prepare(
+                "SELECT document_id, content_hash
+                 FROM knowledge_staging_documents
+                 WHERE space_id = ?1 AND generation = ?2
+                   AND owner = ?3 AND visibility = ?4
+                 ORDER BY document_id ASC",
+            )
+            .map_err(|error| {
+                sqlite_error(&self.database, "prepare staging generation digest", error)
+            })?;
+        let rows = statement
+            .query_map(
+                params![
+                    scope.space_id,
+                    scope.generation,
+                    scope.owner,
+                    scope.visibility.as_str(),
+                ],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+            )
+            .map_err(|error| {
+                sqlite_error(&self.database, "query staging generation digest", error)
+            })?;
+        let mut hash = 0xcbf29ce484222325_u64;
+        for row in rows {
+            let (document_id, content_hash) = row.map_err(|error| {
+                sqlite_error(&self.database, "read staging generation digest", error)
+            })?;
+            for value in [document_id.as_str(), "\0", content_hash.as_str(), "\n"] {
+                for byte in value.as_bytes() {
+                    hash ^= u64::from(*byte);
+                    hash = hash.wrapping_mul(0x100000001b3);
+                }
+            }
+        }
+        Ok(format!("{hash:016x}"))
+    }
+
+    /// Validate a building staging generation and promote its manifest to
+    /// `ready` without changing the active generation pointer.
+    pub fn seal_generation_ready(
+        &self,
+        scope: &KnowledgeSearchScope,
+        embedding_model: &str,
+        dimensions: usize,
+    ) -> AgentResult<KnowledgeGeneration> {
+        validate_search_scope(scope)?;
+        if embedding_model.trim().is_empty() || dimensions == 0 {
+            return Err(storage_error(
+                "knowledge generation seal metadata is invalid",
+            ));
+        }
+        let readiness = self.inspect_generation_readiness(scope, embedding_model, dimensions)?;
+        let allowed_reasons = [
+            "space active generation differs from inspected generation",
+            "generation manifest state is building",
+            "generation document count does not match its manifest",
+        ];
+        let blocking_reasons = readiness
+            .reasons
+            .iter()
+            .filter(|reason| !allowed_reasons.iter().any(|allowed| reason == allowed))
+            .cloned()
+            .collect::<Vec<_>>();
+        if !blocking_reasons.is_empty() {
+            return Err(storage_error(format!(
+                "knowledge generation is not complete: {}",
+                blocking_reasons.join("; ")
+            )));
+        }
+        let digest = self.staging_generation_content_digest(scope)?;
+        self.mark_generation_ready(
+            &scope.space_id,
+            scope.generation,
+            i64::try_from(readiness.actual_documents).unwrap_or(i64::MAX),
+            i64::try_from(readiness.actual_documents).unwrap_or(i64::MAX),
+            &digest,
+        )
+    }
+
     /// Read one generation manifest without changing active retrieval state.
     pub fn generation_manifest(
         &self,

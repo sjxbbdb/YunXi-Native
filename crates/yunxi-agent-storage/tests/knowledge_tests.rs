@@ -259,6 +259,93 @@ fn generation_manifest_build_and_readiness_do_not_change_active_scope() {
 }
 
 #[test]
+fn staging_generation_digest_is_deterministic_and_scope_bound() {
+    let (_dir, store, _document) = queue_fixture();
+    let building = store
+        .begin_generation_build(
+            "system-linux",
+            "system",
+            KnowledgeVisibility::Public,
+            Some("fixture-v1"),
+            Some(2),
+        )
+        .expect("begin generation");
+    let scope = KnowledgeSearchScope {
+        space_id: "system-linux".to_string(),
+        owner: "system".to_string(),
+        generation: building.generation,
+        visibility: KnowledgeVisibility::Public,
+    };
+    let empty_digest = store
+        .staging_generation_content_digest(&scope)
+        .expect("empty digest");
+    assert_eq!(empty_digest.len(), 16);
+    let mut staged = document("system-linux", "system", KnowledgeVisibility::Public);
+    staged.generation = building.generation;
+    store
+        .stage_text_document(
+            &staged,
+            "systemctl status service",
+            &KnowledgeChunkingOptions::default(),
+        )
+        .expect("stage document");
+    let populated_digest = store
+        .staging_generation_content_digest(&scope)
+        .expect("populated digest");
+    assert_eq!(populated_digest.len(), 16);
+    assert_ne!(empty_digest, populated_digest);
+    assert_eq!(
+        populated_digest,
+        store
+            .staging_generation_content_digest(&scope)
+            .expect("repeat digest")
+    );
+}
+
+#[test]
+fn staging_generation_seal_requires_complete_vectors_and_keeps_active_scope() {
+    let (_dir, store, document) = queue_fixture();
+    let building = store
+        .begin_generation_build(
+            "system-linux",
+            "system",
+            KnowledgeVisibility::Public,
+            Some("fixture-v1"),
+            Some(2),
+        )
+        .expect("begin generation");
+    let scope = KnowledgeSearchScope {
+        space_id: "system-linux".to_string(),
+        owner: "system".to_string(),
+        generation: building.generation,
+        visibility: KnowledgeVisibility::Public,
+    };
+    let mut staged = document;
+    staged.generation = building.generation;
+    store
+        .stage_text_document(
+            &staged,
+            "systemctl status service",
+            &KnowledgeChunkingOptions::default(),
+        )
+        .expect("stage document");
+    assert!(
+        store
+            .seal_generation_ready(&scope, "fixture-v1", 2)
+            .is_err(),
+        "a candidate without vectors must not be sealed"
+    );
+    assert_eq!(
+        store
+            .active_space_scope("system-linux", "system", KnowledgeVisibility::Public)
+            .expect("active scope")
+            .expect("active scope exists")
+            .generation,
+        1
+    );
+}
+
+#[test]
 fn knowledge_schema_migrates_retry_schedule_and_generation_manifest_idempotently() {
     let dir = tempdir().expect("tempdir");
     let database = dir.path().join("knowledge.sqlite3");

@@ -355,7 +355,12 @@ staging 文档并写入 staging 向量，严格不触碰 active 文档、chunk�
 SQLite `IMMEDIATE` 事务内重新校验 ready manifest、staging 文档/chunk/vector 覆盖、
 任务状态与跨空间 document ID 冲突，再复制到 active 表、由触发器重建 FTS、切换
 `knowledge_spaces.generation` 并清理候选 staging 行；任何校验或写入失败都会回滚旧代际。
-旧代际保留和面向用户的激活命令仍留在后续设计。
+Linux CLI 已暴露这条安全管道：`knowledge-generation-begin` 创建候选代际，
+`knowledge-stage-help`/`knowledge-stage-man` 只写候选，`knowledge-generation-worker`
+有界处理候选 embedding 任务，`knowledge-generation-readiness` 输出完整性诊断，
+`knowledge-generation-seal` 在候选完整后把 manifest 标记为 ready，最后由
+`knowledge-generation-activate` 在显式确认后切换 active 指针；未 ready 的候选不会被激活，
+运行中的 active generation 不会被后台任务自动替换。
 
 采集 CLI 的成功路径现在会在 `ingest_text` 完成后为当前文档 generation 自动创建
 本地 provider 的 pending job，并在 JSON 结果中返回 job 元数据；它只入队、不启动

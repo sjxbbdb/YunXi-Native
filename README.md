@@ -86,7 +86,8 @@ Linux 知识库已经有独立的 `SqliteKnowledgeStore` 基础：数据库文�
 Linux 查询入口和 Runtime 会读取知识空间的当前 active generation，并校验 owner 与
 visibility；不会把 generation `1` 当作永久默认值。首次使用由 `knowledge-help` 或
 `knowledge-man` 受控初始化 system 空间，后续采集会绑定当时的 active generation，
-不会覆盖已有代际。未来的 staging/原子激活仍按升级计划单独实现。
+不会覆盖已有代际。候选代际的 staging、worker、readiness 和原子激活由下面的显式
+generation CLI 管道完成。
 
 存储层现已增加独立的 generation manifest：可以为某个空间创建 `building` 代际、记录
 embedding 模型/维度与文档完整性计数，并在校验完成后标记为 `ready`；这些操作不会
@@ -102,7 +103,27 @@ staging 向量，并让 readiness 读取候选文档/chunk/vector 覆盖。候�
 `knowledge_spaces.generation`。storage 层现在还提供原子 `activate_generation`：只有
 ready 候选通过文档、向量、任务和跨空间 ID 校验后，才在一个 SQLite `IMMEDIATE` 事务中
 替换 active 文档/chunk/vector、刷新 FTS 并切换 generation；失败会回滚，旧代际仍可检索。
-旧代际保留和面向用户的激活命令仍未开放。
+旧代际不会在激活失败时被破坏；面向用户的激活命令要求 readiness 通过后显式执行，
+不会自动切换运行中的知识版本。
+
+候选代际的最小 CLI 流程如下，所有步骤都不会改变当前 active generation，直到最后的
+`knowledge-generation-activate`：
+
+```text
+yunxi-linux knowledge-generation-begin --cwd .
+yunxi-linux knowledge-stage-help systemctl --generation <N> --cwd .
+yunxi-linux knowledge-stage-man systemctl --section 1 --generation <N> --cwd .
+yunxi-linux knowledge-generation-worker --max-jobs 100 --cwd .
+yunxi-linux knowledge-generation-readiness --generation <N> --cwd .
+yunxi-linux knowledge-generation-seal --generation <N> --cwd .
+yunxi-linux knowledge-generation-activate --generation <N> --cwd .
+```
+
+`knowledge-generation-readiness` 输出 manifest、文档/chunk/vector/job 计数和失败原因；
+`knowledge-generation-seal` 只会在候选文档、chunk、vector 和 job 完整时将 manifest 标记
+为 ready；未达到 ready 时激活会拒绝并保留旧代际。采集命令只接受既有的 allowlist 和固定 argv，
+worker 是一次性有界进程，后续可由 systemd timer 或 daemon 调度，但不会在本阶段偷偷
+变成长驻后台服务。
 
 队列闭环现在也可显式验证：先用
 `yunxi-linux knowledge-enqueue <document-id> --cwd .` 为文档当前 generation 入队，
