@@ -264,6 +264,12 @@ pub(crate) enum LinuxShellCommand {
         #[arg(long, default_value = ".")]
         cwd: PathBuf,
     },
+    /// List knowledge space metadata without reading indexed content.
+    KnowledgeSpaceList {
+        /// Workspace whose `.yunxi/knowledge/knowledge.sqlite3` is queried.
+        #[arg(long, default_value = ".")]
+        cwd: PathBuf,
+    },
     /// Import one explicitly selected document from stdin into a project/private space.
     KnowledgeImportStdin {
         /// Existing project/private space id.
@@ -502,6 +508,7 @@ pub(crate) async fn run_command(command: LinuxShellCommand) -> Result<()> {
             version,
             cwd,
         } => run_knowledge_space_init(space_id, kind, visibility, owner, source, version, cwd),
+        LinuxShellCommand::KnowledgeSpaceList { cwd } => run_knowledge_space_list(cwd),
         LinuxShellCommand::KnowledgeImportStdin {
             space_id,
             document_id,
@@ -976,6 +983,35 @@ fn run_knowledge_space_init(
             "source": spec.source,
             "version": spec.version,
             "generation": spec.generation,
+            "database": cwd.join(".yunxi/knowledge/knowledge.sqlite3"),
+        }))?
+    );
+    Ok(())
+}
+
+fn run_knowledge_space_list(cwd: PathBuf) -> Result<()> {
+    let cwd = canonical_knowledge_cwd(cwd)?;
+    let store = yunxi_agent_storage::SqliteKnowledgeStore::for_workspace(&cwd);
+    let spaces = store
+        .list_spaces()?
+        .into_iter()
+        .map(|space| {
+            serde_json::json!({
+                "space_id": space.space_id,
+                "kind": space.kind.as_str(),
+                "owner": space.owner,
+                "visibility": space.visibility.as_str(),
+                "source": space.source,
+                "version": space.version,
+                "generation": space.generation,
+            })
+        })
+        .collect::<Vec<_>>();
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&serde_json::json!({
+            "schema_version": 1,
+            "spaces": spaces,
             "database": cwd.join(".yunxi/knowledge/knowledge.sqlite3"),
         }))?
     );

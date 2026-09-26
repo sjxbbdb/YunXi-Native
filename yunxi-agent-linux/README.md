@@ -140,6 +140,7 @@ printf '%s\n' '项目约定：先 dry-run，再申请审批。' | \
 
 ./target/release/yunxi-linux knowledge-search 'dry-run' \
   --space-id project-demo --owner local-user --visibility owner --cwd .
+./target/release/yunxi-linux knowledge-space-list --cwd .
 ./target/release/yunxi-linux knowledge-worker --max-jobs 10 --cwd .
 ./target/release/yunxi-linux knowledge-worker --watch --interval-secs 5 --max-jobs 10 --cwd .
 ./target/release/yunxi-linux knowledge-vector-search '审批' \
@@ -159,6 +160,9 @@ printf '%s\n' '项目约定：先 dry-run，再申请审批。' | \
 lease、退避、重试和 generation 校验，按间隔处理有限数量任务；不会扫描其他
 workspace，也不会自动激活 generation。可由 systemd、supervisor 或终端在需要时托管，
 按 `Ctrl+C` 或 `SIGTERM` 停止，并输出一条结构化 stopped 记录。
+
+`knowledge-space-list` 只列出空间元数据，不读取文档正文、chunk 或向量；它用于确认
+当前 workspace 的 system/project/private 边界，输出按 `space_id` 稳定排序。
 
 ## fish 接管（Miyu 风格）
 

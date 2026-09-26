@@ -157,6 +157,40 @@ fn read_space_round_trips_metadata_without_overwriting_conflicts() {
 }
 
 #[test]
+fn list_spaces_returns_metadata_only_in_stable_order() {
+    let dir = tempdir().expect("tempdir");
+    let store = SqliteKnowledgeStore::new(dir.path().join("knowledge.sqlite3"));
+    store
+        .upsert_space(&space(
+            "z-project",
+            KnowledgeSpaceKind::Project,
+            "alice",
+            KnowledgeVisibility::Owner,
+            1,
+        ))
+        .expect("project space");
+    store
+        .upsert_space(&space(
+            "a-private",
+            KnowledgeSpaceKind::Private,
+            "alice",
+            KnowledgeVisibility::Private,
+            4,
+        ))
+        .expect("private space");
+    let spaces = store.list_spaces().expect("list spaces");
+    assert_eq!(
+        spaces
+            .iter()
+            .map(|item| item.space_id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["a-private", "z-project"]
+    );
+    assert_eq!(spaces[0].generation, 4);
+    assert_eq!(spaces[1].visibility, KnowledgeVisibility::Owner);
+}
+
+#[test]
 fn generation_manifest_build_and_readiness_do_not_change_active_scope() {
     let (dir, store, document) = queue_fixture();
     let building = store

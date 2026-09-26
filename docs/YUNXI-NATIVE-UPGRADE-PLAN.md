@@ -371,6 +371,9 @@ workspace、不自动激活 generation，并可由 systemd 或 supervisor 托管
 常驻 daemon 调度、公平性、告警与统一跨任务策略仍留待后续切片；当前 worker 已能在
 Ctrl+C 或 SIGTERM 下优雅退出并输出 stopped 记录。
 
+显式空间还提供只读的 `knowledge-space-list` 元数据入口，按稳定的 `space_id` 排序，
+不读取文档正文、chunk 或向量，便于本地诊断空间隔离而不扩大知识内容暴露面。
+
 `ensure_system_space` 只在 system 空间不存在时初始化 generation `1`，不会覆盖已有
 active generation。采集得到的文档会在写入前绑定当前 active generation，避免空间升级
 后新旧资料串代；staging 采集与 active 激活保持两个明确事务边界。

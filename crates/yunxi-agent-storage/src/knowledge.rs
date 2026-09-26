@@ -1225,6 +1225,48 @@ impl SqliteKnowledgeStore {
         }))
     }
 
+    /// List space metadata without reading any document, chunk, or vector body.
+    pub fn list_spaces(&self) -> AgentResult<Vec<KnowledgeSpaceSpec>> {
+        let connection = self.open_connection()?;
+        initialize_schema(&connection, &self.database)?;
+        let mut statement = connection
+            .prepare(
+                "SELECT space_id, kind, owner, visibility, source, version, generation
+                 FROM knowledge_spaces ORDER BY space_id ASC",
+            )
+            .map_err(|error| sqlite_error(&self.database, "prepare knowledge space list", error))?;
+        let rows = statement
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, String>(5)?,
+                    row.get::<_, i64>(6)?,
+                ))
+            })
+            .map_err(|error| sqlite_error(&self.database, "list knowledge spaces", error))?;
+        let mut spaces = Vec::new();
+        for row in rows {
+            let (space_id, kind, owner, visibility, source, version, generation) = row
+                .map_err(|error| sqlite_error(&self.database, "read knowledge space row", error))?;
+            let kind = KnowledgeSpaceKind::parse(&kind).map_err(storage_error)?;
+            let visibility = KnowledgeVisibility::parse(&visibility).map_err(storage_error)?;
+            spaces.push(KnowledgeSpaceSpec {
+                space_id,
+                kind,
+                owner,
+                visibility,
+                source,
+                version,
+                generation,
+            });
+        }
+        Ok(spaces)
+    }
+
     /// Read the active search scope for a space without changing its state.
     ///
     /// The space generation is the active generation for the current schema.

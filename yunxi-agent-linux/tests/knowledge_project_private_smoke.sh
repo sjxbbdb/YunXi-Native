@@ -66,6 +66,16 @@ assert project["kind"] == "project" and project["visibility"] == "owner", projec
 assert private["kind"] == "private" and private["visibility"] == "private", private
 PY
 
+run_json knowledge-space-list --cwd "$WORKSPACE" >"$TMP_ROOT/space-list.json"
+python3 - "$TMP_ROOT/space-list.json" <<'PY'
+import json
+import sys
+
+value = json.load(open(sys.argv[1], encoding="utf-8"))
+assert [space["space_id"] for space in value["spaces"]] == ["private-demo", "project-demo"], value
+assert all("generation" in space and "source" in space for space in value["spaces"]), value
+PY
+
 set +e
 run_json knowledge-space-init \
   --space-id project-demo \
