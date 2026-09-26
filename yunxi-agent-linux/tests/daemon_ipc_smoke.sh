@@ -162,6 +162,37 @@ with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
     assert error["kind"] == "error", error
     assert "--offline" in error["message"] and "--live" in error["message"], error
 
+
+with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
+    sock.settimeout(5)
+    sock.connect(socket_path)
+    hello(sock)
+    send(
+        sock,
+        {
+            "kind": "turn",
+            "request_id": "oversized-1",
+            "cwd": "/tmp",
+            "prompt": "x" * (64 * 1024 + 1),
+            "session_id": None,
+            "offline": True,
+            "live": False,
+            "provider": None,
+            "model": None,
+        },
+    )
+    error = recv(sock)
+    assert error["kind"] == "error", error
+    assert "prompt" in error["message"], error
+    assert "65536" in error["message"], error
+
+with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
+    sock.settimeout(5)
+    sock.connect(socket_path)
+    hello(sock)
+    send(sock, {"kind": "ping", "request_id": "after-oversized-turn"})
+    assert recv(sock) == {"kind": "pong", "request_id": "after-oversized-turn"}
+
 print("daemon-ipc-smoke=ok")
 PY
 

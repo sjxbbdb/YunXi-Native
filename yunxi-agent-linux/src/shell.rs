@@ -59,6 +59,19 @@ use linux_tools::LinuxToolCommand;
 
 const HOOK_MARKER: &str = "# YunXi Agent fish hook";
 
+#[cfg(unix)]
+const MAX_TURN_PROMPT_BYTES: usize = 64 * 1024;
+#[cfg(unix)]
+const MAX_TURN_REQUEST_ID_BYTES: usize = 512;
+#[cfg(unix)]
+const MAX_TURN_CWD_BYTES: usize = 4096;
+#[cfg(unix)]
+const MAX_TURN_SESSION_ID_BYTES: usize = 512;
+#[cfg(unix)]
+const MAX_TURN_PROVIDER_BYTES: usize = 256;
+#[cfg(unix)]
+const MAX_TURN_MODEL_BYTES: usize = 256;
+
 #[derive(Debug, Clone, Subcommand)]
 pub(crate) enum LinuxShellCommand {
     /// Install the Miyu-style fish Enter hook.
@@ -2386,6 +2399,23 @@ async fn handle_connection(
             provider,
             model,
         } => {
+            if let Err(error) = validate_turn_request(
+                &request_id,
+                &cwd,
+                &prompt,
+                session_id.as_deref(),
+                provider.as_deref(),
+                model.as_deref(),
+            ) {
+                write_frame(
+                    &mut writer,
+                    &ServerFrame::Error {
+                        message: error.to_string(),
+                    },
+                )
+                .await?;
+                return Ok(());
+            }
             run_daemon_turn(
                 &mut writer,
                 &mut rx,
@@ -2473,6 +2503,38 @@ async fn handle_connection(
             )
             .await?;
         }
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn validate_turn_request(
+    request_id: &str,
+    cwd: &str,
+    prompt: &str,
+    session_id: Option<&str>,
+    provider: Option<&str>,
+    model: Option<&str>,
+) -> Result<()> {
+    validate_turn_field("request_id", request_id, MAX_TURN_REQUEST_ID_BYTES)?;
+    validate_turn_field("cwd", cwd, MAX_TURN_CWD_BYTES)?;
+    validate_turn_field("prompt", prompt, MAX_TURN_PROMPT_BYTES)?;
+    if let Some(value) = session_id {
+        validate_turn_field("session_id", value, MAX_TURN_SESSION_ID_BYTES)?;
+    }
+    if let Some(value) = provider {
+        validate_turn_field("provider", value, MAX_TURN_PROVIDER_BYTES)?;
+    }
+    if let Some(value) = model {
+        validate_turn_field("model", value, MAX_TURN_MODEL_BYTES)?;
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn validate_turn_field(name: &str, value: &str, max_bytes: usize) -> Result<()> {
+    if value.len() > max_bytes {
+        bail!("YunXi shell {name} 超过 {max_bytes} 字节上限")
     }
     Ok(())
 }
@@ -2976,6 +3038,37 @@ mod tests {
         assert!(result.is_err());
         assert!(path.exists(), "invalid metadata must not be deleted");
         fs::remove_file(path).expect("remove test lock");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn turn_request_limits_reject_oversized_semantic_fields() {
+        let prompt = "x".repeat(MAX_TURN_PROMPT_BYTES);
+        assert!(validate_turn_request("request", "/tmp", &prompt, None, None, None).is_ok());
+        let oversized_prompt = "x".repeat(MAX_TURN_PROMPT_BYTES + 1);
+        let error = validate_turn_request("request", "/tmp", &oversized_prompt, None, None, None)
+            .expect_err("oversized prompt must be rejected");
+        assert!(error.to_string().contains("prompt"));
+        assert!(error.to_string().contains("65536"));
+
+        let oversized_cwd = "x".repeat(MAX_TURN_CWD_BYTES + 1);
+        let error = validate_turn_request("request", &oversized_cwd, "prompt", None, None, None)
+            .expect_err("oversized cwd must be rejected");
+        assert!(error.to_string().contains("cwd"));
+        assert!(error.to_string().contains("4096"));
+
+        let oversized_provider = "x".repeat(MAX_TURN_PROVIDER_BYTES + 1);
+        let error = validate_turn_request(
+            "request",
+            "/tmp",
+            "prompt",
+            None,
+            Some(&oversized_provider),
+            None,
+        )
+        .expect_err("oversized provider must be rejected");
+        assert!(error.to_string().contains("provider"));
+        assert!(error.to_string().contains("256"));
     }
 
     #[cfg(unix)]

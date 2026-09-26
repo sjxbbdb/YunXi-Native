@@ -265,9 +265,15 @@ knowledge_fts
 
 同时提供真实 Unix socket smoke：`yunxi-agent-linux/tests/daemon_ipc_smoke.sh` 在临时
 XDG 目录启动 release daemon，验证版本握手、Ping、未知回合 Follow 重同步、确定性
-Provider 配置失败的结构化 `Error` 帧，以及 SIGTERM 后 socket 清理；它不需要模型凭据，
-也不执行真实系统工具。该 smoke 与单元测试互补，前者覆盖真实进程/套接字生命周期，
-后者继续覆盖锁、回放和协议细节。
+Provider 配置失败与超限 `Turn` 请求的结构化 `Error` 帧，以及 SIGTERM 后 socket 清理；
+超限请求在 `run_accepted` 之前被拒绝，随后仍能 Ping，说明语义限额不会破坏 daemon 生命周期。
+它不需要模型凭据，也不执行真实系统工具。该 smoke 与单元测试互补，前者覆盖真实
+进程/套接字生命周期，后者继续覆盖锁、回放、协议和字段边界细节。
+
+当前 `Turn` 语义边界为：`prompt` ≤ 64 KiB、`cwd` ≤ 4 KiB、`request_id`/`session_id` ≤
+512 字节、`provider`/`model` ≤ 256 字节。它们独立于 24 MiB frame 传输上限，目的是在
+Runtime、embedding 和路径处理之前建立资源边界；后续若调整必须同步更新协议文档、单元
+测试与真实 IPC smoke。
 
 **门槛**：并发启动、陈旧锁、权限、断线、重连、过期游标和 daemon 崩溃恢复测试通过。
 

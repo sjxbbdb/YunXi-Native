@@ -147,6 +147,12 @@ printf '%s' '解释一下 Cargo.lock' | ./target/release/yunxi-linux shell-class
 
 IPC 已提供有界的完成回合回放：`Turn` 会先返回 `run_accepted`，随后可见输出以 `event(run_id, seq, frame)` 发送；客户端重连后使用 `follow(run_id, after_seq)` 获取缺失事件。回放按回合数、事件数和事件总字节数限制，只保留 daemon 生命周期内最近的有限回合；活动回合、daemon 重启后的 run 或已淘汰游标会明确返回 `resync_required`，不伪装成断线续跑。
 
+在进入 Runtime 之前，daemon 还会对 `Turn` 的语义字段做独立上限校验，避免合法的大 frame
+被当作无限大的提示词或路径继续处理：`prompt` ≤ 64 KiB、`cwd` ≤ 4 KiB、`request_id`
+和 `session_id` ≤ 512 字节、`provider` 和 `model` ≤ 256 字节。超限请求只返回结构化
+`Error`，不会先发送 `run_accepted`，也不会创建回合；这与 24 MiB 的传输 frame 上限是两层
+不同的边界。
+
 ### systemd --user（可选）
 
 unit 模板位于 `packaging/systemd/yunxi-linux.service`，也可以由 CLI 输出：
@@ -193,9 +199,9 @@ bash yunxi-agent-linux/tests/fish_pty_smoke.sh ./target/release/yunxi-linux
 bash yunxi-agent-linux/tests/daemon_ipc_smoke.sh ./target/release/yunxi-linux
 ```
 
-它会启动真实 daemon，验证版本握手、Ping、未知回合的 Follow 重同步、回合失败的
-结构化 `Error` 帧，以及 SIGTERM 后 socket 清理。脚本使用临时 XDG 目录，结束后会
-自动删除测试状态。
+它会启动真实 daemon，验证版本握手、Ping、未知回合的 Follow 重同步、回合失败与超限
+`Turn` 的结构化 `Error` 帧（超限请求不会产生 `run_accepted`）、错误后 daemon 仍可 Ping，
+以及 SIGTERM 后 socket 清理。脚本使用临时 XDG 目录，结束后会自动删除测试状态。
 
 知识查询延迟可用同一套临时知识库测量（输出冷查询与后续 warm-ish 查询的
 p50/p95，不设置跨机器硬阈值）：
