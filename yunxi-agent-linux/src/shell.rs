@@ -71,6 +71,8 @@ const MAX_TURN_SESSION_ID_BYTES: usize = 512;
 const MAX_TURN_PROVIDER_BYTES: usize = 256;
 #[cfg(unix)]
 const MAX_TURN_MODEL_BYTES: usize = 256;
+#[cfg(unix)]
+const DAEMON_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Clone, Subcommand)]
 pub(crate) enum LinuxShellCommand {
@@ -1841,6 +1843,17 @@ async fn read_frame<R: AsyncRead + Unpin, T: serde::de::DeserializeOwned>(
 }
 
 #[cfg(unix)]
+async fn read_frame_with_timeout<R: AsyncRead + Unpin, T: serde::de::DeserializeOwned>(
+    reader: &mut R,
+    timeout: Duration,
+    phase: &str,
+) -> Result<Option<T>> {
+    tokio::time::timeout(timeout, read_frame(reader))
+        .await
+        .with_context(|| format!("YunXi shell IPC {phase}超时"))?
+}
+
+#[cfg(unix)]
 fn socket_path() -> Result<PathBuf> {
     let base = if let Some(runtime) = std::env::var_os("XDG_RUNTIME_DIR") {
         PathBuf::from(runtime).join("yunxi")
@@ -2058,7 +2071,7 @@ async fn run_shell_intercept(
         protocol_version,
         max_frame_bytes: _,
         capabilities: _,
-    }) = read_frame(&mut reader).await?
+    }) = read_frame_with_timeout(&mut reader, DAEMON_HANDSHAKE_TIMEOUT, "握手").await?
     else {
         bail!("YunXi shell daemon 在握手时断开连接");
     };
@@ -2257,7 +2270,7 @@ async fn daemon_is_ready(socket: &Path) -> bool {
     }
     let Ok(Some(ServerFrame::HelloAck {
         protocol_version, ..
-    })) = read_frame(&mut reader).await
+    })) = read_frame_with_timeout(&mut reader, DAEMON_HANDSHAKE_TIMEOUT, "探测握手").await
     else {
         return false;
     };
@@ -2276,7 +2289,7 @@ async fn daemon_is_ready(socket: &Path) -> bool {
         return false;
     }
     matches!(
-        read_frame::<_, ServerFrame>(&mut reader).await,
+        read_frame_with_timeout(&mut reader, DAEMON_HANDSHAKE_TIMEOUT, "探测 Ping",).await,
         Ok(Some(ServerFrame::Pong { .. }))
     )
 }
@@ -2332,6 +2345,16 @@ async fn run_daemon() -> Result<()> {
 }
 
 #[cfg(unix)]
+struct ReaderTaskGuard(tokio::task::JoinHandle<()>);
+
+#[cfg(unix)]
+impl Drop for ReaderTaskGuard {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
+#[cfg(unix)]
 async fn handle_connection(
     stream: UnixStream,
     sessions: Arc<Mutex<HashMap<String, String>>>,
@@ -2339,7 +2362,7 @@ async fn handle_connection(
 ) -> Result<()> {
     let (reader, mut writer) = stream.into_split();
     let (tx, mut rx) = mpsc::channel::<ClientFrame>(16);
-    tokio::spawn(async move {
+    let reader_task = tokio::spawn(async move {
         let mut reader = reader;
         while let Ok(Some(frame)) = read_frame::<_, ClientFrame>(&mut reader).await {
             if tx.send(frame).await.is_err() {
@@ -2347,11 +2370,14 @@ async fn handle_connection(
             }
         }
     });
+    let _reader_task = ReaderTaskGuard(reader_task);
     let Some(ClientFrame::Hello {
         protocol_version,
         client: _,
         capabilities: _,
-    }) = rx.recv().await
+    }) = tokio::time::timeout(DAEMON_HANDSHAKE_TIMEOUT, rx.recv())
+        .await
+        .context("YunXi shell daemon 握手超时")?
     else {
         return Ok(());
     };
@@ -2382,7 +2408,10 @@ async fn handle_connection(
         },
     )
     .await?;
-    let Some(request) = rx.recv().await else {
+    let Some(request) = tokio::time::timeout(DAEMON_HANDSHAKE_TIMEOUT, rx.recv())
+        .await
+        .context("YunXi shell daemon 首个请求超时")?
+    else {
         return Ok(());
     };
     match request {

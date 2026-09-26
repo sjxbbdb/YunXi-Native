@@ -193,6 +193,14 @@ with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
     send(sock, {"kind": "ping", "request_id": "after-oversized-turn"})
     assert recv(sock) == {"kind": "pong", "request_id": "after-oversized-turn"}
 
+with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
+    sock.settimeout(8)
+    sock.connect(socket_path)
+    try:
+        sock.recv(1)
+    except socket.timeout:
+        raise AssertionError("daemon kept an idle pre-handshake connection open")
+
 print("daemon-ipc-smoke=ok")
 PY
 

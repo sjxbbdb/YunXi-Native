@@ -153,6 +153,9 @@ IPC 已提供有界的完成回合回放：`Turn` 会先返回 `run_accepted`，
 `Error`，不会先发送 `run_accepted`，也不会创建回合；这与 24 MiB 的传输 frame 上限是两层
 不同的边界。
 
+Unix socket 连接必须在 5 秒内完成 `Hello` 和首个请求；空闲或半连接不会无限占用 daemon
+的连接任务。超时只关闭该连接，不影响其他客户端和 daemon 主循环。
+
 ### systemd --user（可选）
 
 unit 模板位于 `packaging/systemd/yunxi-linux.service`，也可以由 CLI 输出：
@@ -201,7 +204,8 @@ bash yunxi-agent-linux/tests/daemon_ipc_smoke.sh ./target/release/yunxi-linux
 
 它会启动真实 daemon，验证版本握手、Ping、未知回合的 Follow 重同步、回合失败与超限
 `Turn` 的结构化 `Error` 帧（超限请求不会产生 `run_accepted`）、错误后 daemon 仍可 Ping，
-以及 SIGTERM 后 socket 清理。脚本使用临时 XDG 目录，结束后会自动删除测试状态。
+空闲握手连接的超时关闭，以及 SIGTERM 后 socket 清理。脚本使用临时 XDG 目录，结束后会
+自动删除测试状态。
 
 知识查询延迟可用同一套临时知识库测量（输出冷查询与后续 warm-ish 查询的
 p50/p95，不设置跨机器硬阈值）：
