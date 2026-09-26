@@ -378,8 +378,10 @@ workspace、不自动激活 generation，并可由 systemd 或 supervisor 托管
 传入 `--workspace` 创建最多 32 个工作区的显式 fleet：路径 canonicalize 后去重，跨轮
 round-robin 游标保证共享预算下的基本公平；单个工作区的 SQLite/索引故障会被隔离，
 不会中止同轮其他工作区，且默认输出不含绝对路径。持久化游标、告警与统一跨任务策略，
-以及 daemon 级自动发现仍留待后续切片；当前 worker 已能在 Ctrl+C 或 SIGTERM 下优雅
-退出并输出 stopped 记录。
+以及 daemon 级自动发现仍留待后续切片。当前游标和累计统计已写入独立的 XDG state
+文件，采用临时文件加 rename 的原子更新；损坏或版本不兼容只会重置调度游标并输出
+结构化 warning，不进入记忆或知识数据库。当前 worker 已能在 Ctrl+C 或 SIGTERM 下
+优雅退出并输出 stopped 记录。
 
 显式空间还提供只读的 `knowledge-space-list` 元数据入口，按稳定的 `space_id` 排序，
 不读取文档正文、chunk 或向量，便于本地诊断空间隔离而不扩大知识内容暴露面。

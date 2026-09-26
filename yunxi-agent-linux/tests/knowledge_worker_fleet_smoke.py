@@ -22,6 +22,7 @@ TIMEOUT_SECONDS = 20
 OWNER = "fleet-smoke-owner"
 SOURCE = "fleet-smoke"
 VERSION = "v1"
+SUBPROCESS_ENV: dict[str, str] | None = None
 
 
 def run(binary: str, *args: str, input_text: str | None = None) -> subprocess.CompletedProcess[str]:
@@ -31,6 +32,7 @@ def run(binary: str, *args: str, input_text: str | None = None) -> subprocess.Co
         capture_output=True,
         text=True,
         timeout=TIMEOUT_SECONDS,
+        env=SUBPROCESS_ENV,
     )
 
 
@@ -189,6 +191,14 @@ def assert_rejected_without_write(binary: str, args: list[str], paths: list[path
     assert before == after, (args, completed.stdout, completed.stderr)
 
 
+def stable_fingerprint(value: str) -> str:
+    hash_value = 0xCBF29CE484222325
+    for byte in value.encode():
+        hash_value ^= byte
+        hash_value = (hash_value * 0x100000001B3) & 0xFFFFFFFFFFFFFFFF
+    return f"{hash_value:016x}"
+
+
 def main() -> None:
     if len(sys.argv) != 2:
         raise SystemExit(f"usage: {sys.argv[0]} PATH_TO_YUNXI_LINUX")
@@ -198,6 +208,11 @@ def main() -> None:
 
     with tempfile.TemporaryDirectory(prefix="yunxi-knowledge-fleet-") as root_text:
         root = pathlib.Path(root_text)
+        global SUBPROCESS_ENV
+        SUBPROCESS_ENV = {
+            **os.environ,
+            "XDG_STATE_HOME": str(root / "xdg-state"),
+        }
         workspaces = [root / name for name in ("alpha", "beta", "unselected")]
         for workspace in workspaces:
             workspace.mkdir()
@@ -277,6 +292,71 @@ def main() -> None:
         assert bad_fleet["workspaces"][1]["status"] == "processed", bad_fleet
         assert str(bad) not in json.dumps(bad_fleet), bad_fleet
         assert_vector_hit(binary, good, "shared-private", "good database knowledge")
+
+        # The scheduler cursor survives a process restart without entering
+        # either knowledge.sqlite3 or the long-term memory store.
+        persistent_worker = "fleet-persistence-smoke"
+        persist_alpha = root / "persist-alpha"
+        persist_beta = root / "persist-beta"
+        persist_alpha.mkdir()
+        persist_beta.mkdir()
+        init_space(binary, persist_alpha, "persist-private")
+        init_space(binary, persist_beta, "persist-private")
+        import_document(binary, persist_alpha, "persist-private", "persist-a", "persistent alpha")
+        import_document(binary, persist_beta, "persist-private", "persist-b", "persistent beta")
+        first = run_ok(
+            binary,
+            "knowledge-worker",
+            "--worker-id",
+            persistent_worker,
+            "--workspace",
+            str(persist_alpha),
+            "--workspace",
+            str(persist_beta),
+            "--max-jobs",
+            "1",
+        )
+        second = run_ok(
+            binary,
+            "knowledge-worker",
+            "--worker-id",
+            persistent_worker,
+            "--workspace",
+            str(persist_alpha),
+            "--workspace",
+            str(persist_beta),
+            "--max-jobs",
+            "1",
+        )
+        assert first["workspaces"][0]["jobs"], first
+        assert second["workspaces"][1]["jobs"], second
+        state_file = (
+            root
+            / "xdg-state"
+            / "yunxi"
+            / "knowledge-worker"
+            / f"{stable_fingerprint(persistent_worker)}.json"
+        )
+        assert state_file.is_file(), state_file
+        state = json.loads(state_file.read_text(encoding="utf-8"))
+        assert state["next_workspace_index"] == 0, state
+        state_file.write_text("{broken", encoding="utf-8")
+        reset = run_ok(
+            binary,
+            "knowledge-worker",
+            "--worker-id",
+            persistent_worker,
+            "--workspace",
+            str(persist_alpha),
+            "--workspace",
+            str(persist_beta),
+            "--max-jobs",
+            "1",
+        )
+        assert any(
+            warning["code"] == "scheduler_state_reset_invalid_json"
+            for warning in reset.get("warnings", [])
+        ), reset
 
         # Validation must happen before opening or creating any workspace DB.
         conflict_a = root / "conflict-a"
@@ -393,6 +473,7 @@ def main() -> None:
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
+            env=SUBPROCESS_ENV,
         )
         try:
             time.sleep(2.3)

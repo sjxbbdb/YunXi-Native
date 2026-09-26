@@ -89,6 +89,11 @@ job，可由一次性 `knowledge-worker` 或显式 `knowledge-worker --watch` �
 显式 fleet；路径会 canonicalize 后去重，`--max-jobs` 是整轮共享预算，跨轮游标按
 round-robin 轮转。单个工作区的 SQLite、权限或索引故障会被隔离，默认 JSON 只返回
 `workspace_index`，不泄露绝对路径；它不会扫描目录或自动激活 generation。
+fleet 的 round-robin 游标和累计统计写入独立的
+`$XDG_STATE_HOME/yunxi/knowledge-worker/` 状态文件（未设置时回退到
+`~/.local/state/yunxi/knowledge-worker/`），不进入长期记忆或 `knowledge.sqlite3`。
+状态文件采用临时文件加 rename 更新并限制为用户可读；损坏或版本不兼容时只重置调度
+游标并返回结构化 warning，不影响知识 job lease 的唯一所有权。
 
 Linux 查询入口和 Runtime 会读取知识空间的当前 active generation，并校验 owner 与
 visibility；不会把 generation `1` 当作永久默认值。首次使用由 `knowledge-help` 或
