@@ -378,6 +378,9 @@ mod tests {
         invalid = request();
         invalid.source_version = "ubuntu\n24".to_string();
         assert!(validate_request(&invalid).is_err());
+        invalid = request();
+        invalid.source_version = "../ubuntu-24.04".to_string();
+        assert!(validate_request(&invalid).is_err());
     }
 
     #[test]
