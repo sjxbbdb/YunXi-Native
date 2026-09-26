@@ -450,6 +450,8 @@ Embedding 计算与批量写入之间若发生 chunk 更新，替换事务会再
 真实 Linux 验收脚本 `yunxi-agent-linux/tests/knowledge_help_smoke.sh` 会逐项检查这些
 命令的文档身份、source version、固定 `[command, --help]` argv，以及缺少工具时的
 结构化状态，并拒绝带路径、参数或 shell 语法的伪命令。
+`yunxi-agent-linux/tests/knowledge_man_smoke.sh` 以相同方式覆盖 `man` 的固定
+`--locale=C -P cat` argv、文档身份、版本 provenance 以及非法 topic/section 的拒绝。
 
 `system-linux` 空间本身使用 `mixed` 版本标记，以便同时收纳 Ubuntu、Arch 等
 发行版的系统资料；实际的发行版/运行时版本仍逐文档、逐 chunk 保存并随召回结果

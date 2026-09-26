@@ -295,4 +295,11 @@ bash yunxi-agent-linux/tests/knowledge_latency_smoke.sh ./target/release/yunxi-l
 bash yunxi-agent-linux/tests/knowledge_help_smoke.sh ./target/release/yunxi-linux
 ```
 
+手册页采集器的固定 `man --locale=C -P cat` argv、版本 provenance 和非法 topic/section
+拒绝也可单独验收：
+
+```bash
+bash yunxi-agent-linux/tests/knowledge_man_smoke.sh ./target/release/yunxi-linux
+```
+
 Linux 发行构建只使用本子项目的 `yunxi-linux` 二进制；Windows/Web/语音/微信参考源码位于仓库的 `references/`，不作为依赖构建。
