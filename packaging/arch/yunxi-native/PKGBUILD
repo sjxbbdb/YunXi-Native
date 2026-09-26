@@ -1,0 +1,38 @@
+# Maintainer: YunXi Native project
+#
+# Source build package for the Linux-native YunXi host.  The source revision is
+# pinned so an AUR-style build never silently follows the moving main branch.
+
+pkgname=yunxi-native
+pkgver=2.3.3.hotfix.32
+pkgrel=1
+pkgdesc='Linux-native natural-language terminal agent host for YunXi Agent'
+arch=('x86_64' 'aarch64')
+url='https://github.com/sjxbbdb/YunXi-Native'
+license=('Apache-2.0')
+depends=('gcc-libs' 'glibc')
+makedepends=('cargo' 'git')
+optdepends=('fish: Miyu-style natural-language shell interception')
+
+_commit='a35f61c'
+source=("${pkgname}::git+${url}.git#commit=${_commit}")
+sha256sums=('SKIP')
+
+build() {
+  cd "${srcdir}/${pkgname}"
+  cargo build --release --locked -p yunxi-agent-linux
+}
+
+check() {
+  cd "${srcdir}/${pkgname}"
+  cargo test --release --locked -p yunxi-agent-linux
+}
+
+package() {
+  cd "${srcdir}/${pkgname}"
+  install -Dm755 target/release/yunxi-linux "${pkgdir}/usr/bin/yunxi-linux"
+  install -Dm644 packaging/arch/yunxi-native/yunxi-linux.service \
+    "${pkgdir}/usr/lib/systemd/user/yunxi-linux.service"
+  install -Dm644 README.md "${pkgdir}/usr/share/doc/${pkgname}/README.md"
+  install -Dm644 LICENSE "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE"
+}
