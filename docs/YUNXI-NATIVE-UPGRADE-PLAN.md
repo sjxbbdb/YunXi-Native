@@ -291,6 +291,13 @@ knowledge_fts
 - 将 RAG 证据接入 Planner，不直接接入执行器；
 - 建立 200+ 任务集和离线评测报告。
 
+**当前增量**：`yunxi-agent-storage` 已建立独立的 `SqliteKnowledgeStore`。它使用
+`knowledge.sqlite3`，与长期记忆的 `long-term-vectors.sqlite3` 不共享数据库、表或
+FTS 命名空间；当前提供 system/project/private 空间元数据、文档与 chunk 登记、
+active generation + owner/visibility 前置过滤的 FTS 查询，以及预留的
+`knowledge_vectors` 表。该切片还没有接入 embedding worker、Planner 或执行器，
+因此知识内容仍只能作为显式检索结果，不能直接触发命令。
+
 **门槛**：索引可增量更新、失败可回滚、来源可追踪、风险命令可标记、空间隔离和撤回测试通过、RAG 召回指标达标。
 
 ### Phase 5：记忆与知识协同

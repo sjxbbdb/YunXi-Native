@@ -24,6 +24,7 @@ use yunxi_agent_protocol::{RuntimeEvent, from_jsonl_line, to_jsonl_line};
 
 mod companion_mailbox;
 mod conversation_state;
+mod knowledge;
 mod memory_vector;
 mod weixin_state;
 
@@ -31,6 +32,10 @@ pub use companion_mailbox::{
     CompanionMailboxSnapshot, FileCompanionMailboxStore, MailboxEnqueueOutcome,
 };
 pub use conversation_state::FileConversationStateStore;
+pub use knowledge::{
+    KnowledgeChunk, KnowledgeDocument, KnowledgeSearchResult, KnowledgeSearchScope,
+    KnowledgeSpaceKind, KnowledgeSpaceSpec, KnowledgeVisibility, SqliteKnowledgeStore,
+};
 pub use memory_vector::{
     MemoryVectorMatch, MemoryVectorSearch, MemoryVectorSyncSummary, SqliteMemoryVectorStore,
 };
