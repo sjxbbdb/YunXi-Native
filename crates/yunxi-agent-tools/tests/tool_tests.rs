@@ -129,6 +129,55 @@ async fn linux_readonly_process_tool_uses_fixed_runner() {
     assert_eq!(value["operation"], "process_list");
 }
 
+#[cfg(unix)]
+#[tokio::test]
+async fn linux_readonly_normalizes_policy_and_reports_unavailable_structured() {
+    let parent = tempfile::Builder::new()
+        .prefix("yunxi-linux-readonly-contract-")
+        .tempdir_in(".")
+        .expect("workspace-local tempdir");
+    let missing_cwd = parent.path().join("missing-cwd");
+    let mut policy = ToolPolicy::trusted();
+    policy.sandbox = yunxi_agent_tools::SandboxPolicy::DangerFullAccess;
+    policy.network = yunxi_agent_sandbox::NetworkPolicy::Enabled;
+    policy.execution_policy.sandbox = yunxi_agent_sandbox::SandboxRequirement::DangerFullAccess;
+    policy.execution_policy.network = yunxi_agent_sandbox::NetworkPolicy::Enabled;
+
+    let response = CompositeToolRuntime::default()
+        .execute(ToolRequest {
+            id: Some("linux-unavailable-test".to_string()),
+            cwd: missing_cwd,
+            kind: ToolRequestKind::LinuxReadOnly {
+                operation: "process_list".to_string(),
+                arguments: serde_json::json!({"limit": 1}),
+            },
+            policy,
+        })
+        .await
+        .expect("linux readonly unavailable response");
+
+    assert_eq!(response.status, ToolStatus::Failed);
+    let output = response.output.expect("structured unavailable output");
+    let value: serde_json::Value = serde_json::from_str(&output).expect("json output");
+    assert_eq!(value["schema_version"], 1);
+    assert_eq!(value["tool"], "linux_readonly");
+    assert_eq!(value["operation"], "process_list");
+    assert_eq!(value["status"], "unavailable");
+    assert_eq!(
+        value["command"],
+        "ps -eo 'pid=,ppid=,user=,stat=,etime=,comm=' --sort=pid"
+    );
+    assert!(response.runtime_events.iter().any(|event| matches!(
+        event,
+        ToolRuntimeEvent::SandboxDecision { network, .. } if network == "Disabled"
+    )));
+    assert!(response.runtime_events.iter().any(|event| matches!(
+        event,
+        ToolRuntimeEvent::LinuxReadOnly { operation, status, .. }
+            if operation == "process_list" && status == "unavailable"
+    )));
+}
+
 #[test]
 fn workspace_tool_registry_exports_dynamic_skill_functions() {
     let temp = TempDir::new().expect("temp dir");

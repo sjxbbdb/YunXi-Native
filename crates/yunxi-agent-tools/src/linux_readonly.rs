@@ -127,6 +127,12 @@ pub async fn execute(
             _ => None,
         })
         .unwrap_or_else(|| (trace.summary.aggregated_output.clone(), String::new()));
+    let raw_stdout = if operation == LinuxReadOperation::ProcessList {
+        let limit = arguments.get("limit").and_then(Value::as_u64).unwrap_or(40) as usize;
+        limit_lines(&raw_stdout, limit)
+    } else {
+        raw_stdout
+    };
     let stdout = bounded_output(&raw_stdout);
     let stderr = bounded_output(&raw_stderr);
     let status = if trace.summary.exit_code == Some(0) && !trace.summary.timed_out {
@@ -216,10 +222,7 @@ fn fixed_argv(operation: LinuxReadOperation, arguments: &Value) -> Result<Vec<St
             Ok(argv)
         }
         LinuxReadOperation::ProcessList => {
-            let limit = arguments.get("limit").and_then(Value::as_u64).unwrap_or(40);
-            if !(1..=200).contains(&limit) {
-                return Err("process limit must be between 1 and 200".to_string());
-            }
+            let _ = process_limit(arguments)?;
             Ok(vec![
                 "ps".into(),
                 "-eo".into(),
@@ -240,6 +243,18 @@ fn fixed_argv(operation: LinuxReadOperation, arguments: &Value) -> Result<Vec<St
             }
         }
     }
+}
+
+fn process_limit(arguments: &Value) -> Result<u64, String> {
+    let limit = arguments.get("limit").and_then(Value::as_u64).unwrap_or(40);
+    if !(1..=200).contains(&limit) {
+        return Err("process limit must be between 1 and 200".to_string());
+    }
+    Ok(limit)
+}
+
+fn limit_lines(value: &str, limit: usize) -> String {
+    value.lines().take(limit).collect::<Vec<_>>().join("\n")
 }
 
 fn fixed_environment(operation: LinuxReadOperation) -> std::collections::BTreeMap<String, String> {
@@ -332,6 +347,56 @@ mod tests {
         .unwrap();
         assert!(!["sh", "bash", "zsh"].contains(&argv[0].as_str()));
         assert_eq!(argv, vec!["ss", "-H", "-tun"]);
+    }
+    #[test]
+    fn all_operations_have_fixed_non_shell_argv() {
+        let cases = [
+            (
+                LinuxReadOperation::SystemdStatus,
+                json!({"unit":"yunxi-linux.service", "user": false}),
+                vec![
+                    "systemctl",
+                    "--no-pager",
+                    "--plain",
+                    "--full",
+                    "show",
+                    "yunxi-linux.service",
+                ],
+            ),
+            (
+                LinuxReadOperation::ManPage,
+                json!({"topic":"fish", "section":"1"}),
+                vec!["man", "--locale=C", "-P", "cat", "1", "fish"],
+            ),
+            (
+                LinuxReadOperation::ProcessList,
+                json!({"limit": 3}),
+                vec![
+                    "ps",
+                    "-eo",
+                    "pid=,ppid=,user=,stat=,etime=,comm=",
+                    "--sort=pid",
+                ],
+            ),
+            (
+                LinuxReadOperation::NetworkSnapshot,
+                json!({"view":"route"}),
+                vec!["ip", "-json", "route"],
+            ),
+        ];
+        for (operation, arguments, expected) in cases {
+            let argv = fixed_argv(operation, &arguments).expect("valid fixed argv");
+            assert_eq!(argv, expected);
+            assert!(!argv.iter().any(|argument| {
+                matches!(argument.as_str(), "sh" | "bash" | "zsh" | "-c" | "-Command")
+            }));
+        }
+    }
+    #[test]
+    fn process_limit_is_validated_and_applied_to_output() {
+        assert!(fixed_argv(LinuxReadOperation::ProcessList, &json!({"limit": 0})).is_err());
+        assert!(fixed_argv(LinuxReadOperation::ProcessList, &json!({"limit": 201})).is_err());
+        assert_eq!(limit_lines("one\ntwo\nthree\nfour\n", 2), "one\ntwo");
     }
     #[test]
     fn output_is_bounded() {
