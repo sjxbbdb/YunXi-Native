@@ -377,8 +377,8 @@ project/private 空间不采用这一例外，文档版本必须与空间版本�
 显式 `--source-version` 仍可覆盖；探测失败只记录 `unknown`，不猜测发行版。
 
 Linux Runtime 已增加只读 `knowledge-search` 入口，并在 Linux 目标构建 prompt 时
-有限召回 system 空间的 FTS 证据。证据被明确标记为不可信参考材料，不能覆盖
-Tool/Approval/Sandbox 规则，也不会直接进入执行器；Windows Runtime 不启用该分支。
+并行召回 system 空间的 FTS 与本地向量证据。两类证据都被明确标记为不可信参考材料，
+不能覆盖 Tool/Approval/Sandbox 规则，也不会直接进入执行器；Windows Runtime 不启用该分支。
 运行时还会从受控的 `metadata_json` 中保留 `collector` 与 `risk_level` provenance，
 并将其作为证据头部的可审计标签输出；原始 metadata/argv 不会直接注入 prompt。
 
