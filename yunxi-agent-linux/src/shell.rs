@@ -2303,6 +2303,36 @@ async fn read_frame<R: AsyncRead + Unpin, T: serde::de::DeserializeOwned>(
 }
 
 #[cfg(unix)]
+fn spawn_server_reader<R>(
+    mut reader: R,
+) -> (mpsc::Receiver<Result<Option<ServerFrame>>>, ReaderTaskGuard)
+where
+    R: AsyncRead + Unpin + Send + 'static,
+{
+    let (tx, rx) = mpsc::channel(16);
+    let task = tokio::spawn(async move {
+        loop {
+            let frame = read_frame::<_, ServerFrame>(&mut reader).await;
+            let end = matches!(&frame, Ok(None) | Err(_));
+            if tx.send(frame).await.is_err() || end {
+                break;
+            }
+        }
+    });
+    (rx, ReaderTaskGuard(task))
+}
+
+#[cfg(unix)]
+async fn recv_server_frame(
+    frames: &mut mpsc::Receiver<Result<Option<ServerFrame>>>,
+) -> Result<Option<ServerFrame>> {
+    frames
+        .recv()
+        .await
+        .context("YunXi shell daemon reader task unexpectedly stopped")?
+}
+
+#[cfg(unix)]
 async fn read_frame_with_timeout<R: AsyncRead + Unpin, T: serde::de::DeserializeOwned>(
     reader: &mut R,
     timeout: Duration,
@@ -2512,8 +2542,7 @@ async fn run_shell_intercept(
         fs::canonicalize(&cwd).with_context(|| format!("无法访问工作区: {}", cwd.display()))?;
     let socket = ensure_daemon().await?;
     let stream = UnixStream::connect(&socket).await?;
-    let (reader, mut writer) = stream.into_split();
-    let mut reader = reader;
+    let (mut reader, mut writer) = stream.into_split();
     send_client_frame(
         &mut writer,
         &ClientFrame::Hello {
@@ -2557,12 +2586,17 @@ async fn run_shell_intercept(
         },
     )
     .await?;
+    // Keep frame decoding in a task that is never cancelled by the Ctrl+C
+    // select below. Cancelling read_frame halfway through a length prefix or
+    // payload would otherwise lose bytes already consumed from the Unix
+    // stream and desynchronize the next frame.
+    let (mut server_frames, _reader_guard) = spawn_server_reader(reader);
     let interrupt = tokio::signal::ctrl_c();
     tokio::pin!(interrupt);
     let mut cancel_sent = false;
     loop {
         let frame = if cancel_sent {
-            read_frame::<_, ServerFrame>(&mut reader).await?
+            recv_server_frame(&mut server_frames).await?
         } else {
             tokio::select! {
                 result = &mut interrupt => {
@@ -2576,7 +2610,7 @@ async fn run_shell_intercept(
                     cancel_sent = true;
                     continue;
                 }
-                frame = read_frame::<_, ServerFrame>(&mut reader) => frame?,
+                frame = recv_server_frame(&mut server_frames) => frame?,
             }
         };
         let Some(frame) = frame else {
@@ -3696,5 +3730,34 @@ mod tests {
             panic!("expected structured daemon error, got {frame:?}");
         };
         assert!(message.contains("--offline 与 --live 不能同时使用"));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn server_reader_forwards_a_frame_written_in_segments() {
+        let (mut writer, reader) = tokio::io::duplex(1024);
+        let (mut frames, _reader_guard) = spawn_server_reader(reader);
+        let expected = ServerFrame::Message {
+            content: "分段 frame 仍应保持完整".to_string(),
+        };
+        let encoded = encode_json_frame(&expected).expect("encode test frame");
+
+        for byte in encoded {
+            writer
+                .write_all(std::slice::from_ref(&byte))
+                .await
+                .expect("write one frame byte");
+            tokio::task::yield_now().await;
+        }
+
+        let received = tokio::time::timeout(Duration::from_secs(1), frames.recv())
+            .await
+            .expect("reader should forward a segmented frame")
+            .expect("reader channel should remain open")
+            .expect("reader should decode the segmented frame")
+            .expect("segmented frame should not be EOF");
+        assert!(
+            matches!(received, ServerFrame::Message { content } if content == "分段 frame 仍应保持完整")
+        );
     }
 }
