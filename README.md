@@ -106,7 +106,9 @@ Linux Runtime 会有限召回同一空间的 FTS 证据并把它标记为不可�
 
 知识库向量化目前可复用本地字符 n-gram provider，通过独立的
 `index_document_with_embeddings` 批量生成 `knowledge_vectors`；这与长期记忆向量库
-继续保持不同数据库、不同表和不同检索边界。
+继续保持不同数据库、不同表和不同检索边界。索引前会检查当前文档的 chunk、模型、
+generation、维度和向量完整性；内容未变化且向量齐全时直接复用，只有缺失、内容变更
+或模型/维度变化时才重建。
 
 CLI 验证路径：先运行 `yunxi-linux knowledge-index <document-id> --cwd .`，再运行
 `yunxi-linux knowledge-vector-search <query> --cwd . --source-version ubuntu-24.04 --limit 5`。

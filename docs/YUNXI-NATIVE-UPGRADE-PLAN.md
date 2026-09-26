@@ -316,7 +316,9 @@ FTS 内容或孤立向量；文档 hash 与分块参数都未变化时会跳过�
 知识库还提供 `index_document_with_embeddings`：它复用现有本地字符 n-gram provider
 为当前文档 chunk 生成向量，再通过上述批量边界写入独立的 `knowledge_vectors`。
 这里复用的是 embedding 算法，不是记忆数据库或记忆表；后续替换为更强的本地模型
-只需保持 provider 的模型、维度和批量写入契约。
+只需保持 provider 的模型、维度和批量写入契约。索引入口会先检查当前文档的 chunk、
+模型、generation、维度和向量 blob 完整性；内容未变化且向量齐全时直接跳过，缺失、
+内容变化或模型/维度变化时才重建。
 
 当前还新增了 Linux P0 `man` 采集器：只接受经过 token 校验的 topic/section，使用
 固定 `man --locale=C -P cat` argv、只读执行策略、`MANPAGER/PAGER/TERM` 固定环境和

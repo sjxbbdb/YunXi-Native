@@ -754,6 +754,10 @@ fn local_embedding_indexes_knowledge_chunks_without_touching_memory_vectors() {
     assert_eq!(summary.chunks_indexed, 1);
     assert_eq!(summary.embedding_model, provider.model_id());
     assert_eq!(summary.dimensions, provider.dimensions());
+    let unchanged = store
+        .index_document_with_embeddings(&document.document_id, &provider)
+        .expect("unchanged knowledge embeddings");
+    assert_eq!(unchanged.chunks_indexed, 0);
     let query = provider.embed("systemctl status").expect("query embedding");
     let matches = store
         .search_vectors(

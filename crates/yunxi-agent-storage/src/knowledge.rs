@@ -619,6 +619,44 @@ impl SqliteKnowledgeStore {
                 sqlite_error(&self.database, "read knowledge embedding document", error)
             })?
             .ok_or_else(|| storage_error("knowledge embedding references an unknown document"))?;
+        let chunk_count = connection
+            .query_row(
+                "SELECT COUNT(*) FROM knowledge_chunks WHERE document_id = ?1",
+                params![document_id],
+                |row| row.get::<_, i64>(0),
+            )
+            .map_err(|error| {
+                sqlite_error(&self.database, "count knowledge embedding chunks", error)
+            })?;
+        let indexed_count = connection
+            .query_row(
+                "SELECT COUNT(*)
+                 FROM knowledge_vectors v
+                 JOIN knowledge_chunks c ON c.chunk_id = v.chunk_id
+                 WHERE c.document_id = ?1
+                   AND v.embedding_model = ?2
+                   AND v.generation = ?3
+                   AND v.dimensions = ?4
+                   AND length(v.vector) = v.dimensions * 4",
+                params![
+                    document_id,
+                    provider.model_id(),
+                    document.1,
+                    i64::try_from(provider.dimensions()).unwrap_or(i64::MAX),
+                ],
+                |row| row.get::<_, i64>(0),
+            )
+            .map_err(|error| {
+                sqlite_error(&self.database, "count indexed knowledge chunks", error)
+            })?;
+        if chunk_count == indexed_count {
+            return Ok(KnowledgeEmbeddingSummary {
+                document_id: document_id.to_string(),
+                embedding_model: provider.model_id().to_string(),
+                dimensions: provider.dimensions(),
+                chunks_indexed: 0,
+            });
+        }
         let mut statement = connection
             .prepare(
                 "SELECT chunk_id, space_id, generation, content
