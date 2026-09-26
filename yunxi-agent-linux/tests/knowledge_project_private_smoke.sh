@@ -15,7 +15,15 @@ test -x "$BINARY" || {
 TMP_ROOT="$(mktemp -d)"
 WORKSPACE="$TMP_ROOT/workspace"
 mkdir -p "$WORKSPACE"
-trap 'rm -rf "$TMP_ROOT"' EXIT
+WATCH_PID=""
+cleanup() {
+  if [[ -n "$WATCH_PID" ]] && kill -0 "$WATCH_PID" 2>/dev/null; then
+    kill -TERM "$WATCH_PID" 2>/dev/null || true
+    wait "$WATCH_PID" 2>/dev/null || true
+  fi
+  rm -rf "$TMP_ROOT"
+}
+trap cleanup EXIT
 
 run_json() {
   "$BINARY" "$@"
@@ -134,19 +142,39 @@ WRONG_OWNER_STATUS=$?
 set -e
 [[ "$WRONG_OWNER_STATUS" -ne 0 ]] || { echo "wrong owner unexpectedly queried private space" >&2; exit 1; }
 
-set +e
-timeout 4s "$BINARY" knowledge-worker --watch --interval-secs 1 --max-jobs 10 \
-  --cwd "$WORKSPACE" >"$TMP_ROOT/worker-watch.json" 2>&1
-WATCH_STATUS=$?
-set -e
-[[ "$WATCH_STATUS" -eq 124 ]] || {
-  cat "$TMP_ROOT/worker-watch.json" >&2
-  echo "knowledge worker watch did not stop under timeout: status=$WATCH_STATUS" >&2
-  exit 1
-}
+"$BINARY" knowledge-worker --watch --interval-secs 1 --max-jobs 10 \
+  --cwd "$WORKSPACE" >"$TMP_ROOT/worker-watch.json" 2>&1 &
+WATCH_PID=$!
+for _ in $(seq 1 40); do
+  if grep -q '"status": "processed"' "$TMP_ROOT/worker-watch.json" 2>/dev/null; then
+    break
+  fi
+  sleep 0.1
+done
 grep -q '"status": "processed"' "$TMP_ROOT/worker-watch.json" || {
   cat "$TMP_ROOT/worker-watch.json" >&2
   echo "knowledge worker watch did not process a job" >&2
+  exit 1
+}
+kill -TERM "$WATCH_PID"
+set +e
+wait "$WATCH_PID"
+WATCH_STATUS=$?
+set -e
+WATCH_PID=""
+[[ "$WATCH_STATUS" -eq 0 ]] || {
+  cat "$TMP_ROOT/worker-watch.json" >&2
+  echo "knowledge worker watch did not stop gracefully: status=$WATCH_STATUS" >&2
+  exit 1
+}
+grep -q '"status": "stopped"' "$TMP_ROOT/worker-watch.json" || {
+  cat "$TMP_ROOT/worker-watch.json" >&2
+  echo "knowledge worker watch did not report stopped" >&2
+  exit 1
+}
+grep -q '"reason": "terminate"' "$TMP_ROOT/worker-watch.json" || {
+  cat "$TMP_ROOT/worker-watch.json" >&2
+  echo "knowledge worker watch did not report SIGTERM shutdown" >&2
   exit 1
 }
 run_json knowledge-vector-search 'dry-run' \

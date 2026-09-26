@@ -1185,24 +1185,53 @@ async fn run_knowledge_worker_watch(
     }
     let worker_id =
         worker_id.unwrap_or_else(|| format!("yunxi-linux-embedding-watch-{}", std::process::id()));
-    let interrupt = tokio::signal::ctrl_c();
-    tokio::pin!(interrupt);
     loop {
         run_knowledge_worker(Some(worker_id.clone()), max_jobs, cwd.clone())?;
         tokio::select! {
-            _ = &mut interrupt => {
+            stop_reason = wait_for_knowledge_worker_stop() => {
+                let stop_reason = stop_reason?;
                 println!(
                     "{}",
                     serde_json::to_string_pretty(&serde_json::json!({
                         "schema_version": 1,
                         "status": "stopped",
                         "worker_id": worker_id,
+                        "reason": stop_reason,
                     }))?
                 );
                 return Ok(());
             }
             _ = tokio::time::sleep(std::time::Duration::from_secs(interval_secs)) => {}
         }
+    }
+}
+
+async fn wait_for_knowledge_worker_stop() -> Result<&'static str> {
+    let interrupt = tokio::signal::ctrl_c();
+    tokio::pin!(interrupt);
+
+    #[cfg(unix)]
+    {
+        use anyhow::Context;
+        use tokio::signal::unix::{SignalKind, signal};
+
+        let mut terminate = signal(SignalKind::terminate())
+            .context("无法注册 knowledge worker 的 SIGTERM 处理器")?;
+        tokio::select! {
+            result = &mut interrupt => {
+                result.context("等待 knowledge worker 的 Ctrl+C 信号失败")?;
+                Ok("interrupt")
+            }
+            _ = terminate.recv() => Ok("terminate"),
+        }
+    }
+
+    #[cfg(not(unix))]
+    {
+        interrupt
+            .await
+            .context("等待 knowledge worker 的 Ctrl+C 信号失败")?;
+        Ok("interrupt")
     }
 }
 

@@ -158,7 +158,7 @@ printf '%s\n' '项目约定：先 dry-run，再申请审批。' | \
 `knowledge-worker --watch` 是显式 workspace 范围内的常驻轮询器：它复用同一套
 lease、退避、重试和 generation 校验，按间隔处理有限数量任务；不会扫描其他
 workspace，也不会自动激活 generation。可由 systemd、supervisor 或终端在需要时托管，
-按 `Ctrl+C` 停止。
+按 `Ctrl+C` 或 `SIGTERM` 停止，并输出一条结构化 stopped 记录。
 
 ## fish 接管（Miyu 风格）
 
