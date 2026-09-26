@@ -362,11 +362,23 @@ impl SqliteKnowledgeStore {
         transaction
             .execute(
                 "UPDATE knowledge_embedding_jobs
+                 SET status = 'failed', worker_id = NULL,
+                     last_error = 'embedding worker lease expired after retry budget exhausted',
+                     next_attempt_at_millis = ?1, updated_at_millis = ?2
+                 WHERE status = 'running' AND attempts >= ?3 AND updated_at_millis <= ?4",
+                params![i64::MAX, now, MAX_EMBEDDING_JOB_ATTEMPTS, lease_cutoff],
+            )
+            .map_err(|error| {
+                sqlite_error(&self.database, "finalize exhausted embedding leases", error)
+            })?;
+        transaction
+            .execute(
+                "UPDATE knowledge_embedding_jobs
                  SET status = 'pending', worker_id = NULL,
                      last_error = 'embedding worker lease expired',
                      next_attempt_at_millis = ?1, updated_at_millis = ?1
-                 WHERE status = 'running' AND updated_at_millis <= ?2",
-                params![now, lease_cutoff],
+                 WHERE status = 'running' AND attempts < ?2 AND updated_at_millis <= ?3",
+                params![now, MAX_EMBEDDING_JOB_ATTEMPTS, lease_cutoff],
             )
             .map_err(|error| {
                 sqlite_error(&self.database, "reclaim expired embedding jobs", error)

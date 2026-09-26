@@ -517,6 +517,29 @@ fn expired_embedding_worker_lease_is_reclaimed_and_old_worker_cannot_complete() 
     store
         .complete_embedding_job(reclaimed.job_id, "worker-b")
         .expect("new worker completes");
+
+    let exhausted = store
+        .enqueue_embedding_job(&document.document_id, "fixture-v2", 1)
+        .expect("enqueue exhausted lease");
+    let exhausted_claim = store
+        .claim_embedding_job("worker-c")
+        .expect("claim exhausted lease")
+        .expect("exhausted lease job");
+    assert_eq!(exhausted_claim.job_id, exhausted.job_id);
+    connection
+        .execute(
+            "UPDATE knowledge_embedding_jobs
+             SET attempts = ?1, updated_at_millis = 0 WHERE job_id = ?2",
+            [MAX_EMBEDDING_JOB_ATTEMPTS, exhausted.job_id],
+        )
+        .expect("exhaust retry budget");
+    assert!(
+        store
+            .claim_embedding_job("worker-d")
+            .expect("exhausted lease recovery")
+            .is_none()
+    );
+    assert!(store.retry_embedding_job(exhausted.job_id).is_err());
 }
 
 #[test]
