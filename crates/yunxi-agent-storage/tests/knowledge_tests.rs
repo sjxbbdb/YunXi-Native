@@ -286,6 +286,46 @@ fn concurrent_embedding_claims_assign_a_job_to_only_one_worker() {
 }
 
 #[test]
+fn expired_embedding_worker_lease_is_reclaimed_and_old_worker_cannot_complete() {
+    let (dir, store, document) = queue_fixture();
+    store
+        .enqueue_embedding_job(&document.document_id, "fixture-v1", 1)
+        .expect("enqueue");
+    let claimed = store
+        .claim_embedding_job("worker-a")
+        .expect("claim")
+        .expect("job");
+
+    let connection = Connection::open(dir.path().join("knowledge.sqlite3")).expect("database");
+    connection
+        .execute(
+            "UPDATE knowledge_embedding_jobs SET updated_at_millis = 0 WHERE job_id = ?1",
+            [claimed.job_id],
+        )
+        .expect("expire lease");
+
+    let reclaimed = store
+        .claim_embedding_job("worker-b")
+        .expect("reclaim")
+        .expect("reclaimed job");
+    assert_eq!(reclaimed.job_id, claimed.job_id);
+    assert_eq!(reclaimed.status, KnowledgeEmbeddingJobStatus::Running);
+    assert_eq!(reclaimed.attempts, 2);
+    assert_eq!(
+        reclaimed.last_error.as_deref(),
+        Some("embedding worker lease expired")
+    );
+    assert!(
+        store
+            .complete_embedding_job(claimed.job_id, "worker-a")
+            .is_err()
+    );
+    store
+        .complete_embedding_job(reclaimed.job_id, "worker-b")
+        .expect("new worker completes");
+}
+
+#[test]
 fn failed_embedding_job_keeps_previous_vector_available() {
     let (_dir, store, document) = queue_fixture();
     let knowledge_chunk = chunk(

@@ -12,6 +12,8 @@ use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
+
+const EMBEDDING_JOB_LEASE_MILLIS: i64 = 5 * 60 * 1_000;
 use yunxi_agent_core::{AgentError, AgentResult};
 use yunxi_agent_persona::{MemoryEmbeddingProvider, cosine_similarity, yunxi_home_dir};
 
@@ -343,6 +345,19 @@ impl SqliteKnowledgeStore {
         let transaction = connection
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(|error| sqlite_error(&self.database, "begin embedding job claim", error))?;
+        let now = now_millis();
+        let lease_cutoff = now.saturating_sub(EMBEDDING_JOB_LEASE_MILLIS);
+        transaction
+            .execute(
+                "UPDATE knowledge_embedding_jobs
+                 SET status = 'pending', worker_id = NULL,
+                     last_error = 'embedding worker lease expired', updated_at_millis = ?1
+                 WHERE status = 'running' AND updated_at_millis <= ?2",
+                params![now, lease_cutoff],
+            )
+            .map_err(|error| {
+                sqlite_error(&self.database, "reclaim expired embedding jobs", error)
+            })?;
         let job_id = transaction
             .query_row(
                 "SELECT job_id FROM knowledge_embedding_jobs
@@ -365,7 +380,7 @@ impl SqliteKnowledgeStore {
                  SET status = 'running', attempts = attempts + 1,
                      worker_id = ?1, updated_at_millis = ?2
                  WHERE job_id = ?3 AND status = 'pending'",
-                params![worker_id, now_millis(), job_id],
+                params![worker_id, now, job_id],
             )
             .map_err(|error| sqlite_error(&self.database, "claim embedding job", error))?;
         if updated != 1 {

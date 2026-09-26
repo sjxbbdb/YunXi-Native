@@ -317,6 +317,11 @@ daemon、后台 worker 或 provider；实际后台执行留待后续增量。
 timer、daemon 或人工诊断调用；它仍不是常驻调度器，也没有接入 Planner、自动重试或
 active generation 切换，这些边界继续留在后续增量。
 
+为避免 daemon 或终端进程崩溃后留下永久 `running` 任务，领取事务还会回收超过五分钟
+未更新的 worker lease，并把它重新置为 `pending`；旧 worker 随后提交 complete/fail
+会因 lease 身份不匹配而被拒绝。这里仅处理崩溃恢复，不把 `failed` 任务自动重试，
+重试策略与退避仍需后续单独设计。
+
 同时新增了无副作用的 `knowledge_ingest` 基础层：在进入存储前清理 ANSI
 终端控制符、NUL、CRLF 和多余空行，执行输入上限检查，并按段落与字符边界
 生成带稳定 hash 和 ordinal 的有界 chunk。它不读取任意路径，也不启动命令，
