@@ -95,7 +95,8 @@ space；topic/section 不允许 shell 语法或路径，缺少 man、非零退�
 `ubuntu-24.04` 或 `arch-rolling`）。project/private 空间则继续要求文档版本与
 空间版本严格一致，避免私有资料发生静默串版本。
 
-采集后的 system 知识可以用 `yunxi-linux knowledge-search <query> --cwd .` 只读检查。
+采集后的 system 知识可以用 `yunxi-linux knowledge-search <query> --cwd .` 只读检查；
+在混合空间中可用 `--source-version ubuntu-24.04` 做精确版本过滤。
 Linux Runtime 会有限召回同一空间的 FTS 证据并把它标记为不可信参考；它不会替代
 人格、记忆、审批或沙盒，也不会把知识文本直接当作命令执行。
 
@@ -104,7 +105,9 @@ Linux Runtime 会有限召回同一空间的 FTS 证据并把它标记为不可�
 继续保持不同数据库、不同表和不同检索边界。
 
 CLI 验证路径：先运行 `yunxi-linux knowledge-index <document-id> --cwd .`，再运行
-`yunxi-linux knowledge-vector-search <query> --cwd . --limit 5`。当前默认模型为
+`yunxi-linux knowledge-vector-search <query> --cwd . --source-version ubuntu-24.04 --limit 5`。
+不传 `--source-version` 时保持跨版本召回；传入后 FTS 与向量检索都只返回精确匹配
+的 chunk。当前默认模型为
 `yunxi-local-chargram-v1`，这是可替换的本地 provider，不代表最终 embedding 选型。
 
 这条边界是 Linux 原生交互的第一步：先让 YunXi 能可靠地理解并观察系统，再进入预览、可回滚修改和高风险操作。CLI 还提供 `yunxi-linux linux-tool describe|processes|network|systemd-status|man` 作为本机诊断入口；它与 Runtime ToolSpec 同样禁止写入和任意命令拼接。

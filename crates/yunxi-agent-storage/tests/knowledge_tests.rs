@@ -246,6 +246,96 @@ fn system_space_allows_document_specific_versions_but_project_space_is_strict() 
 }
 
 #[test]
+fn mixed_system_search_can_filter_by_source_version() {
+    let dir = tempdir().expect("tempdir");
+    let store = SqliteKnowledgeStore::new(dir.path().join("knowledge.sqlite3"));
+    let mut system = space(
+        "system-linux",
+        KnowledgeSpaceKind::System,
+        "system",
+        KnowledgeVisibility::Public,
+        1,
+    );
+    system.version = "mixed".to_string();
+    store.upsert_space(&system).expect("system space");
+
+    let mut ubuntu = document("system-linux", "system", KnowledgeVisibility::Public);
+    ubuntu.document_id = "system-linux-ubuntu-doc".to_string();
+    ubuntu.version = "ubuntu-24.04".to_string();
+    store.upsert_document(&ubuntu).expect("ubuntu document");
+    let mut ubuntu_chunk = chunk(
+        &ubuntu.document_id,
+        "system",
+        KnowledgeVisibility::Public,
+        "ubuntu systemctl status reference",
+    );
+    ubuntu_chunk.version = ubuntu.version.clone();
+    store.upsert_chunk(&ubuntu_chunk).expect("ubuntu chunk");
+
+    let mut arch = ubuntu.clone();
+    arch.document_id = "system-linux-arch-doc".to_string();
+    arch.version = "arch-rolling".to_string();
+    store.upsert_document(&arch).expect("arch document");
+    let mut arch_chunk = chunk(
+        &arch.document_id,
+        "system",
+        KnowledgeVisibility::Public,
+        "arch systemctl status reference",
+    );
+    arch_chunk.version = arch.version.clone();
+    store.upsert_chunk(&arch_chunk).expect("arch chunk");
+
+    store
+        .upsert_vector(&KnowledgeVector {
+            chunk_id: ubuntu_chunk.chunk_id.clone(),
+            space_id: "system-linux".to_string(),
+            embedding_model: "fixture-v1".to_string(),
+            generation: 1,
+            vector: vec![1.0, 0.0],
+        })
+        .expect("ubuntu vector");
+    store
+        .upsert_vector(&KnowledgeVector {
+            chunk_id: arch_chunk.chunk_id.clone(),
+            space_id: "system-linux".to_string(),
+            embedding_model: "fixture-v1".to_string(),
+            generation: 1,
+            vector: vec![0.0, 1.0],
+        })
+        .expect("arch vector");
+
+    let scope = KnowledgeSearchScope {
+        space_id: "system-linux".to_string(),
+        owner: "system".to_string(),
+        generation: 1,
+        visibility: KnowledgeVisibility::Public,
+    };
+    let fts = store
+        .search_versioned("systemctl", &scope, Some("ubuntu-24.04"), 10)
+        .expect("versioned fts search");
+    assert_eq!(fts.len(), 1);
+    assert_eq!(fts[0].version, "ubuntu-24.04");
+    assert!(
+        store
+            .search_versioned("systemctl", &scope, Some("fedora-41"), 10)
+            .expect("missing version search")
+            .is_empty()
+    );
+    assert!(
+        store
+            .search_versioned("systemctl", &scope, Some("   "), 10)
+            .is_err()
+    );
+
+    let vectors = store
+        .search_vectors_versioned(&[1.0, 0.0], "fixture-v1", &scope, Some("arch-rolling"), 10)
+        .expect("versioned vector search");
+    assert_eq!(vectors.len(), 1);
+    assert_eq!(vectors[0].version, "arch-rolling");
+    assert_eq!(vectors[0].chunk_id, arch_chunk.chunk_id);
+}
+
+#[test]
 fn knowledge_vectors_rank_within_model_and_scope() {
     let dir = tempdir().expect("tempdir");
     let store = SqliteKnowledgeStore::new(dir.path().join("knowledge.sqlite3"));

@@ -137,6 +137,9 @@ pub(crate) enum LinuxShellCommand {
         /// Maximum number of matches to return.
         #[arg(long, default_value_t = 10)]
         limit: usize,
+        /// Restrict results to one recorded distro/runtime version.
+        #[arg(long)]
+        source_version: Option<String>,
     },
     /// Build local embeddings for one already ingested knowledge document.
     KnowledgeIndex {
@@ -156,6 +159,9 @@ pub(crate) enum LinuxShellCommand {
         /// Maximum number of matches to return.
         #[arg(long, default_value_t = 10)]
         limit: usize,
+        /// Restrict results to one recorded distro/runtime version.
+        #[arg(long)]
+        source_version: Option<String>,
     },
     /// Hidden long-lived process used by shell-intercept.
     #[command(hide = true)]
@@ -206,20 +212,31 @@ pub(crate) async fn run_command(command: LinuxShellCommand) -> Result<()> {
             source_version,
             cwd,
         } => run_knowledge_help(command, source_version, cwd).await,
-        LinuxShellCommand::KnowledgeSearch { query, cwd, limit } => {
-            run_knowledge_search(query, cwd, limit)
-        }
+        LinuxShellCommand::KnowledgeSearch {
+            query,
+            cwd,
+            limit,
+            source_version,
+        } => run_knowledge_search(query, cwd, limit, source_version.as_deref()),
         LinuxShellCommand::KnowledgeIndex { document_id, cwd } => {
             run_knowledge_index(document_id, cwd)
         }
-        LinuxShellCommand::KnowledgeVectorSearch { query, cwd, limit } => {
-            run_knowledge_vector_search(query, cwd, limit)
-        }
+        LinuxShellCommand::KnowledgeVectorSearch {
+            query,
+            cwd,
+            limit,
+            source_version,
+        } => run_knowledge_vector_search(query, cwd, limit, source_version.as_deref()),
         LinuxShellCommand::Daemon => run_daemon().await,
     }
 }
 
-fn run_knowledge_search(query: String, cwd: PathBuf, limit: usize) -> Result<()> {
+fn run_knowledge_search(
+    query: String,
+    cwd: PathBuf,
+    limit: usize,
+    source_version: Option<&str>,
+) -> Result<()> {
     let cwd = std::fs::canonicalize(&cwd)
         .with_context(|| format!("无法访问知识工作区: {}", cwd.display()))?;
     let store = yunxi_agent_storage::SqliteKnowledgeStore::for_workspace(&cwd);
@@ -229,7 +246,7 @@ fn run_knowledge_search(query: String, cwd: PathBuf, limit: usize) -> Result<()>
         generation: 1,
         visibility: yunxi_agent_storage::KnowledgeVisibility::Public,
     };
-    let matches = store.search(&query, &scope, limit.min(50))?;
+    let matches = store.search_versioned(&query, &scope, source_version, limit.min(50))?;
     let results = matches
         .into_iter()
         .map(|item| {
@@ -249,6 +266,7 @@ fn run_knowledge_search(query: String, cwd: PathBuf, limit: usize) -> Result<()>
         serde_json::to_string_pretty(&serde_json::json!({
             "schema_version": 1,
             "query": query,
+            "source_version": source_version,
             "space_id": "system-linux",
             "results": results,
         }))?
@@ -276,7 +294,12 @@ fn run_knowledge_index(document_id: String, cwd: PathBuf) -> Result<()> {
     Ok(())
 }
 
-fn run_knowledge_vector_search(query: String, cwd: PathBuf, limit: usize) -> Result<()> {
+fn run_knowledge_vector_search(
+    query: String,
+    cwd: PathBuf,
+    limit: usize,
+    source_version: Option<&str>,
+) -> Result<()> {
     let cwd = std::fs::canonicalize(&cwd)
         .with_context(|| format!("无法访问知识工作区: {}", cwd.display()))?;
     let store = yunxi_agent_storage::SqliteKnowledgeStore::for_workspace(&cwd);
@@ -289,10 +312,11 @@ fn run_knowledge_vector_search(query: String, cwd: PathBuf, limit: usize) -> Res
         generation: 1,
         visibility: yunxi_agent_storage::KnowledgeVisibility::Public,
     };
-    let matches = store.search_vectors(
+    let matches = store.search_vectors_versioned(
         &embedding.values,
         provider.model_id(),
         &scope,
+        source_version,
         limit.min(50),
     )?;
     let results = matches
@@ -304,6 +328,7 @@ fn run_knowledge_vector_search(query: String, cwd: PathBuf, limit: usize) -> Res
                 "title": item.title,
                 "content": item.content,
                 "source": item.source,
+                "version": item.version,
                 "generation": item.generation,
                 "score": item.score,
                 "embedding_model": item.embedding_model,
@@ -315,6 +340,7 @@ fn run_knowledge_vector_search(query: String, cwd: PathBuf, limit: usize) -> Res
         serde_json::to_string_pretty(&serde_json::json!({
             "schema_version": 1,
             "query": query,
+            "source_version": source_version,
             "embedding_model": provider.model_id(),
             "space_id": "system-linux",
             "results": results,

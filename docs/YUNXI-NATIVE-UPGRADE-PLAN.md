@@ -343,6 +343,11 @@ CLI 还提供 `knowledge-index` 和 `knowledge-vector-search`：前者使用当�
 有界 cosine 召回。两者都不读取或写入长期记忆向量库，后续接入更强 embedding
 模型时仍通过 provider + 批量替换契约。
 
+为避免混合空间的跨发行版误召回，`knowledge-search` 与
+`knowledge-vector-search` 都支持可选的 `--source-version` 精确过滤；不传时保持
+向后兼容的跨版本召回，但每条结果仍保留真实版本 provenance。Runtime 自动召回
+暂不猜测发行版版本，待后续增加可靠的系统来源探测/显式配置后再接入同一过滤边界。
+
 **门槛**：索引可增量更新、失败可回滚、来源可追踪、风险命令可标记、空间隔离和撤回测试通过、RAG 召回指标达标。
 
 ### Phase 5：记忆与知识协同

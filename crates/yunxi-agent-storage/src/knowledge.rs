@@ -137,6 +137,7 @@ pub struct KnowledgeVectorMatch {
     pub title: String,
     pub content: String,
     pub source: String,
+    pub version: String,
     pub embedding_model: String,
     pub generation: i64,
     pub score: f32,
@@ -757,9 +758,20 @@ impl SqliteKnowledgeStore {
         scope: &KnowledgeSearchScope,
         limit: usize,
     ) -> AgentResult<Vec<KnowledgeSearchResult>> {
+        self.search_versioned(query, scope, None, limit)
+    }
+
+    pub fn search_versioned(
+        &self,
+        query: &str,
+        scope: &KnowledgeSearchScope,
+        source_version: Option<&str>,
+        limit: usize,
+    ) -> AgentResult<Vec<KnowledgeSearchResult>> {
         if query.trim().is_empty() || limit == 0 {
             return Ok(Vec::new());
         }
+        validate_source_version(source_version)?;
         validate_search_scope(scope)?;
         let connection = self.open_connection()?;
         initialize_schema(&connection, &self.database)?;
@@ -788,8 +800,9 @@ impl SqliteKnowledgeStore {
                    AND s.generation = c.generation
                    AND s.owner = c.owner
                    AND s.visibility = c.visibility
+                   AND (?6 IS NULL OR c.version = ?6)
                  ORDER BY rank ASC, c.ordinal ASC
-                 LIMIT ?6",
+                 LIMIT ?7",
             )
             .map_err(|error| sqlite_error(&self.database, "prepare knowledge search", error))?;
         let rows = statement
@@ -800,6 +813,7 @@ impl SqliteKnowledgeStore {
                     scope.generation,
                     scope.owner,
                     scope.visibility.as_str(),
+                    source_version,
                     i64::try_from(limit).unwrap_or(i64::MAX),
                 ],
                 |row| {
@@ -836,6 +850,17 @@ impl SqliteKnowledgeStore {
         scope: &KnowledgeSearchScope,
         top_k: usize,
     ) -> AgentResult<Vec<KnowledgeVectorMatch>> {
+        self.search_vectors_versioned(query, embedding_model, scope, None, top_k)
+    }
+
+    pub fn search_vectors_versioned(
+        &self,
+        query: &[f32],
+        embedding_model: &str,
+        scope: &KnowledgeSearchScope,
+        source_version: Option<&str>,
+        top_k: usize,
+    ) -> AgentResult<Vec<KnowledgeVectorMatch>> {
         if query.is_empty() || top_k == 0 {
             return Ok(Vec::new());
         }
@@ -847,13 +872,15 @@ impl SqliteKnowledgeStore {
         if embedding_model.trim().is_empty() {
             return Err(storage_error("knowledge embedding model is required"));
         }
+        validate_source_version(source_version)?;
         validate_search_scope(scope)?;
         let connection = self.open_connection()?;
         initialize_schema(&connection, &self.database)?;
         let mut statement = connection
             .prepare(
                 "SELECT v.chunk_id, c.document_id, c.space_id, d.title, c.content,
-                        c.source, v.embedding_model, v.generation, v.dimensions, v.vector
+                        c.source, c.version, v.embedding_model, v.generation,
+                        v.dimensions, v.vector
                  FROM knowledge_vectors v
                  JOIN knowledge_chunks c ON c.chunk_id = v.chunk_id
                  JOIN knowledge_documents d ON d.document_id = c.document_id
@@ -869,7 +896,8 @@ impl SqliteKnowledgeStore {
                    AND d.visibility = c.visibility
                    AND s.generation = c.generation
                    AND s.owner = c.owner
-                   AND s.visibility = c.visibility",
+                   AND s.visibility = c.visibility
+                   AND (?6 IS NULL OR c.version = ?6)",
             )
             .map_err(|error| {
                 sqlite_error(&self.database, "prepare knowledge vector search", error)
@@ -882,6 +910,7 @@ impl SqliteKnowledgeStore {
                     scope.generation,
                     scope.owner,
                     scope.visibility.as_str(),
+                    source_version,
                 ],
                 |row| {
                     Ok((
@@ -892,9 +921,10 @@ impl SqliteKnowledgeStore {
                         row.get::<_, String>(4)?,
                         row.get::<_, String>(5)?,
                         row.get::<_, String>(6)?,
-                        row.get::<_, i64>(7)?,
+                        row.get::<_, String>(7)?,
                         row.get::<_, i64>(8)?,
-                        row.get::<_, Vec<u8>>(9)?,
+                        row.get::<_, i64>(9)?,
+                        row.get::<_, Vec<u8>>(10)?,
                     ))
                 },
             )
@@ -908,6 +938,7 @@ impl SqliteKnowledgeStore {
                 title,
                 content,
                 source,
+                version,
                 model,
                 generation,
                 dimensions,
@@ -930,6 +961,7 @@ impl SqliteKnowledgeStore {
                     title,
                     content,
                     source,
+                    version,
                     embedding_model: model,
                     generation,
                     score,
@@ -1174,6 +1206,13 @@ fn validate_vector(vector: &KnowledgeVector) -> AgentResult<()> {
 fn validate_search_scope(scope: &KnowledgeSearchScope) -> AgentResult<()> {
     if scope.space_id.trim().is_empty() || scope.owner.trim().is_empty() || scope.generation < 0 {
         return Err(storage_error("invalid knowledge search scope"));
+    }
+    Ok(())
+}
+
+fn validate_source_version(source_version: Option<&str>) -> AgentResult<()> {
+    if source_version.is_some_and(|version| version.trim().is_empty()) {
+        return Err(storage_error("knowledge source version filter is empty"));
     }
     Ok(())
 }
