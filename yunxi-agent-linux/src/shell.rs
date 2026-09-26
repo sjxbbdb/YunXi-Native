@@ -10,7 +10,7 @@
 //! accepted prose into YunXi Runtime instead of Miyu's own engine.
 
 use anyhow::{Context, Result, bail};
-use clap::Subcommand;
+use clap::{ArgAction, Subcommand};
 #[cfg(unix)]
 use serde::{Deserialize, Serialize};
 #[cfg(unix)]
@@ -53,6 +53,8 @@ use yunxi_agent_runtime::YunXiRuntimeBackend;
 
 #[path = "knowledge_collector.rs"]
 mod knowledge_collector;
+#[path = "knowledge_worker.rs"]
+mod knowledge_worker;
 #[path = "linux_tools.rs"]
 mod linux_tools;
 use linux_tools::LinuxToolCommand;
@@ -218,6 +220,10 @@ pub(crate) enum LinuxShellCommand {
         /// Workspace whose `.yunxi/knowledge/knowledge.sqlite3` is processed.
         #[arg(long, default_value = ".")]
         cwd: PathBuf,
+        /// Explicit workspaces, instead of --cwd, for a bounded round-robin worker.
+        /// No directory discovery or recursive scanning is performed.
+        #[arg(long = "workspace", action = ArgAction::Append, conflicts_with = "cwd")]
+        workspaces: Vec<PathBuf>,
     },
     /// Search the isolated knowledge vector index with the local provider.
     KnowledgeVectorSearch {
@@ -479,11 +485,16 @@ pub(crate) async fn run_command(command: LinuxShellCommand) -> Result<()> {
             watch,
             interval_secs,
             cwd,
+            workspaces,
         } => {
-            if watch {
-                run_knowledge_worker_watch(worker_id, max_jobs, interval_secs, cwd).await
+            if workspaces.is_empty() {
+                if watch {
+                    run_knowledge_worker_watch(worker_id, max_jobs, interval_secs, cwd).await
+                } else {
+                    run_knowledge_worker(worker_id, max_jobs, cwd)
+                }
             } else {
-                run_knowledge_worker(worker_id, max_jobs, cwd)
+                knowledge_worker::run(worker_id, max_jobs, interval_secs, workspaces, watch).await
             }
         }
         LinuxShellCommand::KnowledgeVectorSearch {
@@ -1179,18 +1190,49 @@ fn run_knowledge_retry(job_id: i64, cwd: PathBuf) -> Result<()> {
 }
 
 fn run_knowledge_worker(worker_id: Option<String>, max_jobs: usize, cwd: PathBuf) -> Result<()> {
+    validate_worker_max_jobs(max_jobs)?;
+    let cwd = canonicalize_worker_workspace(&cwd)?;
+    let worker_id =
+        worker_id.unwrap_or_else(|| format!("yunxi-linux-embedding-worker-{}", std::process::id()));
+    let jobs = process_knowledge_workspace(&worker_id, max_jobs, &cwd)?;
+    let provider = yunxi_agent_persona::LocalChargramEmbedding::default();
+    let output = serde_json::json!({
+        "schema_version": 1,
+        "status": if jobs.is_empty() { "idle" } else { "processed" },
+        "worker_id": worker_id,
+        "embedding_model": provider.model_id(),
+        "jobs": jobs,
+    });
+    println!("{}", serde_json::to_string_pretty(&output)?);
+    Ok(())
+}
+
+fn validate_worker_max_jobs(max_jobs: usize) -> Result<()> {
     if max_jobs == 0 || max_jobs > 1_000 {
         bail!("--max-jobs 必须在 1 到 1000 之间");
     }
-    let cwd = std::fs::canonicalize(&cwd)
+    Ok(())
+}
+
+fn canonicalize_worker_workspace(cwd: &Path) -> Result<PathBuf> {
+    let canonical = std::fs::canonicalize(cwd)
         .with_context(|| format!("无法访问知识工作区: {}", cwd.display()))?;
-    let store = yunxi_agent_storage::SqliteKnowledgeStore::for_workspace(&cwd);
+    if !canonical.is_dir() {
+        bail!("知识工作区不是目录: {}", canonical.display());
+    }
+    Ok(canonical)
+}
+
+fn process_knowledge_workspace(
+    worker_id: &str,
+    max_jobs: usize,
+    cwd: &Path,
+) -> Result<Vec<serde_json::Value>> {
+    let store = yunxi_agent_storage::SqliteKnowledgeStore::for_workspace(cwd);
     let provider = yunxi_agent_persona::LocalChargramEmbedding::default();
-    let worker_id =
-        worker_id.unwrap_or_else(|| format!("yunxi-linux-embedding-worker-{}", std::process::id()));
     let mut jobs = Vec::new();
     for _ in 0..max_jobs {
-        let Some(result) = store.process_next_embedding_job(&worker_id, &provider)? else {
+        let Some(result) = store.process_next_embedding_job(worker_id, &provider)? else {
             break;
         };
         jobs.push(serde_json::json!({
@@ -1205,15 +1247,7 @@ fn run_knowledge_worker(worker_id: Option<String>, max_jobs: usize, cwd: PathBuf
             "last_error": result.job.last_error,
         }));
     }
-    let output = serde_json::json!({
-        "schema_version": 1,
-        "status": if jobs.is_empty() { "idle" } else { "processed" },
-        "worker_id": worker_id,
-        "embedding_model": provider.model_id(),
-        "jobs": jobs,
-    });
-    println!("{}", serde_json::to_string_pretty(&output)?);
-    Ok(())
+    Ok(jobs)
 }
 
 async fn run_knowledge_worker_watch(

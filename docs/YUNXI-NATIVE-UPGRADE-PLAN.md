@@ -374,9 +374,12 @@ model 不匹配被视为终态失败；lease 回收仍立即恢复，不套用�
 
 当前新增了显式 `knowledge-worker --watch` 轮询器作为过渡调度边界：它绑定一个明确的
 workspace，按间隔以有限 batch 领取到期任务，复用已有 lease/退避/重试契约，不扫描其他
-workspace、不自动激活 generation，并可由 systemd 或 supervisor 托管。跨 workspace 的
-常驻 daemon 调度、公平性、告警与统一跨任务策略仍留待后续切片；当前 worker 已能在
-Ctrl+C 或 SIGTERM 下优雅退出并输出 stopped 记录。
+workspace、不自动激活 generation，并可由 systemd 或 supervisor 托管。现在也支持重复
+传入 `--workspace` 创建最多 32 个工作区的显式 fleet：路径 canonicalize 后去重，跨轮
+round-robin 游标保证共享预算下的基本公平；单个工作区的 SQLite/索引故障会被隔离，
+不会中止同轮其他工作区，且默认输出不含绝对路径。持久化游标、告警与统一跨任务策略，
+以及 daemon 级自动发现仍留待后续切片；当前 worker 已能在 Ctrl+C 或 SIGTERM 下优雅
+退出并输出 stopped 记录。
 
 显式空间还提供只读的 `knowledge-space-list` 元数据入口，按稳定的 `space_id` 排序，
 不读取文档正文、chunk 或向量，便于本地诊断空间隔离而不扩大知识内容暴露面。

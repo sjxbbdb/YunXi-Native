@@ -146,6 +146,11 @@ printf '%s\n' '项目约定：先 dry-run，再申请审批。' | \
 ./target/release/yunxi-linux knowledge-space-list --cwd .
 ./target/release/yunxi-linux knowledge-worker --max-jobs 10 --cwd .
 ./target/release/yunxi-linux knowledge-worker --watch --interval-secs 5 --max-jobs 10 --cwd .
+# 多工作区：重复 --workspace，最多 32 个；不扫描其他目录
+./target/release/yunxi-linux knowledge-worker --max-jobs 4 \
+  --workspace ~/src/project-a --workspace ~/src/project-b
+./target/release/yunxi-linux knowledge-worker --watch --interval-secs 5 --max-jobs 4 \
+  --workspace ~/src/project-a --workspace ~/src/project-b
 ./target/release/yunxi-linux knowledge-vector-search '审批' \
   --space-id project-demo --owner local-user --visibility owner --cwd .
 
@@ -161,8 +166,13 @@ printf '%s\n' '项目约定：先 dry-run，再申请审批。' | \
 
 `knowledge-worker --watch` 是显式 workspace 范围内的常驻轮询器：它复用同一套
 lease、退避、重试和 generation 校验，按间隔处理有限数量任务；不会扫描其他
-workspace，也不会自动激活 generation。可由 systemd、supervisor 或终端在需要时托管，
-按 `Ctrl+C` 或 `SIGTERM` 停止，并输出一条结构化 stopped 记录。
+workspace，也不会自动激活 generation。除原有的 `--cwd` 单 workspace 模式外，
+还可以重复传入 `--workspace` 建立一个最多 32 个工作区的显式 fleet。fleet 会先对路径
+做 canonicalize 和去重，再用跨轮 round-robin 游标调度；`--max-jobs` 是整轮所有工作区
+共享的预算。单个 SQLite 损坏、权限或索引失败只会标记该工作区并继续处理其他工作区，
+JSON 默认只返回 `workspace_index`，不泄露绝对路径。按 `Ctrl+C` 或 `SIGTERM` 停止时
+会输出结构化 stopped 记录。fleet 仍是显式 CLI 边界，不会自行发现新目录，也不会替代
+未来需要持久化游标、告警和统一策略的 daemon 调度器。
 
 `knowledge-space-list` 只列出空间元数据，不读取文档正文、chunk 或向量；它用于确认
 当前 workspace 的 system/project/private 边界，输出按 `space_id` 稳定排序。

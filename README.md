@@ -85,6 +85,10 @@ Linux 知识库已经有独立的 `SqliteKnowledgeStore` 基础：数据库文�
 当前可通过 Linux CLI 的 `knowledge-index` 为已登记文档建立本地字符 n-gram 向量，
 再用 `knowledge-vector-search` 做有界召回；采集/import 还会创建 durable embedding
 job，可由一次性 `knowledge-worker` 或显式 `knowledge-worker --watch` 轮询处理。
+除了 `--cwd` 单工作区模式，还可以重复传入 `--workspace` 建立最多 32 个工作区的
+显式 fleet；路径会 canonicalize 后去重，`--max-jobs` 是整轮共享预算，跨轮游标按
+round-robin 轮转。单个工作区的 SQLite、权限或索引故障会被隔离，默认 JSON 只返回
+`workspace_index`，不泄露绝对路径；它不会扫描目录或自动激活 generation。
 
 Linux 查询入口和 Runtime 会读取知识空间的当前 active generation，并校验 owner 与
 visibility；不会把 generation `1` 当作永久默认值。首次使用由 `knowledge-help` 或
