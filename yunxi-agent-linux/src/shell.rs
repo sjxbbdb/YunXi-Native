@@ -201,9 +201,15 @@ pub(crate) enum LinuxShellCommand {
         /// Stable worker identity used for the SQLite lease.
         #[arg(long)]
         worker_id: Option<String>,
-        /// Maximum number of pending jobs to process in this invocation.
+        /// Maximum number of pending jobs to process in each invocation/round.
         #[arg(long, default_value_t = 1)]
         max_jobs: usize,
+        /// Keep polling the selected workspace until Ctrl+C/SIGTERM.
+        #[arg(long)]
+        watch: bool,
+        /// Delay between watch polling rounds.
+        #[arg(long, default_value_t = 5)]
+        interval_secs: u64,
         /// Workspace whose `.yunxi/knowledge/knowledge.sqlite3` is processed.
         #[arg(long, default_value = ".")]
         cwd: PathBuf,
@@ -458,8 +464,16 @@ pub(crate) async fn run_command(command: LinuxShellCommand) -> Result<()> {
         LinuxShellCommand::KnowledgeWorker {
             worker_id,
             max_jobs,
+            watch,
+            interval_secs,
             cwd,
-        } => run_knowledge_worker(worker_id, max_jobs, cwd),
+        } => {
+            if watch {
+                run_knowledge_worker_watch(worker_id, max_jobs, interval_secs, cwd).await
+            } else {
+                run_knowledge_worker(worker_id, max_jobs, cwd)
+            }
+        }
         LinuxShellCommand::KnowledgeVectorSearch {
             query,
             cwd,
@@ -1158,6 +1172,38 @@ fn run_knowledge_worker(worker_id: Option<String>, max_jobs: usize, cwd: PathBuf
     });
     println!("{}", serde_json::to_string_pretty(&output)?);
     Ok(())
+}
+
+async fn run_knowledge_worker_watch(
+    worker_id: Option<String>,
+    max_jobs: usize,
+    interval_secs: u64,
+    cwd: PathBuf,
+) -> Result<()> {
+    if interval_secs == 0 || interval_secs > 3_600 {
+        bail!("--interval-secs 必须在 1 到 3600 之间");
+    }
+    let worker_id =
+        worker_id.unwrap_or_else(|| format!("yunxi-linux-embedding-watch-{}", std::process::id()));
+    let interrupt = tokio::signal::ctrl_c();
+    tokio::pin!(interrupt);
+    loop {
+        run_knowledge_worker(Some(worker_id.clone()), max_jobs, cwd.clone())?;
+        tokio::select! {
+            _ = &mut interrupt => {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&serde_json::json!({
+                        "schema_version": 1,
+                        "status": "stopped",
+                        "worker_id": worker_id,
+                    }))?
+                );
+                return Ok(());
+            }
+            _ = tokio::time::sleep(std::time::Duration::from_secs(interval_secs)) => {}
+        }
+    }
 }
 
 fn run_knowledge_vector_search(

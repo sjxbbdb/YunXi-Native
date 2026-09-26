@@ -134,7 +134,21 @@ WRONG_OWNER_STATUS=$?
 set -e
 [[ "$WRONG_OWNER_STATUS" -ne 0 ]] || { echo "wrong owner unexpectedly queried private space" >&2; exit 1; }
 
-run_json knowledge-worker --max-jobs 10 --cwd "$WORKSPACE" >"$TMP_ROOT/worker.json"
+set +e
+timeout 4s "$BINARY" knowledge-worker --watch --interval-secs 1 --max-jobs 10 \
+  --cwd "$WORKSPACE" >"$TMP_ROOT/worker-watch.json" 2>&1
+WATCH_STATUS=$?
+set -e
+[[ "$WATCH_STATUS" -eq 124 ]] || {
+  cat "$TMP_ROOT/worker-watch.json" >&2
+  echo "knowledge worker watch did not stop under timeout: status=$WATCH_STATUS" >&2
+  exit 1
+}
+grep -q '"status": "processed"' "$TMP_ROOT/worker-watch.json" || {
+  cat "$TMP_ROOT/worker-watch.json" >&2
+  echo "knowledge worker watch did not process a job" >&2
+  exit 1
+}
 run_json knowledge-vector-search 'dry-run' \
   --space-id private-demo --owner local-user --visibility private \
   --cwd "$WORKSPACE" >"$TMP_ROOT/private-vector.json"

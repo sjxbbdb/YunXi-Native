@@ -131,6 +131,7 @@ printf '%s\n' '项目约定：先 dry-run，再申请审批。' | \
 ./target/release/yunxi-linux knowledge-search 'dry-run' \
   --space-id project-demo --owner local-user --visibility owner --cwd .
 ./target/release/yunxi-linux knowledge-worker --max-jobs 10 --cwd .
+./target/release/yunxi-linux knowledge-worker --watch --interval-secs 5 --max-jobs 10 --cwd .
 ./target/release/yunxi-linux knowledge-vector-search '审批' \
   --space-id project-demo --owner local-user --visibility owner --cwd .
 
@@ -143,6 +144,11 @@ printf '%s\n' '项目约定：先 dry-run，再申请审批。' | \
 会在事务内替换旧 chunks、向量和 embedding job，不留下孤立索引。长期记忆数据库与
 `knowledge.sqlite3` 始终保持物理分离。`knowledge-retract` 也要求显式匹配 space、owner
 和 visibility，撤回后 FTS、向量和 embedding job 一起失效。
+
+`knowledge-worker --watch` 是显式 workspace 范围内的常驻轮询器：它复用同一套
+lease、退避、重试和 generation 校验，按间隔处理有限数量任务；不会扫描其他
+workspace，也不会自动激活 generation。可由 systemd、supervisor 或终端在需要时托管，
+按 `Ctrl+C` 停止。
 
 ## fish 接管（Miyu 风格）
 

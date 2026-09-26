@@ -361,6 +361,11 @@ active generation 的读取边界、staging worker 和原子激活已经落地�
 model 不匹配被视为终态失败；lease 回收仍立即恢复，不套用退避。常驻 daemon 的
 调度、告警和跨任务退避策略仍不在本切片范围内。
 
+当前新增了显式 `knowledge-worker --watch` 轮询器作为过渡调度边界：它绑定一个明确的
+workspace，按间隔以有限 batch 领取到期任务，复用已有 lease/退避/重试契约，不扫描其他
+workspace、不自动激活 generation，并可由 systemd 或 supervisor 托管。跨 workspace 的
+常驻 daemon 调度、公平性、告警与统一 SIGTERM 生命周期仍留待后续切片。
+
 `ensure_system_space` 只在 system 空间不存在时初始化 generation `1`，不会覆盖已有
 active generation。采集得到的文档会在写入前绑定当前 active generation，避免空间升级
 后新旧资料串代；staging 采集与 active 激活保持两个明确事务边界。
