@@ -1,12 +1,14 @@
 use rusqlite::Connection;
+use std::sync::{Arc, Barrier};
+use std::thread;
 use tempfile::tempdir;
 use yunxi_agent_persona::{
     LocalChargramEmbedding, MemoryEmbedding, MemoryEmbeddingError, MemoryEmbeddingProvider,
 };
 use yunxi_agent_storage::{
-    KnowledgeChunk, KnowledgeChunkingOptions, KnowledgeDocument, KnowledgeSearchScope,
-    KnowledgeSpaceKind, KnowledgeSpaceSpec, KnowledgeVector, KnowledgeVisibility,
-    SqliteKnowledgeStore,
+    KnowledgeChunk, KnowledgeChunkingOptions, KnowledgeDocument, KnowledgeEmbeddingJobStatus,
+    KnowledgeSearchScope, KnowledgeSpaceKind, KnowledgeSpaceSpec, KnowledgeVector,
+    KnowledgeVisibility, SqliteKnowledgeStore,
 };
 
 fn space(
@@ -59,6 +61,167 @@ fn chunk(
         visibility,
         metadata_json: "{}".to_string(),
     }
+}
+
+fn queue_fixture() -> (tempfile::TempDir, SqliteKnowledgeStore, KnowledgeDocument) {
+    let dir = tempdir().expect("tempdir");
+    let store = SqliteKnowledgeStore::new(dir.path().join("knowledge.sqlite3"));
+    store
+        .upsert_space(&space(
+            "system-linux",
+            KnowledgeSpaceKind::System,
+            "system",
+            KnowledgeVisibility::Public,
+            1,
+        ))
+        .expect("space");
+    let document = document("system-linux", "system", KnowledgeVisibility::Public);
+    store.upsert_document(&document).expect("document");
+    (dir, store, document)
+}
+
+#[test]
+fn embedding_jobs_are_idempotent_and_have_bounded_transitions() {
+    let (_dir, store, document) = queue_fixture();
+
+    let queued = store
+        .enqueue_embedding_job(&document.document_id, "fixture-v1", 1)
+        .expect("enqueue");
+    assert_eq!(queued.status, KnowledgeEmbeddingJobStatus::Pending);
+    let duplicate = store
+        .enqueue_embedding_job(&document.document_id, "fixture-v1", 1)
+        .expect("duplicate enqueue");
+    assert_eq!(duplicate, queued);
+
+    let claimed = store
+        .claim_embedding_job("worker-a")
+        .expect("claim")
+        .expect("pending job");
+    assert_eq!(claimed.status, KnowledgeEmbeddingJobStatus::Running);
+    assert_eq!(claimed.worker_id.as_deref(), Some("worker-a"));
+    assert!(
+        store
+            .claim_embedding_job("worker-b")
+            .expect("second claim")
+            .is_none()
+    );
+    assert!(
+        store
+            .complete_embedding_job(claimed.job_id, "worker-b")
+            .is_err()
+    );
+
+    let completed = store
+        .complete_embedding_job(claimed.job_id, "worker-a")
+        .expect("complete");
+    assert_eq!(completed.status, KnowledgeEmbeddingJobStatus::Completed);
+    assert!(
+        store
+            .fail_embedding_job(claimed.job_id, "worker-a", "too late")
+            .is_err()
+    );
+    assert!(
+        store
+            .claim_embedding_job("worker-c")
+            .expect("claim after completion")
+            .is_none()
+    );
+}
+
+#[test]
+fn embedding_job_enqueue_requires_existing_document_generation() {
+    let (_dir, store, document) = queue_fixture();
+    assert!(
+        store
+            .enqueue_embedding_job("missing", "fixture-v1", 1)
+            .is_err()
+    );
+    assert!(
+        store
+            .enqueue_embedding_job(&document.document_id, "fixture-v1", 2)
+            .is_err()
+    );
+    assert!(
+        store
+            .enqueue_embedding_job(&document.document_id, "", 1)
+            .is_err()
+    );
+}
+
+#[test]
+fn concurrent_embedding_claims_assign_a_job_to_only_one_worker() {
+    let (_dir, store, document) = queue_fixture();
+    store
+        .enqueue_embedding_job(&document.document_id, "fixture-v1", 1)
+        .expect("enqueue");
+
+    let store = Arc::new(store);
+    let barrier = Arc::new(Barrier::new(3));
+    let workers = ["worker-a", "worker-b"]
+        .into_iter()
+        .map(|worker| {
+            let store = Arc::clone(&store);
+            let barrier = Arc::clone(&barrier);
+            thread::spawn(move || {
+                barrier.wait();
+                store.claim_embedding_job(worker).expect("claim")
+            })
+        })
+        .collect::<Vec<_>>();
+    barrier.wait();
+    let claims = workers
+        .into_iter()
+        .map(|worker| worker.join().expect("worker"))
+        .collect::<Vec<_>>();
+    assert_eq!(claims.iter().filter(|claim| claim.is_some()).count(), 1);
+}
+
+#[test]
+fn failed_embedding_job_keeps_previous_vector_available() {
+    let (_dir, store, document) = queue_fixture();
+    let knowledge_chunk = chunk(
+        &document.document_id,
+        "system",
+        KnowledgeVisibility::Public,
+        "systemctl status keeps the service state visible",
+    );
+    store.upsert_chunk(&knowledge_chunk).expect("chunk");
+    store
+        .upsert_vector(&KnowledgeVector {
+            chunk_id: knowledge_chunk.chunk_id.clone(),
+            space_id: document.space_id.clone(),
+            embedding_model: "fixture-v1".to_string(),
+            generation: 1,
+            vector: vec![1.0, 0.0],
+        })
+        .expect("old vector");
+    let job = store
+        .enqueue_embedding_job(&document.document_id, "fixture-v1", 1)
+        .expect("enqueue");
+    let claimed = store
+        .claim_embedding_job("worker-a")
+        .expect("claim")
+        .expect("job");
+    assert_eq!(claimed.job_id, job.job_id);
+    store
+        .fail_embedding_job(claimed.job_id, "worker-a", "provider unavailable")
+        .expect("fail");
+
+    let vectors = store
+        .search_vectors(
+            &[1.0, 0.0],
+            "fixture-v1",
+            &KnowledgeSearchScope {
+                space_id: document.space_id,
+                owner: "system".to_string(),
+                generation: 1,
+                visibility: KnowledgeVisibility::Public,
+            },
+            5,
+        )
+        .expect("search old vector");
+    assert_eq!(vectors.len(), 1);
+    assert_eq!(vectors[0].chunk_id, knowledge_chunk.chunk_id);
 }
 
 #[test]

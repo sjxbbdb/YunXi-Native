@@ -8,7 +8,7 @@ use crate::knowledge_ingest::{
     KnowledgeChunkingOptions, KnowledgeIngestSummary, chunk_knowledge_text, content_hash,
     normalize_knowledge_text,
 };
-use rusqlite::{Connection, OptionalExtension, Transaction, params};
+use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -153,6 +153,54 @@ pub struct KnowledgeEmbeddingSummary {
     pub chunks_indexed: usize,
 }
 
+/// Durable state for one document/model/generation embedding request.
+///
+/// The queue is intentionally only a storage contract. It does not invoke an
+/// embedding provider or run a background worker.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum KnowledgeEmbeddingJobStatus {
+    Pending,
+    Running,
+    Completed,
+    Failed,
+}
+
+impl KnowledgeEmbeddingJobStatus {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Pending => "pending",
+            Self::Running => "running",
+            Self::Completed => "completed",
+            Self::Failed => "failed",
+        }
+    }
+
+    fn parse(value: &str) -> Result<Self, String> {
+        match value {
+            "pending" => Ok(Self::Pending),
+            "running" => Ok(Self::Running),
+            "completed" => Ok(Self::Completed),
+            "failed" => Ok(Self::Failed),
+            other => Err(format!("unknown knowledge embedding job status {other}")),
+        }
+    }
+}
+
+/// A persisted embedding job and its lease/status metadata.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct KnowledgeEmbeddingJob {
+    pub job_id: i64,
+    pub document_id: String,
+    pub embedding_model: String,
+    pub generation: i64,
+    pub status: KnowledgeEmbeddingJobStatus,
+    pub attempts: i64,
+    pub worker_id: Option<String>,
+    pub last_error: Option<String>,
+    pub created_at_millis: i64,
+    pub updated_at_millis: i64,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SqliteKnowledgeStore {
     database: PathBuf,
@@ -189,6 +237,181 @@ impl SqliteKnowledgeStore {
     pub fn initialize(&self) -> AgentResult<()> {
         let connection = self.open_connection()?;
         initialize_schema(&connection, &self.database)
+    }
+
+    /// Enqueue one idempotent document/model/generation embedding request.
+    pub fn enqueue_embedding_job(
+        &self,
+        document_id: &str,
+        embedding_model: &str,
+        generation: i64,
+    ) -> AgentResult<KnowledgeEmbeddingJob> {
+        validate_embedding_job_input(document_id, embedding_model, generation)?;
+        let mut connection = self.open_connection()?;
+        initialize_schema(&connection, &self.database)?;
+        let transaction = connection
+            .transaction()
+            .map_err(|error| sqlite_error(&self.database, "begin embedding job enqueue", error))?;
+        let document_generation = transaction
+            .query_row(
+                "SELECT generation FROM knowledge_documents WHERE document_id = ?1",
+                params![document_id],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()
+            .map_err(|error| sqlite_error(&self.database, "read embedding job document", error))?
+            .ok_or_else(|| storage_error("embedding job references an unknown document"))?;
+        if document_generation != generation {
+            return Err(storage_error(
+                "embedding job generation does not match its document",
+            ));
+        }
+        let now = now_millis();
+        transaction
+            .execute(
+                "INSERT INTO knowledge_embedding_jobs
+                    (document_id, embedding_model, generation, status, attempts,
+                     worker_id, last_error, created_at_millis, updated_at_millis)
+                 VALUES (?1, ?2, ?3, 'pending', 0, NULL, NULL, ?4, ?4)
+                 ON CONFLICT(document_id, embedding_model, generation) DO NOTHING",
+                params![document_id, embedding_model, generation, now],
+            )
+            .map_err(|error| sqlite_error(&self.database, "enqueue embedding job", error))?;
+        let job_id = transaction
+            .query_row(
+                "SELECT job_id FROM knowledge_embedding_jobs
+                 WHERE document_id = ?1 AND embedding_model = ?2 AND generation = ?3",
+                params![document_id, embedding_model, generation],
+                |row| row.get::<_, i64>(0),
+            )
+            .map_err(|error| sqlite_error(&self.database, "read enqueued embedding job", error))?;
+        let job = read_embedding_job(&transaction, &self.database, job_id)?;
+        transaction
+            .commit()
+            .map_err(|error| sqlite_error(&self.database, "commit embedding job enqueue", error))?;
+        Ok(job)
+    }
+
+    /// Atomically claim the oldest pending embedding job for one worker.
+    pub fn claim_embedding_job(
+        &self,
+        worker_id: &str,
+    ) -> AgentResult<Option<KnowledgeEmbeddingJob>> {
+        validate_embedding_worker_id(worker_id)?;
+        let mut connection = self.open_connection()?;
+        initialize_schema(&connection, &self.database)?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|error| sqlite_error(&self.database, "begin embedding job claim", error))?;
+        let job_id = transaction
+            .query_row(
+                "SELECT job_id FROM knowledge_embedding_jobs
+                 WHERE status = 'pending'
+                 ORDER BY created_at_millis ASC, job_id ASC LIMIT 1",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()
+            .map_err(|error| sqlite_error(&self.database, "find pending embedding job", error))?;
+        let Some(job_id) = job_id else {
+            transaction
+                .commit()
+                .map_err(|error| sqlite_error(&self.database, "commit empty job claim", error))?;
+            return Ok(None);
+        };
+        let updated = transaction
+            .execute(
+                "UPDATE knowledge_embedding_jobs
+                 SET status = 'running', attempts = attempts + 1,
+                     worker_id = ?1, updated_at_millis = ?2
+                 WHERE job_id = ?3 AND status = 'pending'",
+                params![worker_id, now_millis(), job_id],
+            )
+            .map_err(|error| sqlite_error(&self.database, "claim embedding job", error))?;
+        if updated != 1 {
+            return Err(storage_error("embedding job claim lost its pending state"));
+        }
+        let job = read_embedding_job(&transaction, &self.database, job_id)?;
+        transaction
+            .commit()
+            .map_err(|error| sqlite_error(&self.database, "commit embedding job claim", error))?;
+        Ok(Some(job))
+    }
+
+    /// Mark a running job complete, requiring the worker lease to match.
+    pub fn complete_embedding_job(
+        &self,
+        job_id: i64,
+        worker_id: &str,
+    ) -> AgentResult<KnowledgeEmbeddingJob> {
+        self.finish_embedding_job(
+            job_id,
+            worker_id,
+            KnowledgeEmbeddingJobStatus::Completed,
+            None,
+        )
+    }
+
+    /// Mark a running job failed while leaving any previous vector generation intact.
+    pub fn fail_embedding_job(
+        &self,
+        job_id: i64,
+        worker_id: &str,
+        error_message: &str,
+    ) -> AgentResult<KnowledgeEmbeddingJob> {
+        if error_message.trim().is_empty() || error_message.chars().count() > 4096 {
+            return Err(storage_error("embedding job failure message is invalid"));
+        }
+        self.finish_embedding_job(
+            job_id,
+            worker_id,
+            KnowledgeEmbeddingJobStatus::Failed,
+            Some(error_message),
+        )
+    }
+
+    fn finish_embedding_job(
+        &self,
+        job_id: i64,
+        worker_id: &str,
+        status: KnowledgeEmbeddingJobStatus,
+        error_message: Option<&str>,
+    ) -> AgentResult<KnowledgeEmbeddingJob> {
+        if job_id <= 0 {
+            return Err(storage_error("embedding job id is invalid"));
+        }
+        validate_embedding_worker_id(worker_id)?;
+        let mut connection = self.open_connection()?;
+        initialize_schema(&connection, &self.database)?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|error| {
+                sqlite_error(&self.database, "begin embedding job transition", error)
+            })?;
+        let updated = transaction
+            .execute(
+                "UPDATE knowledge_embedding_jobs
+                 SET status = ?1, last_error = ?2, updated_at_millis = ?3
+                 WHERE job_id = ?4 AND status = 'running' AND worker_id = ?5",
+                params![
+                    status.as_str(),
+                    error_message,
+                    now_millis(),
+                    job_id,
+                    worker_id
+                ],
+            )
+            .map_err(|error| sqlite_error(&self.database, "transition embedding job", error))?;
+        if updated != 1 {
+            return Err(storage_error(
+                "embedding job is not running under the requested worker",
+            ));
+        }
+        let job = read_embedding_job(&transaction, &self.database, job_id)?;
+        transaction.commit().map_err(|error| {
+            sqlite_error(&self.database, "commit embedding job transition", error)
+        })?;
+        Ok(job)
     }
 
     pub fn upsert_space(&self, spec: &KnowledgeSpaceSpec) -> AgentResult<()> {
@@ -318,6 +541,12 @@ impl SqliteKnowledgeStore {
                 "knowledge document is outside the requested retraction scope",
             ));
         }
+        transaction
+            .execute(
+                "DELETE FROM knowledge_embedding_jobs WHERE document_id = ?1",
+                params![document_id],
+            )
+            .map_err(|error| sqlite_error(&self.database, "delete embedding jobs", error))?;
         transaction
             .execute(
                 "DELETE FROM knowledge_vectors
@@ -1190,6 +1419,47 @@ impl SqliteKnowledgeStore {
     }
 }
 
+fn read_embedding_job(
+    transaction: &Transaction<'_>,
+    path: &Path,
+    job_id: i64,
+) -> AgentResult<KnowledgeEmbeddingJob> {
+    let row = transaction
+        .query_row(
+            "SELECT job_id, document_id, embedding_model, generation, status,
+                    attempts, worker_id, last_error, created_at_millis, updated_at_millis
+             FROM knowledge_embedding_jobs WHERE job_id = ?1",
+            params![job_id],
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, i64>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, i64>(5)?,
+                    row.get::<_, Option<String>>(6)?,
+                    row.get::<_, Option<String>>(7)?,
+                    row.get::<_, i64>(8)?,
+                    row.get::<_, i64>(9)?,
+                ))
+            },
+        )
+        .map_err(|error| sqlite_error(path, "read embedding job", error))?;
+    Ok(KnowledgeEmbeddingJob {
+        job_id: row.0,
+        document_id: row.1,
+        embedding_model: row.2,
+        generation: row.3,
+        status: KnowledgeEmbeddingJobStatus::parse(&row.4).map_err(storage_error)?,
+        attempts: row.5,
+        worker_id: row.6,
+        last_error: row.7,
+        created_at_millis: row.8,
+        updated_at_millis: row.9,
+    })
+}
+
 fn initialize_schema(connection: &Connection, path: &Path) -> AgentResult<()> {
     connection
         .execute_batch(
@@ -1200,6 +1470,7 @@ fn initialize_schema(connection: &Connection, path: &Path) -> AgentResult<()> {
              );
              INSERT INTO knowledge_schema(schema_version)
                 SELECT 1 WHERE NOT EXISTS (SELECT 1 FROM knowledge_schema);
+             UPDATE knowledge_schema SET schema_version = 2 WHERE schema_version < 2;
              CREATE TABLE IF NOT EXISTS knowledge_spaces (
                 space_id TEXT PRIMARY KEY,
                 kind TEXT NOT NULL CHECK(kind IN ('system', 'project', 'private')),
@@ -1226,6 +1497,21 @@ fn initialize_schema(connection: &Connection, path: &Path) -> AgentResult<()> {
              );
              CREATE INDEX IF NOT EXISTS idx_knowledge_documents_scope
                 ON knowledge_documents(space_id, generation, owner, visibility);
+             CREATE TABLE IF NOT EXISTS knowledge_embedding_jobs (
+                job_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                document_id TEXT NOT NULL REFERENCES knowledge_documents(document_id),
+                embedding_model TEXT NOT NULL,
+                generation INTEGER NOT NULL CHECK(generation >= 0),
+                status TEXT NOT NULL CHECK(status IN ('pending', 'running', 'completed', 'failed')),
+                attempts INTEGER NOT NULL CHECK(attempts >= 0),
+                worker_id TEXT,
+                last_error TEXT,
+                created_at_millis INTEGER NOT NULL,
+                updated_at_millis INTEGER NOT NULL,
+                UNIQUE(document_id, embedding_model, generation)
+             );
+             CREATE INDEX IF NOT EXISTS idx_knowledge_embedding_jobs_pending
+                ON knowledge_embedding_jobs(status, created_at_millis, job_id);
              CREATE TABLE IF NOT EXISTS knowledge_chunks (
                 chunk_id TEXT PRIMARY KEY,
                 document_id TEXT NOT NULL REFERENCES knowledge_documents(document_id),
@@ -1462,6 +1748,24 @@ fn storage_error(message: impl Into<String>) -> AgentError {
     AgentError::Execution {
         message: message.into(),
     }
+}
+
+fn validate_embedding_job_input(
+    document_id: &str,
+    embedding_model: &str,
+    generation: i64,
+) -> AgentResult<()> {
+    if document_id.trim().is_empty() || embedding_model.trim().is_empty() || generation < 0 {
+        return Err(storage_error("embedding job metadata is invalid"));
+    }
+    Ok(())
+}
+
+fn validate_embedding_worker_id(worker_id: &str) -> AgentResult<()> {
+    if worker_id.trim().is_empty() || worker_id.chars().count() > 128 {
+        return Err(storage_error("embedding worker id is invalid"));
+    }
+    Ok(())
 }
 
 fn sqlite_error(path: &Path, action: &str, error: rusqlite::Error) -> AgentError {

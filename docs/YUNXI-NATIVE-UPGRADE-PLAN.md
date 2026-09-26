@@ -304,6 +304,12 @@ generation 过滤的有界 cosine 检索。该切片还没有接入 embedding wo
 替换；后台队列式 embedding worker、active generation 切换和 Planner 接入仍属于
 本 Phase 的后续工作。
 
+本增量已补齐 durable `knowledge_embedding_jobs` 队列契约：作业关联
+`document_id`、embedding model 与 generation，入队会校验文档代际并对重复请求幂等；
+领取使用 SQLite `IMMEDIATE` 事务，`complete`/`fail` 只允许合法的 worker 状态转换，
+失败只记录队列状态并保留已有向量。当前仅落地 SQLite 表、类型与存储方法，尚未接入
+daemon、后台 worker 或 provider；实际后台执行留待后续增量。
+
 同时新增了无副作用的 `knowledge_ingest` 基础层：在进入存储前清理 ANSI
 终端控制符、NUL、CRLF 和多余空行，执行输入上限检查，并按段落与字符边界
 生成带稳定 hash 和 ordinal 的有界 chunk。它不读取任意路径，也不启动命令，

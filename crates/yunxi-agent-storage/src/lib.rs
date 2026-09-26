@@ -34,9 +34,10 @@ pub use companion_mailbox::{
 };
 pub use conversation_state::FileConversationStateStore;
 pub use knowledge::{
-    KnowledgeChunk, KnowledgeDocument, KnowledgeEmbeddingSummary, KnowledgeSearchResult,
-    KnowledgeSearchScope, KnowledgeSpaceKind, KnowledgeSpaceSpec, KnowledgeVector,
-    KnowledgeVectorMatch, KnowledgeVisibility, SqliteKnowledgeStore,
+    KnowledgeChunk, KnowledgeDocument, KnowledgeEmbeddingJob, KnowledgeEmbeddingJobStatus,
+    KnowledgeEmbeddingSummary, KnowledgeSearchResult, KnowledgeSearchScope, KnowledgeSpaceKind,
+    KnowledgeSpaceSpec, KnowledgeVector, KnowledgeVectorMatch, KnowledgeVisibility,
+    SqliteKnowledgeStore,
 };
 pub use knowledge_ingest::{
     KnowledgeChunkDraft, KnowledgeChunkingOptions, KnowledgeIngestSummary, chunk_knowledge_text,
