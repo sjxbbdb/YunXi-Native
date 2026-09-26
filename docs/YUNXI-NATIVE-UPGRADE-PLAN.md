@@ -299,6 +299,11 @@ active generation + owner/visibility 前置过滤的 FTS 查询，以及预留�
 generation 过滤的有界 cosine 检索。该切片还没有接入 embedding worker、Planner
 或执行器，因此知识内容仍只能作为显式检索结果，不能直接触发命令。
 
+当前已经提供同步的单文档 `knowledge-index` 原语和 `knowledge-vector-search` CLI，
+使用本地字符 n-gram provider 建立独立向量并支持增量跳过、快照一致性校验和原子
+替换；后台队列式 embedding worker、active generation 切换和 Planner 接入仍属于
+本 Phase 的后续工作。
+
 同时新增了无副作用的 `knowledge_ingest` 基础层：在进入存储前清理 ANSI
 终端控制符、NUL、CRLF 和多余空行，执行输入上限检查，并按段落与字符边界
 生成带稳定 hash 和 ordinal 的有界 chunk。它不读取任意路径，也不启动命令，
