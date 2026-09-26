@@ -133,12 +133,16 @@ printf '%s\n' '项目约定：先 dry-run，再申请审批。' | \
 ./target/release/yunxi-linux knowledge-worker --max-jobs 10 --cwd .
 ./target/release/yunxi-linux knowledge-vector-search '审批' \
   --space-id project-demo --owner local-user --visibility owner --cwd .
+
+./target/release/yunxi-linux knowledge-retract project-guide \
+  --space-id project-demo --owner local-user --visibility owner --cwd .
 ```
 
 `project` 首版只允许 `owner` visibility；`private` 允许 `owner` 或 `private`。stdin 导入
 受默认输入上限与 chunking 约束，文档必须与空间的 source/version 一致；重复 document id
 会在事务内替换旧 chunks、向量和 embedding job，不留下孤立索引。长期记忆数据库与
-`knowledge.sqlite3` 始终保持物理分离。
+`knowledge.sqlite3` 始终保持物理分离。`knowledge-retract` 也要求显式匹配 space、owner
+和 visibility，撤回后 FTS、向量和 embedding job 一起失效。
 
 ## fish 接管（Miyu 风格）
 

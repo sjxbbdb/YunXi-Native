@@ -326,7 +326,8 @@ project 首版仅允许 owner visibility，private 允许 owner/private；source
 `--owner`、`--visibility`，不匹配的访问身份会被拒绝，导入的 project/private 证据不会
 自动进入 Linux Planner。真实验收脚本为
 `yunxi-agent-linux/tests/knowledge_project_private_smoke.sh`，覆盖重复导入、向量闭环、
-空间隔离和长期记忆数据库未被触碰。
+空间隔离、显式撤回和长期记忆数据库未被触碰。`knowledge-retract` 现在也接受显式
+space/owner/visibility，并在同一存储边界内清理文档、FTS、向量和 embedding job。
 
 当前已经提供同步的单文档 `knowledge-index` 原语和 `knowledge-vector-search` CLI，
 使用本地字符 n-gram provider 建立独立向量并支持增量跳过、快照一致性校验和原子

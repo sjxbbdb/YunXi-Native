@@ -285,10 +285,19 @@ pub(crate) enum LinuxShellCommand {
         #[arg(long, default_value = ".")]
         cwd: PathBuf,
     },
-    /// Retract one system knowledge document and its derived index rows.
+    /// Retract one knowledge document and its derived index rows.
     KnowledgeRetract {
-        /// Stable document id returned by knowledge-man/knowledge-help.
+        /// Stable document id returned by a knowledge collector/import.
         document_id: String,
+        /// Explicit knowledge space; defaults to the Linux system space.
+        #[arg(long, default_value = "system-linux")]
+        space_id: String,
+        /// Owner used for the space access filter.
+        #[arg(long, default_value = "system")]
+        owner: String,
+        /// Visibility used for the space access filter.
+        #[arg(long, default_value = "public")]
+        visibility: String,
         /// Workspace whose `.yunxi/knowledge/knowledge.sqlite3` is updated.
         #[arg(long, default_value = ".")]
         cwd: PathBuf,
@@ -498,9 +507,13 @@ pub(crate) async fn run_command(command: LinuxShellCommand) -> Result<()> {
             visibility,
             cwd,
         ),
-        LinuxShellCommand::KnowledgeRetract { document_id, cwd } => {
-            run_knowledge_retract(document_id, cwd)
-        }
+        LinuxShellCommand::KnowledgeRetract {
+            document_id,
+            space_id,
+            owner,
+            visibility,
+            cwd,
+        } => run_knowledge_retract(document_id, space_id, owner, visibility, cwd),
         LinuxShellCommand::KnowledgeGenerationBegin { cwd } => run_knowledge_generation_begin(cwd),
         LinuxShellCommand::KnowledgeStageHelp {
             command,
@@ -1218,12 +1231,22 @@ fn run_knowledge_vector_search(
     Ok(())
 }
 
-fn run_knowledge_retract(document_id: String, cwd: PathBuf) -> Result<()> {
+fn run_knowledge_retract(
+    document_id: String,
+    space_id: String,
+    owner: String,
+    visibility: String,
+    cwd: PathBuf,
+) -> Result<()> {
+    validate_knowledge_identifier("document_id", &document_id)?;
+    validate_knowledge_identifier("space_id", &space_id)?;
+    validate_knowledge_metadata("owner", &owner)?;
+    let visibility = parse_knowledge_visibility(&visibility)?;
     let cwd = std::fs::canonicalize(&cwd)
         .with_context(|| format!("无法访问知识工作区: {}", cwd.display()))?;
     let store = yunxi_agent_storage::SqliteKnowledgeStore::for_workspace(&cwd);
-    let Some(scope) = active_system_scope(&store)? else {
-        bail!("Linux 知识库尚未初始化，请先运行 knowledge-help 或 knowledge-man");
+    let Some(scope) = active_knowledge_scope(&store, &space_id, &owner, visibility)? else {
+        bail!("知识空间尚未初始化: {space_id}");
     };
     let retracted = store.retract_document(&document_id, &scope)?;
     println!(
@@ -1232,7 +1255,7 @@ fn run_knowledge_retract(document_id: String, cwd: PathBuf) -> Result<()> {
             "schema_version": 1,
             "status": if retracted { "retracted" } else { "not_found" },
             "document_id": document_id,
-            "space_id": "system-linux",
+            "space_id": space_id,
         }))?
     );
     Ok(())

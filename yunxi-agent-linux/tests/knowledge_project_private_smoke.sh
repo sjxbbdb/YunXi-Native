@@ -147,6 +147,21 @@ assert value["space_id"] == "private-demo" and value["results"], value
 assert all(item["space_id"] == "private-demo" for item in value["results"]), value
 PY
 
+run_json knowledge-retract private-guide \
+  --space-id private-demo --owner local-user --visibility private \
+  --cwd "$WORKSPACE" >"$TMP_ROOT/private-retract.json"
+run_json knowledge-vector-search 'dry-run' \
+  --space-id private-demo --owner local-user --visibility private \
+  --cwd "$WORKSPACE" >"$TMP_ROOT/private-vector-after-retract.json"
+python3 - "$TMP_ROOT/private-retract.json" "$TMP_ROOT/private-vector-after-retract.json" <<'PY'
+import json
+import sys
+
+retract, vector = [json.load(open(path, encoding="utf-8")) for path in sys.argv[1:]]
+assert retract["status"] == "retracted", retract
+assert vector["space_id"] == "private-demo" and vector["results"] == [], vector
+PY
+
 printf '%s\n' '项目知识更新：systemctl restart 需要审批。' | \
   run_json knowledge-import-stdin \
     --space-id project-demo \
@@ -167,10 +182,10 @@ db = sqlite3.connect(sys.argv[1])
 spaces = dict(db.execute("SELECT space_id, kind FROM knowledge_spaces"))
 assert spaces == {"project-demo": "project", "private-demo": "private"}, spaces
 documents = dict(db.execute("SELECT document_id, space_id FROM knowledge_documents"))
-assert documents == {"project-guide": "project-demo", "private-guide": "private-demo"}, documents
+assert documents == {"project-guide": "project-demo"}, documents
 jobs = db.execute("SELECT COUNT(*) FROM knowledge_embedding_jobs").fetchone()[0]
 vectors = db.execute("SELECT COUNT(*) FROM knowledge_vectors").fetchone()[0]
-assert jobs == 2 and vectors > 0, (jobs, vectors)
+assert jobs == 1 and vectors > 0, (jobs, vectors)
 PY
 
 [[ -f "$WORKSPACE/.yunxi/knowledge/knowledge.sqlite3" ]] || exit 1
