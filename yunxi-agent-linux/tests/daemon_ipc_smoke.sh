@@ -307,6 +307,39 @@ fi
   echo "daemon lock remained after SIGTERM" >&2
   exit 1
 }
+
+# A dead owner must not strand the next daemon.  This uses an impossible PID
+# rather than touching any real process and verifies recovery through the same
+# production lock path used after a crash.
+printf '%s\n' '{"pid":4294967294,"start_time_ticks":null}' >"$LOCK"
+STALE_LOG="$TMP_ROOT/stale-daemon.log"
+"$BINARY" daemon >"$STALE_LOG" 2>&1 &
+DAEMON_PID=$!
+for _ in $(seq 1 40); do
+  [[ -S "$SOCKET" ]] && break
+  sleep 0.05
+done
+[[ -S "$SOCKET" ]] || {
+  echo "daemon did not recover from a stale lock" >&2
+  cat "$STALE_LOG" >&2
+  exit 1
+}
+kill -TERM "$DAEMON_PID"
+for _ in $(seq 1 40); do
+  kill -0 "$DAEMON_PID" 2>/dev/null || break
+  sleep 0.05
+done
+if kill -0 "$DAEMON_PID" 2>/dev/null; then
+  echo "recovered daemon did not stop within 2 seconds" >&2
+  cat "$STALE_LOG" >&2
+  kill -KILL "$DAEMON_PID" 2>/dev/null || true
+fi
+wait "$DAEMON_PID" 2>/dev/null || true
+DAEMON_PID=""
+[[ ! -e "$SOCKET" && ! -e "$LOCK" ]] || {
+  echo "recovered daemon did not clean up socket/lock" >&2
+  exit 1
+}
 trap - EXIT
 rm -rf "$TMP_ROOT"
 echo "daemon-lifecycle-smoke=ok"
