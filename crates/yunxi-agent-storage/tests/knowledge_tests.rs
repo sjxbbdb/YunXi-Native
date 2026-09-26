@@ -2,7 +2,7 @@ use rusqlite::Connection;
 use tempfile::tempdir;
 use yunxi_agent_storage::{
     KnowledgeChunk, KnowledgeDocument, KnowledgeSearchScope, KnowledgeSpaceKind,
-    KnowledgeSpaceSpec, KnowledgeVisibility, SqliteKnowledgeStore,
+    KnowledgeSpaceSpec, KnowledgeVector, KnowledgeVisibility, SqliteKnowledgeStore,
 };
 
 fn space(
@@ -202,4 +202,139 @@ fn knowledge_metadata_boundaries_are_rejected() {
     let mut document = document("project", "alice", KnowledgeVisibility::Owner);
     document.metadata_json = "not-json".to_string();
     assert!(store.upsert_document(&document).is_err());
+}
+
+#[test]
+fn knowledge_vectors_rank_within_model_and_scope() {
+    let dir = tempdir().expect("tempdir");
+    let store = SqliteKnowledgeStore::new(dir.path().join("knowledge.sqlite3"));
+    store
+        .upsert_space(&space(
+            "system-linux",
+            KnowledgeSpaceKind::System,
+            "system",
+            KnowledgeVisibility::Public,
+            1,
+        ))
+        .expect("space");
+    let first = document("system-linux", "system", KnowledgeVisibility::Public);
+    store.upsert_document(&first).expect("document");
+    let first_chunk = chunk(
+        &first.document_id,
+        "system",
+        KnowledgeVisibility::Public,
+        "systemctl status shows the current unit state",
+    );
+    store.upsert_chunk(&first_chunk).expect("chunk");
+
+    let second = KnowledgeDocument {
+        document_id: "system-linux-doc-2".to_string(),
+        title: "network reference".to_string(),
+        ..first.clone()
+    };
+    store.upsert_document(&second).expect("second document");
+    let second_chunk = KnowledgeChunk {
+        chunk_id: "system-linux-doc-2-chunk".to_string(),
+        document_id: second.document_id.clone(),
+        content: "ip route prints the routing table".to_string(),
+        ..first_chunk.clone()
+    };
+    store.upsert_chunk(&second_chunk).expect("second chunk");
+
+    store
+        .upsert_vector(&KnowledgeVector {
+            chunk_id: first_chunk.chunk_id.clone(),
+            space_id: "system-linux".to_string(),
+            embedding_model: "fixture-v1".to_string(),
+            generation: 1,
+            vector: vec![1.0, 0.0],
+        })
+        .expect("first vector");
+    store
+        .upsert_vector(&KnowledgeVector {
+            chunk_id: second_chunk.chunk_id.clone(),
+            space_id: "system-linux".to_string(),
+            embedding_model: "fixture-v1".to_string(),
+            generation: 1,
+            vector: vec![0.0, 1.0],
+        })
+        .expect("second vector");
+    store
+        .upsert_vector(&KnowledgeVector {
+            chunk_id: second_chunk.chunk_id.clone(),
+            space_id: "system-linux".to_string(),
+            embedding_model: "other-model".to_string(),
+            generation: 1,
+            vector: vec![1.0, 0.0],
+        })
+        .expect("other model vector");
+
+    let scope = KnowledgeSearchScope {
+        space_id: "system-linux".to_string(),
+        owner: "system".to_string(),
+        generation: 1,
+        visibility: KnowledgeVisibility::Public,
+    };
+    let matches = store
+        .search_vectors(&[1.0, 0.0], "fixture-v1", &scope, 10)
+        .expect("vector search");
+    assert_eq!(matches.len(), 2);
+    assert_eq!(matches[0].chunk_id, first_chunk.chunk_id);
+    assert!(matches[0].score > matches[1].score);
+    assert!(
+        matches
+            .iter()
+            .all(|item| item.embedding_model == "fixture-v1")
+    );
+}
+
+#[test]
+fn knowledge_vectors_reject_invalid_values_and_mismatched_chunks() {
+    let dir = tempdir().expect("tempdir");
+    let store = SqliteKnowledgeStore::new(dir.path().join("knowledge.sqlite3"));
+    store
+        .upsert_space(&space(
+            "system-linux",
+            KnowledgeSpaceKind::System,
+            "system",
+            KnowledgeVisibility::Public,
+            1,
+        ))
+        .expect("space");
+    let document = document("system-linux", "system", KnowledgeVisibility::Public);
+    store.upsert_document(&document).expect("document");
+    let chunk = chunk(
+        &document.document_id,
+        "system",
+        KnowledgeVisibility::Public,
+        "systemctl status",
+    );
+    store.upsert_chunk(&chunk).expect("chunk");
+
+    let base = KnowledgeVector {
+        chunk_id: chunk.chunk_id.clone(),
+        space_id: "system-linux".to_string(),
+        embedding_model: "fixture-v1".to_string(),
+        generation: 1,
+        vector: vec![1.0, 0.0],
+    };
+    let mut non_finite = base.clone();
+    non_finite.vector[0] = f32::NAN;
+    assert!(store.upsert_vector(&non_finite).is_err());
+
+    let mut wrong_space = base.clone();
+    wrong_space.space_id = "other-space".to_string();
+    assert!(store.upsert_vector(&wrong_space).is_err());
+
+    let scope = KnowledgeSearchScope {
+        space_id: "system-linux".to_string(),
+        owner: "system".to_string(),
+        generation: 1,
+        visibility: KnowledgeVisibility::Public,
+    };
+    assert!(
+        store
+            .search_vectors(&[f32::INFINITY, 0.0], "fixture-v1", &scope, 1)
+            .is_err()
+    );
 }

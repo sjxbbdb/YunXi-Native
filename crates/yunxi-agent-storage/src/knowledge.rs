@@ -8,7 +8,7 @@ use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 use yunxi_agent_core::{AgentError, AgentResult};
-use yunxi_agent_persona::yunxi_home_dir;
+use yunxi_agent_persona::{cosine_similarity, yunxi_home_dir};
 
 const KNOWLEDGE_DATABASE_FILE: &str = "knowledge.sqlite3";
 
@@ -89,6 +89,18 @@ pub struct KnowledgeChunk {
     pub metadata_json: String,
 }
 
+/// An embedding stored in the knowledge domain. It is deliberately not a
+/// `MemoryEmbedding` so the memory and knowledge vector stores cannot be
+/// confused at the type boundary.
+#[derive(Clone, Debug, PartialEq)]
+pub struct KnowledgeVector {
+    pub chunk_id: String,
+    pub space_id: String,
+    pub embedding_model: String,
+    pub generation: i64,
+    pub vector: Vec<f32>,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct KnowledgeSearchScope {
     pub space_id: String,
@@ -110,6 +122,19 @@ pub struct KnowledgeSearchResult {
     pub owner: String,
     pub visibility: KnowledgeVisibility,
     pub rank: f64,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct KnowledgeVectorMatch {
+    pub chunk_id: String,
+    pub document_id: String,
+    pub space_id: String,
+    pub title: String,
+    pub content: String,
+    pub source: String,
+    pub embedding_model: String,
+    pub generation: i64,
+    pub score: f32,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -305,6 +330,54 @@ impl SqliteKnowledgeStore {
             .map_err(|error| sqlite_error(&self.database, "commit knowledge chunk", error))
     }
 
+    pub fn upsert_vector(&self, vector: &KnowledgeVector) -> AgentResult<()> {
+        validate_vector(vector)?;
+        let mut connection = self.open_connection()?;
+        initialize_schema(&connection, &self.database)?;
+        let transaction = connection
+            .transaction()
+            .map_err(|error| sqlite_error(&self.database, "begin knowledge vector", error))?;
+        let chunk = transaction
+            .query_row(
+                "SELECT space_id, generation FROM knowledge_chunks WHERE chunk_id = ?1",
+                params![vector.chunk_id],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
+            )
+            .optional()
+            .map_err(|error| sqlite_error(&self.database, "read knowledge chunk", error))?
+            .ok_or_else(|| storage_error("knowledge vector references an unknown chunk"))?;
+        if chunk.0 != vector.space_id || chunk.1 != vector.generation {
+            return Err(storage_error(
+                "knowledge vector metadata does not match its chunk",
+            ));
+        }
+        transaction
+            .execute(
+                "INSERT INTO knowledge_vectors
+                    (chunk_id, space_id, embedding_model, dimensions, vector,
+                     generation, indexed_at_millis)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+                 ON CONFLICT(chunk_id, embedding_model, generation) DO UPDATE SET
+                    space_id = excluded.space_id,
+                    dimensions = excluded.dimensions,
+                    vector = excluded.vector,
+                    indexed_at_millis = excluded.indexed_at_millis",
+                params![
+                    vector.chunk_id,
+                    vector.space_id,
+                    vector.embedding_model,
+                    i64::try_from(vector.vector.len()).unwrap_or(i64::MAX),
+                    vector_to_blob(&vector.vector),
+                    vector.generation,
+                    now_millis(),
+                ],
+            )
+            .map_err(|error| sqlite_error(&self.database, "upsert knowledge vector", error))?;
+        transaction
+            .commit()
+            .map_err(|error| sqlite_error(&self.database, "commit knowledge vector", error))
+    }
+
     pub fn search(
         &self,
         query: &str,
@@ -314,10 +387,7 @@ impl SqliteKnowledgeStore {
         if query.trim().is_empty() || limit == 0 {
             return Ok(Vec::new());
         }
-        if scope.space_id.trim().is_empty() || scope.owner.trim().is_empty() || scope.generation < 0
-        {
-            return Err(storage_error("invalid knowledge search scope"));
-        }
+        validate_search_scope(scope)?;
         let connection = self.open_connection()?;
         initialize_schema(&connection, &self.database)?;
         let fts_query = make_fts_query(query);
@@ -384,6 +454,123 @@ impl SqliteKnowledgeStore {
             .map_err(|error| sqlite_error(&self.database, "query knowledge chunks", error))?;
         rows.collect::<Result<Vec<_>, _>>()
             .map_err(|error| sqlite_error(&self.database, "read knowledge chunks", error))
+    }
+
+    pub fn search_vectors(
+        &self,
+        query: &[f32],
+        embedding_model: &str,
+        scope: &KnowledgeSearchScope,
+        top_k: usize,
+    ) -> AgentResult<Vec<KnowledgeVectorMatch>> {
+        if query.is_empty() || top_k == 0 {
+            return Ok(Vec::new());
+        }
+        if query.iter().any(|value| !value.is_finite()) {
+            return Err(storage_error(
+                "knowledge query vector contains non-finite values",
+            ));
+        }
+        if embedding_model.trim().is_empty() {
+            return Err(storage_error("knowledge embedding model is required"));
+        }
+        validate_search_scope(scope)?;
+        let connection = self.open_connection()?;
+        initialize_schema(&connection, &self.database)?;
+        let mut statement = connection
+            .prepare(
+                "SELECT v.chunk_id, c.document_id, c.space_id, d.title, c.content,
+                        c.source, v.embedding_model, v.generation, v.dimensions, v.vector
+                 FROM knowledge_vectors v
+                 JOIN knowledge_chunks c ON c.chunk_id = v.chunk_id
+                 JOIN knowledge_documents d ON d.document_id = c.document_id
+                 JOIN knowledge_spaces s ON s.space_id = c.space_id
+                 WHERE v.embedding_model = ?1
+                   AND c.space_id = ?2
+                   AND c.generation = ?3
+                   AND c.owner = ?4
+                   AND c.visibility = ?5
+                   AND d.space_id = s.space_id
+                   AND d.generation = c.generation
+                   AND d.owner = c.owner
+                   AND d.visibility = c.visibility
+                   AND s.generation = c.generation
+                   AND s.owner = c.owner
+                   AND s.visibility = c.visibility",
+            )
+            .map_err(|error| {
+                sqlite_error(&self.database, "prepare knowledge vector search", error)
+            })?;
+        let rows = statement
+            .query_map(
+                params![
+                    embedding_model,
+                    scope.space_id,
+                    scope.generation,
+                    scope.owner,
+                    scope.visibility.as_str(),
+                ],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, String>(4)?,
+                        row.get::<_, String>(5)?,
+                        row.get::<_, String>(6)?,
+                        row.get::<_, i64>(7)?,
+                        row.get::<_, i64>(8)?,
+                        row.get::<_, Vec<u8>>(9)?,
+                    ))
+                },
+            )
+            .map_err(|error| sqlite_error(&self.database, "query knowledge vectors", error))?;
+        let mut matches = Vec::new();
+        for row in rows {
+            let (
+                chunk_id,
+                document_id,
+                space_id,
+                title,
+                content,
+                source,
+                model,
+                generation,
+                dimensions,
+                blob,
+            ) =
+                row.map_err(|error| sqlite_error(&self.database, "read knowledge vector", error))?;
+            let dimensions = usize::try_from(dimensions).unwrap_or_default();
+            let values = match vector_from_blob(&blob, dimensions) {
+                Ok(values) if values.len() == query.len() => values,
+                _ => continue,
+            };
+            let Ok(score) = cosine_similarity(query, &values) else {
+                continue;
+            };
+            if score.is_finite() {
+                matches.push(KnowledgeVectorMatch {
+                    chunk_id,
+                    document_id,
+                    space_id,
+                    title,
+                    content,
+                    source,
+                    embedding_model: model,
+                    generation,
+                    score,
+                });
+            }
+        }
+        matches.sort_by(|left, right| {
+            right
+                .score
+                .total_cmp(&left.score)
+                .then_with(|| left.chunk_id.cmp(&right.chunk_id))
+        });
+        matches.truncate(top_k.min(100));
+        Ok(matches)
     }
 
     fn open_connection(&self) -> AgentResult<Connection> {
@@ -594,6 +781,50 @@ fn validate_chunk(chunk: &KnowledgeChunk) -> AgentResult<()> {
         ));
     }
     Ok(())
+}
+
+fn validate_vector(vector: &KnowledgeVector) -> AgentResult<()> {
+    if vector.chunk_id.trim().is_empty()
+        || vector.space_id.trim().is_empty()
+        || vector.embedding_model.trim().is_empty()
+        || vector.generation < 0
+        || vector.vector.is_empty()
+        || vector.vector.iter().any(|value| !value.is_finite())
+    {
+        return Err(storage_error(
+            "knowledge vector metadata or values are invalid",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_search_scope(scope: &KnowledgeSearchScope) -> AgentResult<()> {
+    if scope.space_id.trim().is_empty() || scope.owner.trim().is_empty() || scope.generation < 0 {
+        return Err(storage_error("invalid knowledge search scope"));
+    }
+    Ok(())
+}
+
+fn vector_to_blob(values: &[f32]) -> Vec<u8> {
+    let mut blob = Vec::with_capacity(values.len() * std::mem::size_of::<f32>());
+    for value in values {
+        blob.extend_from_slice(&value.to_le_bytes());
+    }
+    blob
+}
+
+fn vector_from_blob(blob: &[u8], dimensions: usize) -> Result<Vec<f32>, String> {
+    let expected = dimensions.saturating_mul(std::mem::size_of::<f32>());
+    if blob.len() != expected {
+        return Err(format!(
+            "knowledge vector blob has {} bytes; expected {expected}",
+            blob.len()
+        ));
+    }
+    Ok(blob
+        .chunks_exact(std::mem::size_of::<f32>())
+        .map(|bytes| f32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
+        .collect())
 }
 
 fn make_fts_query(query: &str) -> String {

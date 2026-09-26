@@ -34,7 +34,8 @@ pub use companion_mailbox::{
 pub use conversation_state::FileConversationStateStore;
 pub use knowledge::{
     KnowledgeChunk, KnowledgeDocument, KnowledgeSearchResult, KnowledgeSearchScope,
-    KnowledgeSpaceKind, KnowledgeSpaceSpec, KnowledgeVisibility, SqliteKnowledgeStore,
+    KnowledgeSpaceKind, KnowledgeSpaceSpec, KnowledgeVector, KnowledgeVectorMatch,
+    KnowledgeVisibility, SqliteKnowledgeStore,
 };
 pub use memory_vector::{
     MemoryVectorMatch, MemoryVectorSearch, MemoryVectorSyncSummary, SqliteMemoryVectorStore,
