@@ -9,6 +9,7 @@ use crate::knowledge_ingest::{
     normalize_knowledge_text,
 };
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 use yunxi_agent_core::{AgentError, AgentResult};
@@ -380,6 +381,131 @@ impl SqliteKnowledgeStore {
         transaction
             .commit()
             .map_err(|error| sqlite_error(&self.database, "commit knowledge vector", error))
+    }
+
+    /// Atomically replaces all vectors for one document, model, and generation.
+    ///
+    /// Embedding workers should use this boundary instead of writing vectors one
+    /// by one. Every chunk reference is validated before the old model slice is
+    /// removed, so an invalid batch cannot leave a partially indexed document.
+    pub fn replace_document_vectors(
+        &self,
+        document_id: &str,
+        embedding_model: &str,
+        generation: i64,
+        vectors: &[KnowledgeVector],
+    ) -> AgentResult<usize> {
+        if document_id.trim().is_empty() || embedding_model.trim().is_empty() || generation < 0 {
+            return Err(storage_error("knowledge vector batch metadata is invalid"));
+        }
+        let mut connection = self.open_connection()?;
+        initialize_schema(&connection, &self.database)?;
+        let transaction = connection
+            .transaction()
+            .map_err(|error| sqlite_error(&self.database, "begin knowledge vector batch", error))?;
+        let document = transaction
+            .query_row(
+                "SELECT space_id, generation FROM knowledge_documents WHERE document_id = ?1",
+                params![document_id],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
+            )
+            .optional()
+            .map_err(|error| sqlite_error(&self.database, "read knowledge vector document", error))?
+            .ok_or_else(|| {
+                storage_error("knowledge vector batch references an unknown document")
+            })?;
+        if document.1 != generation {
+            return Err(storage_error(
+                "knowledge vector batch generation does not match its document",
+            ));
+        }
+
+        let mut seen_chunks = HashSet::with_capacity(vectors.len());
+        let mut dimensions = None;
+        for vector in vectors {
+            validate_vector(vector)?;
+            if vector.embedding_model != embedding_model || vector.generation != generation {
+                return Err(storage_error(
+                    "knowledge vector batch metadata does not match its request",
+                ));
+            }
+            if dimensions.is_some_and(|expected| expected != vector.vector.len()) {
+                return Err(storage_error(
+                    "knowledge vector batch dimensions do not match",
+                ));
+            }
+            dimensions = Some(vector.vector.len());
+            if !seen_chunks.insert(vector.chunk_id.clone()) {
+                return Err(storage_error(
+                    "knowledge vector batch contains a duplicate chunk",
+                ));
+            }
+            let chunk = transaction
+                .query_row(
+                    "SELECT document_id, space_id, generation
+                     FROM knowledge_chunks WHERE chunk_id = ?1",
+                    params![vector.chunk_id],
+                    |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, String>(1)?,
+                            row.get::<_, i64>(2)?,
+                        ))
+                    },
+                )
+                .optional()
+                .map_err(|error| {
+                    sqlite_error(&self.database, "read knowledge vector batch chunk", error)
+                })?
+                .ok_or_else(|| {
+                    storage_error("knowledge vector batch references an unknown chunk")
+                })?;
+            if vector.space_id != document.0
+                || chunk.0 != document_id
+                || chunk.1 != document.0
+                || chunk.2 != generation
+            {
+                return Err(storage_error(
+                    "knowledge vector batch chunk metadata does not match its document",
+                ));
+            }
+        }
+
+        transaction
+            .execute(
+                "DELETE FROM knowledge_vectors
+                 WHERE embedding_model = ?1 AND generation = ?2
+                   AND chunk_id IN (SELECT chunk_id FROM knowledge_chunks WHERE document_id = ?3)",
+                params![embedding_model, generation, document_id],
+            )
+            .map_err(|error| {
+                sqlite_error(&self.database, "remove stale knowledge vectors", error)
+            })?;
+        for vector in vectors {
+            transaction
+                .execute(
+                    "INSERT INTO knowledge_vectors
+                        (chunk_id, space_id, embedding_model, dimensions, vector,
+                         generation, indexed_at_millis)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                    params![
+                        vector.chunk_id,
+                        vector.space_id,
+                        vector.embedding_model,
+                        i64::try_from(vector.vector.len()).unwrap_or(i64::MAX),
+                        vector_to_blob(&vector.vector),
+                        vector.generation,
+                        now_millis(),
+                    ],
+                )
+                .map_err(|error| {
+                    sqlite_error(&self.database, "write knowledge vector batch", error)
+                })?;
+        }
+        transaction.commit().map_err(|error| {
+            sqlite_error(&self.database, "commit knowledge vector batch", error)
+        })?;
+        Ok(vectors.len())
     }
 
     pub fn ingest_text(

@@ -309,6 +309,10 @@ generation 过滤的有界 cosine 检索。该切片还没有接入 embedding wo
 FTS 内容或孤立向量；文档 hash 与分块参数都未变化时会跳过重建并保留已有向量；
 事务失败时旧版本仍保持可检索。
 
+同时提供 `replace_document_vectors` 批量边界：embedding worker 先完整校验文档、
+空间、generation、chunk 引用和维度，再在一个事务内替换指定模型的向量集合，拒绝
+批次时旧索引保持不变。
+
 **门槛**：索引可增量更新、失败可回滚、来源可追踪、风险命令可标记、空间隔离和撤回测试通过、RAG 召回指标达标。
 
 ### Phase 5：记忆与知识协同

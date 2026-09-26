@@ -426,3 +426,99 @@ fn ingest_text_replaces_stale_chunks_and_vectors_atomically() {
         1
     );
 }
+
+#[test]
+fn replace_document_vectors_is_atomic_and_removes_stale_model_rows() {
+    let dir = tempdir().expect("tempdir");
+    let store = SqliteKnowledgeStore::new(dir.path().join("knowledge.sqlite3"));
+    store
+        .upsert_space(&space(
+            "system-linux",
+            KnowledgeSpaceKind::System,
+            "system",
+            KnowledgeVisibility::Public,
+            1,
+        ))
+        .expect("space");
+    let document = document("system-linux", "system", KnowledgeVisibility::Public);
+    store.upsert_document(&document).expect("document");
+    let first_chunk = chunk(
+        &document.document_id,
+        "system",
+        KnowledgeVisibility::Public,
+        "systemctl status",
+    );
+    let second_chunk = KnowledgeChunk {
+        chunk_id: format!("{}-chunk-2", document.document_id),
+        ordinal: 1,
+        content: "ip route show".to_string(),
+        ..first_chunk.clone()
+    };
+    store.upsert_chunk(&first_chunk).expect("first chunk");
+    store.upsert_chunk(&second_chunk).expect("second chunk");
+    let original = vec![
+        KnowledgeVector {
+            chunk_id: first_chunk.chunk_id.clone(),
+            space_id: "system-linux".to_string(),
+            embedding_model: "fixture-v1".to_string(),
+            generation: 1,
+            vector: vec![1.0, 0.0],
+        },
+        KnowledgeVector {
+            chunk_id: second_chunk.chunk_id.clone(),
+            space_id: "system-linux".to_string(),
+            embedding_model: "fixture-v1".to_string(),
+            generation: 1,
+            vector: vec![0.0, 1.0],
+        },
+    ];
+    assert_eq!(
+        store
+            .replace_document_vectors(&document.document_id, "fixture-v1", 1, &original)
+            .expect("initial vector batch"),
+        2
+    );
+
+    let replacement = vec![KnowledgeVector {
+        chunk_id: second_chunk.chunk_id.clone(),
+        space_id: "system-linux".to_string(),
+        embedding_model: "fixture-v1".to_string(),
+        generation: 1,
+        vector: vec![0.5, 0.5],
+    }];
+    assert_eq!(
+        store
+            .replace_document_vectors(&document.document_id, "fixture-v1", 1, &replacement)
+            .expect("replacement vector batch"),
+        1
+    );
+    let scope = KnowledgeSearchScope {
+        space_id: "system-linux".to_string(),
+        owner: "system".to_string(),
+        generation: 1,
+        visibility: KnowledgeVisibility::Public,
+    };
+    let matches = store
+        .search_vectors(&[0.5, 0.5], "fixture-v1", &scope, 10)
+        .expect("vector search");
+    assert_eq!(matches.len(), 1);
+    assert_eq!(matches[0].chunk_id, second_chunk.chunk_id);
+
+    let invalid = KnowledgeVector {
+        chunk_id: first_chunk.chunk_id.clone(),
+        space_id: "wrong-space".to_string(),
+        embedding_model: "fixture-v1".to_string(),
+        generation: 1,
+        vector: vec![1.0, 0.0],
+    };
+    assert!(
+        store
+            .replace_document_vectors(&document.document_id, "fixture-v1", 1, &[invalid])
+            .is_err()
+    );
+    let matches_after_error = store
+        .search_vectors(&[0.5, 0.5], "fixture-v1", &scope, 10)
+        .expect("vector search after rejected batch");
+    assert_eq!(matches_after_error.len(), 1);
+    assert_eq!(matches_after_error[0].chunk_id, second_chunk.chunk_id);
+}
