@@ -302,7 +302,8 @@ active generation，不再把 generation `1` 当作运行时事实；未知空�
 
 当前已经提供同步的单文档 `knowledge-index` 原语和 `knowledge-vector-search` CLI，
 使用本地字符 n-gram provider 建立独立向量并支持增量跳过、快照一致性校验和原子
-替换；generation 的 staging/原子切换和 Planner 接入仍属于本 Phase 的后续工作。
+替换；generation 的 staging 文档、独立向量/任务队列和原子切换已经落地，Planner
+接入仍属于本 Phase 的后续工作。
 
 本增量已补齐 durable `knowledge_embedding_jobs` 队列契约：作业关联
 `document_id`、embedding model 与 generation，入队会校验文档代际并对重复请求幂等；
@@ -315,12 +316,12 @@ Planner 或执行器；实际任务执行由有界 CLI worker 提供，daemon �
 建立整篇文档向量，成功后完成任务；provider/model 不匹配或索引失败会记录为 `failed`
 并保留旧向量。Linux CLI 暴露 `knowledge-worker` 一次只处理一条任务，便于 systemd
 timer、daemon 或人工诊断调用；它仍不是常驻调度器，也没有接入 Planner 或自动重试，
-active generation 的读取边界已落地，staging/原子激活仍留在后续增量。
+active generation 的读取边界、staging worker 和原子激活已经落地。
 
 为避免 daemon 或终端进程崩溃后留下永久 `running` 任务，领取事务还会回收超过五分钟
 未更新的 worker lease，并把它重新置为 `pending`；旧 worker 随后提交 complete/fail
 会因 lease 身份不匹配而被拒绝。这里仅处理崩溃恢复，不把 `failed` 任务自动重试，
-重试策略与退避仍需后续单独设计。
+失败任务的自动重试由后续的有界退避调度边界负责。
 
 同时提供了显式 `retry_embedding_job`/`knowledge-retry` 恢复边界：只有 `failed` 状态
 且尚未超过三次尝试的任务才能重新排队，原始 `last_error` 会保留用于诊断。它是
@@ -333,12 +334,13 @@ model 不匹配被视为终态失败；lease 回收仍立即恢复，不套用�
 
 `ensure_system_space` 只在 system 空间不存在时初始化 generation `1`，不会覆盖已有
 active generation。采集得到的文档会在写入前绑定当前 active generation，避免空间升级
-后新旧资料串代；未来引入 staging 时，采集写入与 active 激活仍需保持两个明确事务边界。
+后新旧资料串代；staging 采集与 active 激活保持两个明确事务边界。
 
 当前已先增加独立的 generation manifest 前置契约：每个空间可以创建不影响 active
 指针的 `building` generation，记录 embedding 模型/维度和文档完整性计数，并在计数
 与摘要校验完成后转为 `ready`。该 manifest 只描述“未来可激活”的候选代际，不承载
-主文档、chunk 或向量；staging 数据、readiness 全量校验和原子激活仍需后续增量完成。
+主文档、chunk 或向量；候选数据由 generation-scoped staging 表承载，并通过 readiness
+和原子激活边界进入 active。
 
 随后已增加 generation-scoped staging 文档/chunk 写入边界。staging 主键包含
 `space_id + generation + document_id`，因此同一逻辑文档可以在 active 主表和候选代际
