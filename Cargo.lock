@@ -2121,6 +2121,7 @@ dependencies = [
  "tokio",
  "yunxi-agent-core",
  "yunxi-agent-persona",
+ "yunxi-agent-protocol",
  "yunxi-agent-provider",
  "yunxi-agent-runtime",
  "yunxi-agent-tui",
@@ -2171,6 +2172,7 @@ version = "2.3.3-hotfix.32"
 dependencies = [
  "serde",
  "serde_json",
+ "thiserror",
 ]
 
 [[package]]

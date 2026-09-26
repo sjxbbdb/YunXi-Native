@@ -23,11 +23,9 @@ use std::path::{Path, PathBuf};
 #[cfg(unix)]
 use std::sync::Arc;
 #[cfg(unix)]
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 #[cfg(unix)]
-use tokio::io::AsyncWriteExt;
-#[cfg(unix)]
-use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 #[cfg(unix)]
 use tokio::net::{UnixListener, UnixStream};
 #[cfg(unix)]
@@ -38,6 +36,11 @@ use tokio::time::sleep;
 use yunxi_agent_core::{
     Agent, AgentConfig, AgentEvent, AgentInput, AgentRunApprovalDecision, AgentRunControl,
     AgentRunStatus, AgentRunUserInputResponse,
+};
+#[cfg(unix)]
+use yunxi_agent_protocol::linux_ipc::{
+    LINUX_IPC_MAX_FRAME_BYTES, LINUX_IPC_PROTOCOL_VERSION, decode_json_frame, encode_json_frame,
+    validate_frame_length,
 };
 #[cfg(unix)]
 use yunxi_agent_runtime::YunXiRuntimeBackend;
@@ -508,8 +511,16 @@ fn is_executable(path: &Path) -> bool {
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 enum ClientFrame {
-    Ping,
+    Hello {
+        protocol_version: u16,
+        client: String,
+        capabilities: Vec<String>,
+    },
+    Ping {
+        request_id: Option<String>,
+    },
     Turn {
+        request_id: String,
         cwd: String,
         prompt: String,
         session_id: Option<String>,
@@ -517,6 +528,12 @@ enum ClientFrame {
         live: bool,
         provider: Option<String>,
         model: Option<String>,
+    },
+    Cancel {
+        request_id: String,
+    },
+    Follow {
+        session_id: String,
     },
     ApprovalResponse {
         id: Option<String>,
@@ -533,7 +550,14 @@ enum ClientFrame {
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 enum ServerFrame {
-    Ready,
+    HelloAck {
+        protocol_version: u16,
+        max_frame_bytes: usize,
+        capabilities: Vec<String>,
+    },
+    Pong {
+        request_id: Option<String>,
+    },
     Thread {
         thread_id: String,
     },
@@ -554,33 +578,57 @@ enum ServerFrame {
     Done {
         status: String,
     },
+    ResyncRequired {
+        session_id: String,
+        reason: String,
+    },
     Error {
         message: String,
     },
 }
 
 #[cfg(unix)]
-async fn write_frame<W: tokio::io::AsyncWrite + Unpin>(
-    writer: &mut W,
-    frame: &ServerFrame,
-) -> Result<()> {
-    let payload = serde_json::to_vec(frame).context("编码 YunXi shell IPC 消息失败")?;
+async fn write_frame<W: AsyncWrite + Unpin>(writer: &mut W, frame: &ServerFrame) -> Result<()> {
+    let payload = encode_json_frame(frame).context("编码 YunXi shell IPC 消息失败")?;
     writer.write_all(&payload).await?;
-    writer.write_all(b"\n").await?;
     writer.flush().await?;
     Ok(())
 }
 
 #[cfg(unix)]
-async fn send_client_frame<W: tokio::io::AsyncWrite + Unpin>(
+async fn send_client_frame<W: AsyncWrite + Unpin>(
     writer: &mut W,
     frame: &ClientFrame,
 ) -> Result<()> {
-    let payload = serde_json::to_vec(frame).context("编码 YunXi shell 请求失败")?;
+    let payload = encode_json_frame(frame).context("编码 YunXi shell 请求失败")?;
     writer.write_all(&payload).await?;
-    writer.write_all(b"\n").await?;
     writer.flush().await?;
     Ok(())
+}
+
+#[cfg(unix)]
+async fn read_frame<R: AsyncRead + Unpin, T: serde::de::DeserializeOwned>(
+    reader: &mut R,
+) -> Result<Option<T>> {
+    let mut length_bytes = [0u8; 4];
+    match reader.read_exact(&mut length_bytes).await {
+        Ok(_) => {}
+        Err(error) if error.kind() == io::ErrorKind::UnexpectedEof => return Ok(None),
+        Err(error) => return Err(error.into()),
+    }
+    let length = validate_frame_length(u32::from_be_bytes(length_bytes))
+        .context("YunXi shell IPC frame 长度无效")?;
+    if length > LINUX_IPC_MAX_FRAME_BYTES {
+        bail!(
+            "YunXi shell IPC frame 超过 {} 字节上限",
+            LINUX_IPC_MAX_FRAME_BYTES
+        );
+    }
+    let mut payload = vec![0u8; length];
+    reader.read_exact(&mut payload).await?;
+    Ok(Some(
+        decode_json_frame(&payload).context("解析 YunXi shell IPC JSON frame 失败")?,
+    ))
 }
 
 #[cfg(unix)]
@@ -599,6 +647,84 @@ fn socket_path() -> Result<PathBuf> {
     fs::create_dir_all(&base)?;
     restrict_mode(&base, 0o700)?;
     Ok(base.join("yunxi.sock"))
+}
+
+#[cfg(unix)]
+fn daemon_lock_path(socket: &Path) -> PathBuf {
+    socket.with_extension("lock")
+}
+
+#[cfg(unix)]
+fn new_request_id() -> String {
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    format!("{}-{timestamp}", std::process::id())
+}
+
+#[cfg(unix)]
+struct DaemonLock {
+    path: PathBuf,
+    _file: fs::File,
+}
+
+#[cfg(unix)]
+impl Drop for DaemonLock {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.path);
+    }
+}
+
+#[cfg(unix)]
+fn acquire_daemon_lock(path: &Path) -> Result<DaemonLock> {
+    for _ in 0..2 {
+        match fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(path)
+        {
+            Ok(mut file) => {
+                writeln!(file, "{}", std::process::id())?;
+                restrict_mode(path, 0o600)?;
+                return Ok(DaemonLock {
+                    path: path.to_path_buf(),
+                    _file: file,
+                });
+            }
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+                let owner = fs::read_to_string(path)
+                    .ok()
+                    .and_then(|value| value.trim().parse::<u32>().ok());
+                if let Some(pid) = owner {
+                    if process_alive(pid) {
+                        bail!("YunXi shell daemon 已在运行（pid {pid}）");
+                    }
+                }
+                fs::remove_file(path).with_context(|| {
+                    format!("删除失效 YunXi daemon lock 失败: {}", path.display())
+                })?;
+            }
+            Err(error) => {
+                return Err(error)
+                    .with_context(|| format!("创建 YunXi daemon lock 失败: {}", path.display()));
+            }
+        }
+    }
+    bail!("无法取得 YunXi shell daemon 单例锁: {}", path.display())
+}
+
+#[cfg(unix)]
+fn process_alive(pid: u32) -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        return Path::new("/proc").join(pid.to_string()).exists();
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = pid;
+        false
+    }
 }
 
 #[cfg(unix)]
@@ -630,9 +756,40 @@ async fn run_shell_intercept(
     let socket = ensure_daemon().await?;
     let stream = UnixStream::connect(&socket).await?;
     let (reader, mut writer) = stream.into_split();
+    let mut reader = reader;
+    send_client_frame(
+        &mut writer,
+        &ClientFrame::Hello {
+            protocol_version: LINUX_IPC_PROTOCOL_VERSION,
+            client: "yunxi-fish".to_string(),
+            capabilities: vec![
+                "turn".to_string(),
+                "cancel".to_string(),
+                "follow".to_string(),
+            ],
+        },
+    )
+    .await?;
+    let Some(ServerFrame::HelloAck {
+        protocol_version,
+        max_frame_bytes: _,
+        capabilities: _,
+    }) = read_frame(&mut reader).await?
+    else {
+        bail!("YunXi shell daemon 在握手时断开连接");
+    };
+    if protocol_version != LINUX_IPC_PROTOCOL_VERSION {
+        bail!(
+            "YunXi shell IPC 版本不兼容：daemon={} client={}",
+            protocol_version,
+            LINUX_IPC_PROTOCOL_VERSION
+        );
+    }
+    let request_id = new_request_id();
     send_client_frame(
         &mut writer,
         &ClientFrame::Turn {
+            request_id,
             cwd: cwd.display().to_string(),
             prompt,
             session_id: std::env::var("YUNXI_SHELL_SESSION").ok(),
@@ -643,10 +800,7 @@ async fn run_shell_intercept(
         },
     )
     .await?;
-    let mut lines = BufReader::new(reader).lines();
-    while let Some(line) = lines.next_line().await? {
-        let frame: ServerFrame =
-            serde_json::from_str(&line).context("解析 YunXi shell IPC 消息失败")?;
+    while let Some(frame) = read_frame::<_, ServerFrame>(&mut reader).await? {
         match frame {
             ServerFrame::Message { content } => {
                 println!("{content}");
@@ -705,7 +859,10 @@ async fn run_shell_intercept(
                 return Ok(());
             }
             ServerFrame::Error { message } => bail!("{message}"),
-            ServerFrame::Ready => {}
+            ServerFrame::HelloAck { .. } | ServerFrame::Pong { .. } => {}
+            ServerFrame::ResyncRequired { session_id, reason } => {
+                eprintln!("[yunxi resync required: {session_id}] {reason}");
+            }
         }
     }
     Ok(())
@@ -756,7 +913,7 @@ async fn run_shell_intercept(
 #[cfg(unix)]
 async fn ensure_daemon() -> Result<PathBuf> {
     let socket = socket_path()?;
-    if UnixStream::connect(&socket).await.is_ok() {
+    if daemon_is_ready(&socket).await {
         return Ok(socket);
     }
     let binary = std::env::var_os("YUNXI_LINUX_BINARY")
@@ -771,11 +928,56 @@ async fn ensure_daemon() -> Result<PathBuf> {
         .spawn();
     for _ in 0..40 {
         sleep(Duration::from_millis(50)).await;
-        if UnixStream::connect(&socket).await.is_ok() {
+        if daemon_is_ready(&socket).await {
             return Ok(socket);
         }
     }
     bail!("YunXi shell daemon 未能在 2 秒内启动；检查 XDG_RUNTIME_DIR 与用户权限")
+}
+
+#[cfg(unix)]
+async fn daemon_is_ready(socket: &Path) -> bool {
+    let Ok(stream) = UnixStream::connect(socket).await else {
+        return false;
+    };
+    let (mut reader, mut writer) = stream.into_split();
+    if send_client_frame(
+        &mut writer,
+        &ClientFrame::Hello {
+            protocol_version: LINUX_IPC_PROTOCOL_VERSION,
+            client: "yunxi-probe".to_string(),
+            capabilities: vec!["ping".to_string()],
+        },
+    )
+    .await
+    .is_err()
+    {
+        return false;
+    }
+    let Ok(Some(ServerFrame::HelloAck {
+        protocol_version, ..
+    })) = read_frame(&mut reader).await
+    else {
+        return false;
+    };
+    if protocol_version != LINUX_IPC_PROTOCOL_VERSION {
+        return false;
+    }
+    if send_client_frame(
+        &mut writer,
+        &ClientFrame::Ping {
+            request_id: Some(new_request_id()),
+        },
+    )
+    .await
+    .is_err()
+    {
+        return false;
+    }
+    matches!(
+        read_frame::<_, ServerFrame>(&mut reader).await,
+        Ok(Some(ServerFrame::Pong { .. }))
+    )
 }
 
 #[cfg(not(unix))]
@@ -786,8 +988,16 @@ async fn run_daemon() -> Result<()> {
 #[cfg(unix)]
 async fn run_daemon() -> Result<()> {
     let socket = socket_path()?;
-    if UnixStream::connect(&socket).await.is_ok() {
+    if daemon_is_ready(&socket).await {
         return Ok(());
+    }
+    let lock_path = daemon_lock_path(&socket);
+    let _lock = acquire_daemon_lock(&lock_path)?;
+    if daemon_is_ready(&socket).await {
+        return Ok(());
+    }
+    if UnixStream::connect(&socket).await.is_ok() {
+        bail!("YunXi shell socket 已被不兼容的 daemon 占用；拒绝覆盖活动进程");
     }
     if socket.exists() {
         fs::remove_file(&socket)
@@ -816,23 +1026,56 @@ async fn handle_connection(
     let (reader, mut writer) = stream.into_split();
     let (tx, mut rx) = mpsc::channel::<ClientFrame>(16);
     tokio::spawn(async move {
-        let mut lines = BufReader::new(reader).lines();
-        while let Ok(Some(line)) = lines.next_line().await {
-            if let Ok(frame) = serde_json::from_str::<ClientFrame>(&line) {
-                if tx.send(frame).await.is_err() {
-                    break;
-                }
+        let mut reader = reader;
+        while let Ok(Some(frame)) = read_frame::<_, ClientFrame>(&mut reader).await {
+            if tx.send(frame).await.is_err() {
+                break;
             }
         }
     });
-    let Some(first) = rx.recv().await else {
+    let Some(ClientFrame::Hello {
+        protocol_version,
+        client: _,
+        capabilities: _,
+    }) = rx.recv().await
+    else {
         return Ok(());
     };
-    match first {
-        ClientFrame::Ping => {
-            write_frame(&mut writer, &ServerFrame::Ready).await?;
+    if protocol_version != LINUX_IPC_PROTOCOL_VERSION {
+        write_frame(
+            &mut writer,
+            &ServerFrame::Error {
+                message: format!(
+                    "不支持的 YunXi shell IPC 版本 {protocol_version}，当前版本为 {LINUX_IPC_PROTOCOL_VERSION}"
+                ),
+            },
+        )
+        .await?;
+        return Ok(());
+    }
+    write_frame(
+        &mut writer,
+        &ServerFrame::HelloAck {
+            protocol_version: LINUX_IPC_PROTOCOL_VERSION,
+            max_frame_bytes: LINUX_IPC_MAX_FRAME_BYTES,
+            capabilities: vec![
+                "ping".to_string(),
+                "turn".to_string(),
+                "cancel".to_string(),
+                "follow_resync".to_string(),
+            ],
+        },
+    )
+    .await?;
+    let Some(request) = rx.recv().await else {
+        return Ok(());
+    };
+    match request {
+        ClientFrame::Ping { request_id } => {
+            write_frame(&mut writer, &ServerFrame::Pong { request_id }).await?;
         }
         ClientFrame::Turn {
+            request_id,
             cwd,
             prompt,
             session_id,
@@ -845,6 +1088,7 @@ async fn handle_connection(
                 &mut writer,
                 &mut rx,
                 sessions,
+                request_id,
                 cwd,
                 prompt,
                 session_id,
@@ -855,7 +1099,20 @@ async fn handle_connection(
             )
             .await?;
         }
-        ClientFrame::ApprovalResponse { .. } | ClientFrame::UserInputResponse { .. } => {
+        ClientFrame::Follow { session_id } => {
+            write_frame(
+                &mut writer,
+                &ServerFrame::ResyncRequired {
+                    session_id,
+                    reason: "当前版本已定义 Follow 契约，但事件回放队列尚未启用".to_string(),
+                },
+            )
+            .await?;
+        }
+        ClientFrame::Hello { .. }
+        | ClientFrame::Cancel { .. }
+        | ClientFrame::ApprovalResponse { .. }
+        | ClientFrame::UserInputResponse { .. } => {
             write_frame(
                 &mut writer,
                 &ServerFrame::Error {
@@ -873,6 +1130,7 @@ async fn run_daemon_turn<W: tokio::io::AsyncWrite + Unpin>(
     writer: &mut W,
     rx: &mut mpsc::Receiver<ClientFrame>,
     sessions: Arc<Mutex<HashMap<String, String>>>,
+    request_id: String,
     cwd: String,
     prompt: String,
     requested_session: Option<String>,
@@ -941,8 +1199,22 @@ async fn run_daemon_turn<W: tokio::io::AsyncWrite + Unpin>(
                 let value = await_user_input(rx, request.id.as_deref()).await?;
                 let _ = request.respond_to.send(AgentRunUserInputResponse { value });
             },
-            frame = rx.recv() => if let Some(ClientFrame::Turn { .. }) = frame {
-                control.cancel();
+            frame = rx.recv() => if let Some(frame) = frame {
+                match frame {
+                    ClientFrame::Cancel { request_id: cancelled } if cancelled == request_id => {
+                        control.cancel();
+                    }
+                    ClientFrame::Ping { request_id } => {
+                        write_frame(writer, &ServerFrame::Pong { request_id }).await?;
+                    }
+                    ClientFrame::Follow { session_id } => {
+                        write_frame(writer, &ServerFrame::ResyncRequired {
+                            session_id,
+                            reason: "当前回合仍在运行；请等待 Done 后重新 Follow".to_string(),
+                        }).await?;
+                    }
+                    _ => {}
+                }
             },
             turn_result = &mut turn => {
                 result = Some(turn_result.context("YunXi Runtime 执行失败")?);
