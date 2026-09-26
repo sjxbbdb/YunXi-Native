@@ -88,6 +88,11 @@ visibility；不会把 generation `1` 当作永久默认值。首次使用由 `k
 `knowledge-man` 受控初始化 system 空间，后续采集会绑定当时的 active generation，
 不会覆盖已有代际。未来的 staging/原子激活仍按升级计划单独实现。
 
+存储层现已增加独立的 generation manifest：可以为某个空间创建 `building` 代际、记录
+embedding 模型/维度与文档完整性计数，并在校验完成后标记为 `ready`；这些操作不会
+改变 `knowledge_spaces.generation`，也不会影响当前 RAG 查询。真正的 staging 文档、
+向量搬运与原子激活会在后续增量中实现。
+
 队列闭环现在也可显式验证：先用
 `yunxi-linux knowledge-enqueue <document-id> --cwd .` 为文档当前 generation 入队，
 再用 `yunxi-linux knowledge-worker --max-jobs 1 --cwd .` 处理有限数量的任务。worker

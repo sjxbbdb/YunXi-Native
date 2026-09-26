@@ -126,6 +126,45 @@ pub struct KnowledgeSearchScope {
     pub visibility: KnowledgeVisibility,
 }
 
+/// Lifecycle state for a generation being prepared outside the active index.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum KnowledgeGenerationState {
+    Building,
+    Ready,
+}
+
+impl KnowledgeGenerationState {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Building => "building",
+            Self::Ready => "ready",
+        }
+    }
+
+    fn parse(value: &str) -> Result<Self, String> {
+        match value {
+            "building" => Ok(Self::Building),
+            "ready" => Ok(Self::Ready),
+            other => Err(format!("unknown knowledge generation state {other}")),
+        }
+    }
+}
+
+/// Durable manifest for one space-local staging generation.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct KnowledgeGeneration {
+    pub space_id: String,
+    pub generation: i64,
+    pub state: KnowledgeGenerationState,
+    pub embedding_model: Option<String>,
+    pub vector_dimensions: Option<usize>,
+    pub expected_documents: i64,
+    pub indexed_documents: i64,
+    pub content_digest: Option<String>,
+    pub created_at_millis: i64,
+    pub completed_at_millis: Option<i64>,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct KnowledgeSearchResult {
     pub chunk_id: String,
@@ -738,6 +777,163 @@ impl SqliteKnowledgeStore {
             generation,
             visibility,
         }))
+    }
+
+    /// Start a new space-local generation without changing the active scope.
+    ///
+    /// The returned generation is only a manifest. Documents and vectors are
+    /// still written through the active-table APIs until staging storage lands.
+    pub fn begin_generation_build(
+        &self,
+        space_id: &str,
+        owner: &str,
+        visibility: KnowledgeVisibility,
+        embedding_model: Option<&str>,
+        vector_dimensions: Option<usize>,
+    ) -> AgentResult<KnowledgeGeneration> {
+        if space_id.trim().is_empty() || owner.trim().is_empty() {
+            return Err(storage_error("knowledge generation metadata is incomplete"));
+        }
+        if embedding_model.is_some_and(|model| model.trim().is_empty()) {
+            return Err(storage_error(
+                "knowledge generation embedding model is invalid",
+            ));
+        }
+        if vector_dimensions.is_some_and(|dimensions| dimensions == 0) {
+            return Err(storage_error(
+                "knowledge generation vector dimensions are invalid",
+            ));
+        }
+        let mut connection = self.open_connection()?;
+        initialize_schema(&connection, &self.database)?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|error| sqlite_error(&self.database, "begin knowledge generation", error))?;
+        let space = transaction
+            .query_row(
+                "SELECT owner, visibility, generation FROM knowledge_spaces WHERE space_id = ?1",
+                params![space_id],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, i64>(2)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(|error| sqlite_error(&self.database, "read generation space", error))?
+            .ok_or_else(|| storage_error("knowledge generation references an unknown space"))?;
+        if space.0 != owner || space.1 != visibility.as_str() {
+            return Err(storage_error(
+                "knowledge generation does not match its space owner or visibility",
+            ));
+        }
+        let next_generation = transaction
+            .query_row(
+                "SELECT MAX(generation) FROM knowledge_generation_manifests
+                 WHERE space_id = ?1",
+                params![space_id],
+                |row| row.get::<_, Option<i64>>(0),
+            )
+            .map_err(|error| sqlite_error(&self.database, "read generation sequence", error))?
+            .unwrap_or(space.2)
+            .checked_add(1)
+            .ok_or_else(|| storage_error("knowledge generation sequence exhausted"))?;
+        let now = now_millis();
+        transaction
+            .execute(
+                "INSERT INTO knowledge_generation_manifests
+                    (space_id, generation, state, embedding_model, vector_dimensions,
+                     expected_documents, indexed_documents, content_digest,
+                     created_at_millis, completed_at_millis)
+                 VALUES (?1, ?2, 'building', ?3, ?4, 0, 0, NULL, ?5, NULL)",
+                params![
+                    space_id,
+                    next_generation,
+                    embedding_model,
+                    vector_dimensions.map(|value| i64::try_from(value).unwrap_or(i64::MAX)),
+                    now,
+                ],
+            )
+            .map_err(|error| sqlite_error(&self.database, "create generation manifest", error))?;
+        let generation =
+            read_knowledge_generation(&transaction, &self.database, space_id, next_generation)?;
+        transaction
+            .commit()
+            .map_err(|error| sqlite_error(&self.database, "commit knowledge generation", error))?;
+        Ok(generation)
+    }
+
+    /// Mark a building generation complete enough for a future atomic switch.
+    pub fn mark_generation_ready(
+        &self,
+        space_id: &str,
+        generation: i64,
+        expected_documents: i64,
+        indexed_documents: i64,
+        content_digest: &str,
+    ) -> AgentResult<KnowledgeGeneration> {
+        if space_id.trim().is_empty()
+            || generation < 0
+            || expected_documents < 0
+            || indexed_documents < 0
+            || indexed_documents != expected_documents
+            || content_digest.trim().is_empty()
+        {
+            return Err(storage_error(
+                "knowledge generation readiness metadata is invalid",
+            ));
+        }
+        let mut connection = self.open_connection()?;
+        initialize_schema(&connection, &self.database)?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|error| sqlite_error(&self.database, "begin generation readiness", error))?;
+        let updated = transaction
+            .execute(
+                "UPDATE knowledge_generation_manifests
+                 SET state = 'ready', expected_documents = ?1,
+                     indexed_documents = ?2, content_digest = ?3,
+                     completed_at_millis = ?4
+                 WHERE space_id = ?5 AND generation = ?6 AND state = 'building'",
+                params![
+                    expected_documents,
+                    indexed_documents,
+                    content_digest,
+                    now_millis(),
+                    space_id,
+                    generation,
+                ],
+            )
+            .map_err(|error| sqlite_error(&self.database, "mark generation ready", error))?;
+        if updated != 1 {
+            return Err(storage_error(
+                "knowledge generation is unknown or not building",
+            ));
+        }
+        let generation =
+            read_knowledge_generation(&transaction, &self.database, space_id, generation)?;
+        transaction
+            .commit()
+            .map_err(|error| sqlite_error(&self.database, "commit generation readiness", error))?;
+        Ok(generation)
+    }
+
+    /// Read one generation manifest without changing active retrieval state.
+    pub fn generation_manifest(
+        &self,
+        space_id: &str,
+        generation: i64,
+    ) -> AgentResult<Option<KnowledgeGeneration>> {
+        if space_id.trim().is_empty() || generation < 0 {
+            return Err(storage_error(
+                "knowledge generation lookup metadata is invalid",
+            ));
+        }
+        let connection = self.open_connection()?;
+        initialize_schema(&connection, &self.database)?;
+        read_knowledge_generation_optional(&connection, &self.database, space_id, generation)
     }
 
     pub fn upsert_document(&self, document: &KnowledgeDocument) -> AgentResult<()> {
@@ -1761,6 +1957,111 @@ fn read_embedding_job(
     })
 }
 
+fn knowledge_generation_from_row(
+    row: (
+        String,
+        i64,
+        String,
+        Option<String>,
+        Option<i64>,
+        i64,
+        i64,
+        Option<String>,
+        i64,
+        Option<i64>,
+    ),
+    path: &Path,
+) -> AgentResult<KnowledgeGeneration> {
+    Ok(KnowledgeGeneration {
+        space_id: row.0,
+        generation: row.1,
+        state: KnowledgeGenerationState::parse(&row.2).map_err(storage_error)?,
+        embedding_model: row.3,
+        vector_dimensions: row
+            .4
+            .map(|dimensions| usize::try_from(dimensions).unwrap_or_default()),
+        expected_documents: row.5,
+        indexed_documents: row.6,
+        content_digest: row.7,
+        created_at_millis: row.8,
+        completed_at_millis: row.9,
+    })
+    .map_err(|error: AgentError| match error {
+        AgentError::Execution { message } => AgentError::Execution {
+            message: format!("{}: {message}", path.display()),
+        },
+        other => other,
+    })
+}
+
+fn read_knowledge_generation(
+    transaction: &Transaction<'_>,
+    path: &Path,
+    space_id: &str,
+    generation: i64,
+) -> AgentResult<KnowledgeGeneration> {
+    let row = transaction
+        .query_row(
+            "SELECT space_id, generation, state, embedding_model, vector_dimensions,
+                    expected_documents, indexed_documents, content_digest,
+                    created_at_millis, completed_at_millis
+             FROM knowledge_generation_manifests
+             WHERE space_id = ?1 AND generation = ?2",
+            params![space_id, generation],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                    row.get::<_, Option<i64>>(4)?,
+                    row.get::<_, i64>(5)?,
+                    row.get::<_, i64>(6)?,
+                    row.get::<_, Option<String>>(7)?,
+                    row.get::<_, i64>(8)?,
+                    row.get::<_, Option<i64>>(9)?,
+                ))
+            },
+        )
+        .map_err(|error| sqlite_error(path, "read knowledge generation", error))?;
+    knowledge_generation_from_row(row, path)
+}
+
+fn read_knowledge_generation_optional(
+    connection: &Connection,
+    path: &Path,
+    space_id: &str,
+    generation: i64,
+) -> AgentResult<Option<KnowledgeGeneration>> {
+    let row = connection
+        .query_row(
+            "SELECT space_id, generation, state, embedding_model, vector_dimensions,
+                    expected_documents, indexed_documents, content_digest,
+                    created_at_millis, completed_at_millis
+             FROM knowledge_generation_manifests
+             WHERE space_id = ?1 AND generation = ?2",
+            params![space_id, generation],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                    row.get::<_, Option<i64>>(4)?,
+                    row.get::<_, i64>(5)?,
+                    row.get::<_, i64>(6)?,
+                    row.get::<_, Option<String>>(7)?,
+                    row.get::<_, i64>(8)?,
+                    row.get::<_, Option<i64>>(9)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(|error| sqlite_error(path, "read optional knowledge generation", error))?;
+    row.map(|row| knowledge_generation_from_row(row, path))
+        .transpose()
+}
+
 fn initialize_schema(connection: &Connection, path: &Path) -> AgentResult<()> {
     connection
         .execute_batch(
@@ -1771,7 +2072,7 @@ fn initialize_schema(connection: &Connection, path: &Path) -> AgentResult<()> {
              );
              INSERT INTO knowledge_schema(schema_version)
                 SELECT 1 WHERE NOT EXISTS (SELECT 1 FROM knowledge_schema);
-             UPDATE knowledge_schema SET schema_version = 3 WHERE schema_version < 3;
+             UPDATE knowledge_schema SET schema_version = 4 WHERE schema_version < 4;
              CREATE TABLE IF NOT EXISTS knowledge_spaces (
                 space_id TEXT PRIMARY KEY,
                 kind TEXT NOT NULL CHECK(kind IN ('system', 'project', 'private')),
@@ -1783,6 +2084,21 @@ fn initialize_schema(connection: &Connection, path: &Path) -> AgentResult<()> {
                 created_at_millis INTEGER NOT NULL,
                 updated_at_millis INTEGER NOT NULL
              );
+             CREATE TABLE IF NOT EXISTS knowledge_generation_manifests (
+                space_id TEXT NOT NULL REFERENCES knowledge_spaces(space_id),
+                generation INTEGER NOT NULL CHECK(generation >= 0),
+                state TEXT NOT NULL CHECK(state IN ('building', 'ready')),
+                embedding_model TEXT,
+                vector_dimensions INTEGER CHECK(vector_dimensions IS NULL OR vector_dimensions > 0),
+                expected_documents INTEGER NOT NULL CHECK(expected_documents >= 0),
+                indexed_documents INTEGER NOT NULL CHECK(indexed_documents >= 0),
+                content_digest TEXT,
+                created_at_millis INTEGER NOT NULL,
+                completed_at_millis INTEGER,
+                PRIMARY KEY(space_id, generation)
+             );
+             CREATE INDEX IF NOT EXISTS idx_knowledge_generation_manifests_state
+                ON knowledge_generation_manifests(space_id, state, generation);
              CREATE TABLE IF NOT EXISTS knowledge_documents (
                 document_id TEXT PRIMARY KEY,
                 space_id TEXT NOT NULL REFERENCES knowledge_spaces(space_id),
@@ -1888,7 +2204,7 @@ fn initialize_schema(connection: &Connection, path: &Path) -> AgentResult<()> {
     }
     connection
         .execute(
-            "UPDATE knowledge_schema SET schema_version = 3 WHERE schema_version < 3",
+            "UPDATE knowledge_schema SET schema_version = 4 WHERE schema_version < 4",
             [],
         )
         .map_err(|error| sqlite_error(path, "update knowledge schema version", error))?;

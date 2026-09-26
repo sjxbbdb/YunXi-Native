@@ -335,6 +335,11 @@ model 不匹配被视为终态失败；lease 回收仍立即恢复，不套用�
 active generation。采集得到的文档会在写入前绑定当前 active generation，避免空间升级
 后新旧资料串代；未来引入 staging 时，采集写入与 active 激活仍需保持两个明确事务边界。
 
+当前已先增加独立的 generation manifest 前置契约：每个空间可以创建不影响 active
+指针的 `building` generation，记录 embedding 模型/维度和文档完整性计数，并在计数
+与摘要校验完成后转为 `ready`。该 manifest 只描述“未来可激活”的候选代际，不承载
+主文档、chunk 或向量；staging 数据、readiness 全量校验和原子激活仍需后续增量完成。
+
 采集 CLI 的成功路径现在会在 `ingest_text` 完成后为当前文档 generation 自动创建
 本地 provider 的 pending job，并在 JSON 结果中返回 job 元数据；它只入队、不启动
 worker。文档内容发生变化时，ingest 事务会同时清理旧向量和旧 embedding jobs，保证

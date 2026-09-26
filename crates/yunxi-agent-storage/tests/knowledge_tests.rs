@@ -140,6 +140,61 @@ fn active_space_scope_reads_current_generation_and_enforces_identity() {
 }
 
 #[test]
+fn generation_manifest_build_and_readiness_do_not_change_active_scope() {
+    let (_dir, store, _document) = queue_fixture();
+    let building = store
+        .begin_generation_build(
+            "system-linux",
+            "system",
+            KnowledgeVisibility::Public,
+            Some("fixture-v1"),
+            Some(2),
+        )
+        .expect("begin generation");
+    assert_eq!(building.generation, 2);
+    assert_eq!(
+        building.state,
+        yunxi_agent_storage::KnowledgeGenerationState::Building
+    );
+    assert_eq!(building.expected_documents, 0);
+    assert_eq!(
+        store
+            .active_space_scope("system-linux", "system", KnowledgeVisibility::Public)
+            .expect("active scope")
+            .expect("active scope exists")
+            .generation,
+        1
+    );
+
+    let manifest = store
+        .generation_manifest("system-linux", building.generation)
+        .expect("manifest lookup")
+        .expect("manifest exists");
+    assert_eq!(manifest, building);
+
+    let ready = store
+        .mark_generation_ready("system-linux", building.generation, 2, 2, "digest-v1")
+        .expect("mark ready");
+    assert_eq!(
+        ready.state,
+        yunxi_agent_storage::KnowledgeGenerationState::Ready
+    );
+    assert_eq!(ready.expected_documents, 2);
+    assert_eq!(ready.indexed_documents, 2);
+    assert_eq!(ready.content_digest.as_deref(), Some("digest-v1"));
+    assert!(
+        store
+            .mark_generation_ready("system-linux", building.generation, 2, 2, "digest-v1")
+            .is_err()
+    );
+    assert!(
+        store
+            .mark_generation_ready("system-linux", building.generation, 2, 1, "digest-v1")
+            .is_err()
+    );
+}
+
+#[test]
 fn embedding_jobs_are_idempotent_and_have_bounded_transitions() {
     let (_dir, store, document) = queue_fixture();
 
