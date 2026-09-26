@@ -381,6 +381,8 @@ Linux Runtime 已增加只读 `knowledge-search` 入口，并在 Linux 目标构
 不能覆盖 Tool/Approval/Sandbox 规则，也不会直接进入执行器；Windows Runtime 不启用该分支。
 运行时还会从受控的 `metadata_json` 中保留 `collector` 与 `risk_level` provenance，
 并将其作为证据头部的可审计标签输出；原始 metadata/argv 不会直接注入 prompt。
+当同一 chunk 同时出现在 FTS 与向量结果中时，运行时保留 FTS 证据、过滤重复向量项，
+避免 prompt 预算被同一份知识重复占用。
 
 CLI 还提供 `knowledge-index` 和 `knowledge-vector-search`：前者使用当前本地
 字符 n-gram provider 为已登记文档建立独立向量，后者在相同 system 空间内进行

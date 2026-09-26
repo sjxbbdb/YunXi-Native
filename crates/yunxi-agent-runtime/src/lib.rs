@@ -20,6 +20,8 @@ pub use general_companion::{GeneralCompanionSnapshot, general_companion_snapshot
 use async_trait::async_trait;
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
+#[cfg(target_os = "linux")]
+use std::collections::HashSet;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -2602,6 +2604,7 @@ fn load_linux_knowledge_context(config: &AgentConfig, prompt: &str) -> Option<St
                 .ok()
         })
         .unwrap_or_default();
+    let vector_matches = filter_duplicate_linux_vector_evidence(&keyword_matches, vector_matches);
     if keyword_matches.is_empty() && vector_matches.is_empty() {
         return None;
     }
@@ -2613,6 +2616,21 @@ fn load_linux_knowledge_context(config: &AgentConfig, prompt: &str) -> Option<St
         contexts.push(format_linux_knowledge_vector_context(&vector_matches));
     }
     Some(contexts.join("\n"))
+}
+
+#[cfg(target_os = "linux")]
+fn filter_duplicate_linux_vector_evidence(
+    keyword_matches: &[yunxi_agent_storage::KnowledgeSearchResult],
+    vector_matches: Vec<yunxi_agent_storage::KnowledgeVectorMatch>,
+) -> Vec<yunxi_agent_storage::KnowledgeVectorMatch> {
+    let keyword_chunk_ids = keyword_matches
+        .iter()
+        .map(|item| item.chunk_id.as_str())
+        .collect::<HashSet<_>>();
+    vector_matches
+        .into_iter()
+        .filter(|item| !keyword_chunk_ids.contains(item.chunk_id.as_str()))
+        .collect()
 }
 
 #[cfg(target_os = "linux")]
@@ -6222,6 +6240,55 @@ mod linux_knowledge_tests {
     }
 
     #[test]
+    fn duplicate_vector_evidence_is_dropped_when_fts_already_returned_the_chunk() {
+        let keyword_matches = vec![yunxi_agent_storage::KnowledgeSearchResult {
+            chunk_id: "same-chunk".to_string(),
+            document_id: "doc".to_string(),
+            space_id: "system-linux".to_string(),
+            title: "fixture".to_string(),
+            content: "same".to_string(),
+            metadata_json: "{}".to_string(),
+            source: "fixture".to_string(),
+            version: "test".to_string(),
+            generation: 1,
+            owner: "system".to_string(),
+            visibility: yunxi_agent_storage::KnowledgeVisibility::Public,
+            rank: -0.1,
+        }];
+        let vector_matches = vec![
+            yunxi_agent_storage::KnowledgeVectorMatch {
+                chunk_id: "same-chunk".to_string(),
+                document_id: "doc".to_string(),
+                space_id: "system-linux".to_string(),
+                title: "fixture".to_string(),
+                content: "same".to_string(),
+                metadata_json: "{}".to_string(),
+                source: "fixture".to_string(),
+                version: "test".to_string(),
+                embedding_model: "fixture".to_string(),
+                generation: 1,
+                score: 1.0,
+            },
+            yunxi_agent_storage::KnowledgeVectorMatch {
+                chunk_id: "unique-chunk".to_string(),
+                document_id: "doc-2".to_string(),
+                space_id: "system-linux".to_string(),
+                title: "fixture 2".to_string(),
+                content: "unique".to_string(),
+                metadata_json: "{}".to_string(),
+                source: "fixture".to_string(),
+                version: "test".to_string(),
+                embedding_model: "fixture".to_string(),
+                generation: 1,
+                score: 0.8,
+            },
+        ];
+        let filtered = filter_duplicate_linux_vector_evidence(&keyword_matches, vector_matches);
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].chunk_id, "unique-chunk");
+    }
+
+    #[test]
     fn runtime_loads_vector_evidence_from_the_isolated_knowledge_store() {
         let directory = tempfile::tempdir().expect("tempdir");
         let store = yunxi_agent_storage::SqliteKnowledgeStore::for_workspace(directory.path());
@@ -6276,7 +6343,7 @@ mod linux_knowledge_tests {
             .expect("vector");
 
         let config = AgentConfig::new(directory.path().to_path_buf());
-        let context = load_linux_knowledge_context(&config, "service recovery").expect("context");
+        let context = load_linux_knowledge_context(&config, "zzzz").expect("context");
         assert!(context.contains("Vector evidence 1"));
         assert!(context.contains("service recovery restart state"));
         assert!(context.contains("collector=linux.fixture"));
