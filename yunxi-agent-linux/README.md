@@ -205,7 +205,8 @@ bash yunxi-agent-linux/tests/daemon_ipc_smoke.sh ./target/release/yunxi-linux
 它会启动真实 daemon，验证版本握手、Ping、未知回合的 Follow 重同步、回合失败与超限
 `Turn` 的结构化 `Error` 帧（超限请求不会产生 `run_accepted`）、错误后 daemon 仍可 Ping，
 空闲握手连接的超时关闭，以及 SIGTERM 后 socket 清理。脚本使用临时 XDG 目录，结束后会
-自动删除测试状态。
+自动删除测试状态；同时会发送超大 frame 和截断 JSON，确认坏连接只被丢弃而不会拖垮
+daemon 或影响后续 Ping。
 
 知识查询延迟可用同一套临时知识库测量（输出冷查询与后续 warm-ish 查询的
 p50/p95，不设置跨机器硬阈值）：

@@ -210,6 +210,24 @@ with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
     except socket.timeout:
         raise AssertionError("daemon kept a post-handshake idle connection open")
 
+with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
+    sock.settimeout(5)
+    sock.connect(socket_path)
+    sock.sendall(struct.pack(">I", 24 * 1024 * 1024 + 1))
+
+with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
+    sock.settimeout(5)
+    sock.connect(socket_path)
+    payload = b"{"
+    sock.sendall(struct.pack(">I", len(payload)) + payload)
+
+with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
+    sock.settimeout(5)
+    sock.connect(socket_path)
+    hello(sock)
+    send(sock, {"kind": "ping", "request_id": "after-malformed-frames"})
+    assert recv(sock) == {"kind": "pong", "request_id": "after-malformed-frames"}
+
 print("daemon-ipc-smoke=ok")
 PY
 
