@@ -286,9 +286,9 @@ daemon 还对 `Hello` 与握手后的首个请求设置 5 秒超时，防止半�
 ### Phase 2：fish 原生接管
 
 - 完成首词分类、`type -q`、多行、粘贴、Ctrl+J、command-not-found 和嵌套命令边界；
-- 已建立真实 fish PTY smoke，覆盖 alias/function、中文自然语言、Ctrl+J、多行、命令替换、重定向、管道、窗口 resize、输入态 Ctrl+C 和普通命令退出码；继续扩展为完整行为矩阵；
+- 已建立真实 fish PTY smoke，覆盖 alias/function、中文自然语言、Ctrl+J、多行、命令替换、重定向、管道、窗口 resize、输入态 Ctrl+C 和普通命令退出码；另有 `shell_prompt_cancel_smoke.sh` 使用真实 PTY 与协议假 daemon 验证审批等待期间的 Ctrl+C；继续扩展为完整行为矩阵；
 - 记录 cwd/session/origin，保证 Shell 回显和 YunXi 结果不重叠；fish 前台回合收到
-  `Ctrl+C` 时向 daemon 发送 `Cancel`，不把中断留在客户端进程层。
+  `Ctrl+C` 时向 daemon 发送 `Cancel`，不把中断留在客户端进程层；审批和用户输入等待使用可轮询的 `/dev/tty`，取消后先回收输入任务再发送 `Cancel`，避免后台读取线程吞掉下一条 fish 输入。
 
 **门槛**：普通命令零误拦截，自然语言零重复执行，PTY resize/中断/退出码一致。
 

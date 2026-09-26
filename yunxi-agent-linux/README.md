@@ -181,13 +181,18 @@ source ~/.config/fish/conf.d/yunxi.fish
 - 工具调用仍会弹出审批，不会因为通过 shell 接管而自动放行；
 - 输入编辑态的 `Ctrl+C` 由 fish 本地取消；已送入 YunXi 的回合会向 daemon 发送
   `Cancel`，等待 `cancelled` 终态后返回，关闭 fish 后 daemon 也不会继续接收新输入。
+- YunXi 正在等待工具审批或补充输入时，交互终端的 `Ctrl+C` 同样会发送当前回合的
+  `Cancel`；输入采用可轮询的 `/dev/tty`，取消时先回收读取任务，不会遗留后台线程吞掉
+  下一条 fish 输入。真实 PTY 验收脚本为
+  `tests/shell_prompt_cancel_smoke.sh`。
 
-hook 的设计目标参考 Miyu：回车时使用 `commandline --tokens-raw` 读取首词，尽量避免在分类阶段触发命令替换、通配符或其他副作用；解析器无 token 时再使用不求值的首词回退。真正的命令交回 fish，自然语言才送入 `shell-intercept`。对 alias/function 等 fish 运行时定义的命令，hook 会先用 `functions -q`/`type -q` 判断，不把它们误送给 YunXi。`fish_command_not_found` 是第二道兜底；含 shell 语法或多行的未知命令不会被重复转发。每个交互式 fish 进程会携带独立的 `fish-<pid>` session id，因此两个终端即使位于同一目录，也不会误用同一个 YunXi Runtime 会话；手动调用 `shell-intercept` 时仍可用 `YUNXI_SHELL_SESSION` 提供兼容 session id。真实 fish + PTY smoke 已覆盖 alias/function、中文自然语言、Ctrl+J、多行、命令替换、重定向、管道、窗口 resize、输入态 Ctrl+C 和普通命令退出码；复杂嵌套命令和提示符重绘矩阵仍未完成，不能把这段设计说明当成已验收的全部行为保证。
+hook 的设计目标参考 Miyu：回车时使用 `commandline --tokens-raw` 读取首词，尽量避免在分类阶段触发命令替换、通配符或其他副作用；解析器无 token 时再使用不求值的首词回退。真正的命令交回 fish，自然语言才送入 `shell-intercept`。对 alias/function 等 fish 运行时定义的命令，hook 会先用 `functions -q`/`type -q` 判断，不把它们误送给 YunXi。`fish_command_not_found` 是第二道兜底；含 shell 语法或多行的未知命令不会被重复转发。每个交互式 fish 进程会携带独立的 `fish-<pid>` session id，因此两个终端即使位于同一目录，也不会误用同一个 YunXi Runtime 会话；手动调用 `shell-intercept` 时仍可用 `YUNXI_SHELL_SESSION` 提供兼容 session id。真实 fish + PTY smoke 已覆盖 alias/function、中文自然语言、Ctrl+J、多行、命令替换、重定向、管道、窗口 resize、输入态 Ctrl+C 和普通命令退出码；`tests/shell_prompt_cancel_smoke.sh` 另行覆盖审批等待态取消；复杂嵌套命令和提示符重绘矩阵仍未完成，不能把这段设计说明当成已验收的全部行为保证。
 
 真实 PTY 回归可运行：
 
 ```bash
 bash yunxi-agent-linux/tests/fish_pty_smoke.sh ./target/release/yunxi-linux
+bash yunxi-agent-linux/tests/shell_prompt_cancel_smoke.sh ./target/release/yunxi-linux
 ```
 
 卸载：

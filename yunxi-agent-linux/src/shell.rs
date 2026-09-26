@@ -23,7 +23,7 @@ use std::path::{Path, PathBuf};
 #[cfg(unix)]
 use std::sync::Arc;
 #[cfg(unix)]
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Instant;
 #[cfg(unix)]
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -32,7 +32,7 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 #[cfg(unix)]
 use tokio::net::{UnixListener, UnixStream};
 #[cfg(unix)]
-use tokio::signal::unix::{SignalKind, signal};
+use tokio::signal::unix::{Signal, SignalKind, signal};
 #[cfg(unix)]
 use tokio::sync::{Mutex, mpsc};
 #[cfg(unix)]
@@ -2591,16 +2591,15 @@ async fn run_shell_intercept(
     // payload would otherwise lose bytes already consumed from the Unix
     // stream and desynchronize the next frame.
     let (mut server_frames, _reader_guard) = spawn_server_reader(reader);
-    let interrupt = tokio::signal::ctrl_c();
-    tokio::pin!(interrupt);
+    let mut interrupt =
+        signal(SignalKind::interrupt()).context("注册 fish shell SIGINT handler 失败")?;
     let mut cancel_sent = false;
     loop {
         let frame = if cancel_sent {
             recv_server_frame(&mut server_frames).await?
         } else {
             tokio::select! {
-                result = &mut interrupt => {
-                    result.context("等待 fish shell 回合的 Ctrl+C 信号失败")?;
+                _ = interrupt.recv() => {
                     send_client_frame(
                         &mut writer,
                         &ClientFrame::Cancel {
@@ -2638,34 +2637,65 @@ async fn run_shell_intercept(
                         .map(|value| format!("\ncommand: {value}"))
                         .unwrap_or_default()
                 );
-                let approved = read_yes_no()?;
-                send_client_frame(
-                    &mut writer,
-                    &ClientFrame::ApprovalResponse {
-                        id,
-                        approved,
-                        reason: Some(
-                            if approved {
-                                "fish shell user approved"
-                            } else {
-                                "fish shell user denied"
-                            }
-                            .to_string(),
-                        ),
-                    },
-                )
-                .await?;
+                match read_yes_no_or_cancel(&mut interrupt).await? {
+                    ShellPromptResult::Value(approved) => {
+                        send_client_frame(
+                            &mut writer,
+                            &ClientFrame::ApprovalResponse {
+                                id,
+                                approved,
+                                reason: Some(
+                                    if approved {
+                                        "fish shell user approved"
+                                    } else {
+                                        "fish shell user denied"
+                                    }
+                                    .to_string(),
+                                ),
+                            },
+                        )
+                        .await?;
+                    }
+                    ShellPromptResult::Cancelled => {
+                        send_client_frame(
+                            &mut writer,
+                            &ClientFrame::Cancel {
+                                request_id: request_id.clone(),
+                            },
+                        )
+                        .await?;
+                        cancel_sent = true;
+                    }
+                }
             }
             ServerFrame::UserInput { id, prompt } => {
-                let value = read_terminal_line(&format!("\n[YunXi 需要输入] {prompt}\n> "))?;
-                send_client_frame(
-                    &mut writer,
-                    &ClientFrame::UserInputResponse {
-                        id,
-                        value: Some(value.trim_end().to_string()),
-                    },
+                match read_terminal_line_or_cancel(
+                    &format!("\n[YunXi 需要输入] {prompt}\n> "),
+                    &mut interrupt,
                 )
-                .await?;
+                .await?
+                {
+                    ShellPromptResult::Value(value) => {
+                        send_client_frame(
+                            &mut writer,
+                            &ClientFrame::UserInputResponse {
+                                id,
+                                value: Some(value),
+                            },
+                        )
+                        .await?;
+                    }
+                    ShellPromptResult::Cancelled => {
+                        send_client_frame(
+                            &mut writer,
+                            &ClientFrame::Cancel {
+                                request_id: request_id.clone(),
+                            },
+                        )
+                        .await?;
+                        cancel_sent = true;
+                    }
+                }
             }
             ServerFrame::Done { status } => {
                 if cancel_sent && status == "cancelled" {
@@ -2703,32 +2733,100 @@ async fn run_shell_intercept(
 }
 
 #[cfg(unix)]
-fn read_yes_no() -> Result<bool> {
-    let answer = read_terminal_line("")?;
-    Ok(matches!(
-        answer.trim().to_ascii_lowercase().as_str(),
-        "y" | "yes"
-    ))
+async fn read_yes_no_or_cancel(interrupt: &mut Signal) -> Result<ShellPromptResult<bool>> {
+    match read_terminal_line_or_cancel("", interrupt).await? {
+        ShellPromptResult::Value(answer) => Ok(ShellPromptResult::Value(matches!(
+            answer.trim().to_ascii_lowercase().as_str(),
+            "y" | "yes"
+        ))),
+        ShellPromptResult::Cancelled => Ok(ShellPromptResult::Cancelled),
+    }
 }
 
 #[cfg(unix)]
-fn read_terminal_line(prompt: &str) -> Result<String> {
-    use std::fs::OpenOptions;
-    use std::io::BufRead;
+async fn read_terminal_line_or_cancel(
+    prompt: &str,
+    interrupt: &mut Signal,
+) -> Result<ShellPromptResult<String>> {
+    let cancelled = Arc::new(AtomicBool::new(false));
+    let worker_cancelled = Arc::clone(&cancelled);
+    let prompt = prompt.to_string();
+    let worker =
+        tokio::task::spawn_blocking(move || read_terminal_line_polling(&prompt, &worker_cancelled));
+    tokio::pin!(worker);
 
-    if let Ok(mut tty) = OpenOptions::new().read(true).write(true).open("/dev/tty") {
-        tty.write_all(prompt.as_bytes())?;
-        tty.flush()?;
-        let mut reader = io::BufReader::new(tty);
-        let mut value = String::new();
-        reader.read_line(&mut value)?;
-        return Ok(value.trim_end().to_string());
+    tokio::select! {
+        result = &mut worker => {
+            Ok(ShellPromptResult::Value(result.context("终端输入任务失败")??))
+        }
+        signal = interrupt.recv() => {
+            signal.context("等待 fish shell 审批输入的 Ctrl+C 信号失败")?;
+            cancelled.store(true, Ordering::Release);
+            // The worker polls the tty in bounded intervals. Join it before
+            // sending Cancel so no detached thread can consume the next fish
+            // prompt's input.
+            let _ = (&mut worker).await;
+            Ok(ShellPromptResult::Cancelled)
+        }
     }
-    eprint!("{prompt}");
-    io::stderr().flush()?;
-    let mut value = String::new();
-    io::stdin().read_line(&mut value)?;
-    Ok(value.trim_end().to_string())
+}
+
+#[cfg(unix)]
+fn read_terminal_line_polling(prompt: &str, cancelled: &AtomicBool) -> Result<String> {
+    use std::fs::OpenOptions;
+    use std::os::fd::AsRawFd;
+
+    if cancelled.load(Ordering::Acquire) {
+        return Ok(String::new());
+    }
+    let mut tty = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open("/dev/tty")
+        .context("无法打开 /dev/tty；fish shell 交互需要可用控制终端")?;
+    tty.write_all(prompt.as_bytes())?;
+    tty.flush()?;
+
+    let fd = tty.as_raw_fd();
+    let mut line = Vec::new();
+    loop {
+        if cancelled.load(Ordering::Acquire) {
+            return Ok(String::new());
+        }
+        let mut poll_fd = libc::pollfd {
+            fd,
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        let ready = unsafe { libc::poll(&mut poll_fd, 1, 50) };
+        if ready < 0 {
+            let error = io::Error::last_os_error();
+            if error.kind() == io::ErrorKind::Interrupted {
+                continue;
+            }
+            return Err(error.into());
+        }
+        if ready == 0 {
+            continue;
+        }
+        if cancelled.load(Ordering::Acquire) {
+            return Ok(String::new());
+        }
+        if poll_fd.revents & (libc::POLLERR | libc::POLLHUP | libc::POLLNVAL) != 0 {
+            bail!("/dev/tty 在等待输入时不可用");
+        }
+        let mut byte = [0u8; 1];
+        let read = tty.read(&mut byte)?;
+        if read == 0 {
+            break;
+        }
+        match byte[0] {
+            b'\n' | b'\r' => break,
+            0x03 => return Ok(String::new()),
+            byte => line.push(byte),
+        }
+    }
+    Ok(String::from_utf8_lossy(&line).trim_end().to_string())
 }
 
 #[cfg(not(unix))]
@@ -3497,6 +3595,16 @@ mod tests {
                 .expect("input wait"),
             ShellPromptResult::Value(Some(value)) if value == "answer"
         ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn terminal_polling_exits_before_opening_tty_when_cancelled() {
+        let cancelled = AtomicBool::new(true);
+        assert_eq!(
+            read_terminal_line_polling("unused", &cancelled).expect("cancelled input"),
+            ""
+        );
     }
 
     #[test]

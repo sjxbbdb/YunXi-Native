@@ -33,6 +33,13 @@ DAEMON_PID=""
 cleanup() {
   if [[ -n "$DAEMON_PID" ]] && kill -0 "$DAEMON_PID" 2>/dev/null; then
     kill -TERM "$DAEMON_PID" 2>/dev/null || true
+    for _ in $(seq 1 40); do
+      kill -0 "$DAEMON_PID" 2>/dev/null || break
+      sleep 0.05
+    done
+    if kill -0 "$DAEMON_PID" 2>/dev/null; then
+      kill -KILL "$DAEMON_PID" 2>/dev/null || true
+    fi
     wait "$DAEMON_PID" 2>/dev/null || true
   fi
   rm -rf "$TMP_ROOT"
@@ -239,8 +246,19 @@ SECOND_LOG="$TMP_ROOT/second-daemon.log"
 set +e
 "$BINARY" daemon >"$SECOND_LOG" 2>&1 &
 SECOND_PID=$!
-wait "$SECOND_PID"
-SECOND_STATUS=$?
+for _ in $(seq 1 40); do
+  kill -0 "$SECOND_PID" 2>/dev/null || break
+  sleep 0.05
+done
+if kill -0 "$SECOND_PID" 2>/dev/null; then
+  echo "second daemon did not exit within 2 seconds" >&2
+  kill -KILL "$SECOND_PID" 2>/dev/null || true
+  wait "$SECOND_PID" 2>/dev/null || true
+  SECOND_STATUS=124
+else
+  wait "$SECOND_PID"
+  SECOND_STATUS=$?
+fi
 set -e
 [[ "$SECOND_STATUS" -ne 0 ]] || {
   echo "second daemon unexpectedly acquired the singleton lock" >&2

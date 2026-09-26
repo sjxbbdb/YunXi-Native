@@ -2116,6 +2116,7 @@ version = "2.3.3-hotfix.32"
 dependencies = [
  "anyhow",
  "clap",
+ "libc",
  "serde",
  "serde_json",
  "tokio",
