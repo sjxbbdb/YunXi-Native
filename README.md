@@ -109,6 +109,8 @@ Linux Runtime 会有限召回同一空间的 FTS 证据并把它标记为不可�
 继续保持不同数据库、不同表和不同检索边界。索引前会检查当前文档的 chunk、模型、
 generation、维度和向量完整性；内容未变化且向量齐全时直接复用，只有缺失、内容变更
 或模型/维度变化时才重建。
+低层 `upsert_chunk` 也会在同一事务中使该 chunk 的旧向量失效，避免绕过 ingest
+路径更新内容后误用旧 embedding。
 
 CLI 验证路径：先运行 `yunxi-linux knowledge-index <document-id> --cwd .`，再运行
 `yunxi-linux knowledge-vector-search <query> --cwd . --source-version ubuntu-24.04 --limit 5`。

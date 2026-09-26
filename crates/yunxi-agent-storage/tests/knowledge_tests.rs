@@ -738,14 +738,13 @@ fn local_embedding_indexes_knowledge_chunks_without_touching_memory_vectors() {
         .expect("space");
     let document = document("system-linux", "system", KnowledgeVisibility::Public);
     store.upsert_document(&document).expect("document");
-    store
-        .upsert_chunk(&chunk(
-            &document.document_id,
-            "system",
-            KnowledgeVisibility::Public,
-            "systemctl status shows a service state",
-        ))
-        .expect("chunk");
+    let mut knowledge_chunk = chunk(
+        &document.document_id,
+        "system",
+        KnowledgeVisibility::Public,
+        "systemctl status shows a service state",
+    );
+    store.upsert_chunk(&knowledge_chunk).expect("chunk");
 
     let provider = LocalChargramEmbedding::default();
     let summary = store
@@ -758,6 +757,12 @@ fn local_embedding_indexes_knowledge_chunks_without_touching_memory_vectors() {
         .index_document_with_embeddings(&document.document_id, &provider)
         .expect("unchanged knowledge embeddings");
     assert_eq!(unchanged.chunks_indexed, 0);
+    knowledge_chunk.content = "systemctl restart changes the service state".to_string();
+    store.upsert_chunk(&knowledge_chunk).expect("changed chunk");
+    let rebuilt = store
+        .index_document_with_embeddings(&document.document_id, &provider)
+        .expect("rebuilt knowledge embeddings");
+    assert_eq!(rebuilt.chunks_indexed, 1);
     let query = provider.embed("systemctl status").expect("query embedding");
     let matches = store
         .search_vectors(

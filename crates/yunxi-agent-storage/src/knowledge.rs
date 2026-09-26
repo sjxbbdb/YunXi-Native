@@ -381,6 +381,15 @@ impl SqliteKnowledgeStore {
                 "knowledge chunk metadata does not match its document",
             ));
         }
+        // A low-level chunk upsert can change content outside `ingest_text`.
+        // Invalidate derived vectors before the write so an incremental index
+        // check can never mistake an old embedding for a current one.
+        transaction
+            .execute(
+                "DELETE FROM knowledge_vectors WHERE chunk_id = ?1",
+                params![chunk.chunk_id],
+            )
+            .map_err(|error| sqlite_error(&self.database, "invalidate knowledge vectors", error))?;
         let now = now_millis();
         transaction
             .execute(

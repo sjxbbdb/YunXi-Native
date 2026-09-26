@@ -319,6 +319,8 @@ FTS 内容或孤立向量；文档 hash 与分块参数都未变化时会跳过�
 只需保持 provider 的模型、维度和批量写入契约。索引入口会先检查当前文档的 chunk、
 模型、generation、维度和向量 blob 完整性；内容未变化且向量齐全时直接跳过，缺失、
 内容变化或模型/维度变化时才重建。
+即使调用方绕过 ingest 直接 `upsert_chunk` 更新内容，存储层也会在同一事务中失效该
+chunk 的旧向量，保证增量索引不会复用过期 embedding。
 
 当前还新增了 Linux P0 `man` 采集器：只接受经过 token 校验的 topic/section，使用
 固定 `man --locale=C -P cat` argv、只读执行策略、`MANPAGER/PAGER/TERM` 固定环境和
