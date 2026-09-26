@@ -8,7 +8,8 @@
 use serde::{Serialize, de::DeserializeOwned};
 
 /// Version negotiated by a Linux Host client and daemon.
-pub const LINUX_IPC_PROTOCOL_VERSION: u16 = 1;
+/// Version 2 adds numbered `Event` replay frames and run-based `Follow`.
+pub const LINUX_IPC_PROTOCOL_VERSION: u16 = 2;
 /// Hard upper bound for a single request or event frame.
 pub const LINUX_IPC_MAX_FRAME_BYTES: usize = 24 * 1024 * 1024;
 

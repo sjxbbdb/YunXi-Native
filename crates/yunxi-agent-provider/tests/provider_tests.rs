@@ -227,19 +227,22 @@ fn openai_request_json_uses_yunxi_provider_messages() {
                 .expect("tool name")
         })
         .collect::<Vec<_>>();
-    assert_eq!(
-        tool_names,
-        vec![
-            "shell",
-            "patch",
-            "mcp",
-            "skill",
-            "multi_agent",
-            "tool_search",
-            "request_user_input",
-            "view_image"
-        ]
-    );
+    let expected_tool_names = vec![
+        "shell",
+        "patch",
+        "mcp",
+        "skill",
+        "multi_agent",
+        "tool_search",
+        "request_user_input",
+        "view_image",
+    ];
+    #[cfg(target_os = "linux")]
+    let expected_tool_names = expected_tool_names
+        .into_iter()
+        .chain(["linux_readonly"])
+        .collect::<Vec<_>>();
+    assert_eq!(tool_names, expected_tool_names);
     assert_eq!(
         tools[0]["function"]["parameters"]["required"],
         json!(["command"])

@@ -32,19 +32,22 @@ fn default_tool_registry_exposes_model_visible_specs() {
         .map(|spec| spec.name)
         .collect::<Vec<_>>();
 
-    assert_eq!(
-        names,
-        vec![
-            ToolName::Shell,
-            ToolName::Patch,
-            ToolName::Mcp,
-            ToolName::Skill,
-            ToolName::MultiAgent,
-            ToolName::ToolSearch,
-            ToolName::RequestUserInput,
-            ToolName::ViewImage
-        ]
-    );
+    let expected = vec![
+        ToolName::Shell,
+        ToolName::Patch,
+        ToolName::Mcp,
+        ToolName::Skill,
+        ToolName::MultiAgent,
+        ToolName::ToolSearch,
+        ToolName::RequestUserInput,
+        ToolName::ViewImage,
+    ];
+    #[cfg(target_os = "linux")]
+    let expected = expected
+        .into_iter()
+        .chain([ToolName::LinuxReadOnly])
+        .collect::<Vec<_>>();
+    assert_eq!(names, expected);
     assert_eq!(
         registry.spec(ToolName::Shell).expect("shell").parameters["required"],
         serde_json::json!(["command"])
@@ -68,24 +71,62 @@ fn default_tool_registry_exports_openai_function_schema() {
         })
         .collect::<Vec<_>>();
 
-    assert_eq!(
-        names,
-        vec![
-            "shell",
-            "patch",
-            "mcp",
-            "skill",
-            "multi_agent",
-            "tool_search",
-            "request_user_input",
-            "view_image"
-        ]
-    );
+    let expected = vec![
+        "shell",
+        "patch",
+        "mcp",
+        "skill",
+        "multi_agent",
+        "tool_search",
+        "request_user_input",
+        "view_image",
+    ];
+    #[cfg(target_os = "linux")]
+    let expected = expected
+        .into_iter()
+        .chain(["linux_readonly"])
+        .collect::<Vec<_>>();
+    assert_eq!(names, expected);
     assert_eq!(tools[0]["type"], "function");
     assert_eq!(
         tools[0]["function"]["parameters"]["properties"]["command"]["type"],
         "string"
     );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn linux_readonly_process_tool_uses_fixed_runner() {
+    let cwd = tempfile::tempdir().expect("tempdir");
+    let request = ToolRequest {
+        id: Some("linux-process-test".to_string()),
+        cwd: cwd.path().to_path_buf(),
+        kind: ToolRequestKind::LinuxReadOnly {
+            operation: "process_list".to_string(),
+            arguments: serde_json::json!({"limit": 3}),
+        },
+        policy: ToolPolicy::trusted(),
+    };
+    let response = CompositeToolRuntime::default()
+        .execute(request)
+        .await
+        .expect("linux readonly tool response");
+    assert!(matches!(
+        response.status,
+        ToolStatus::Completed | ToolStatus::Failed
+    ));
+    assert!(response
+        .runtime_events
+        .iter()
+        .any(|event| matches!(event, ToolRuntimeEvent::LinuxReadOnly { operation, .. } if operation == "process_list")));
+    assert!(response
+        .lifecycle_events
+        .iter()
+        .any(|event| matches!(event, ExecLifecycleEvent::Started { command, .. } if command.starts_with("ps "))));
+    let output = response.output.expect("structured output");
+    let value: serde_json::Value = serde_json::from_str(&output).expect("json output");
+    assert_eq!(value["tool"], "linux_readonly");
+    assert_eq!(value["operation"], "process_list");
 }
 
 #[test]

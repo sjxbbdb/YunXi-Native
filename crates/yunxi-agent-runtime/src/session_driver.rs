@@ -136,6 +136,13 @@ fn approval_command_and_paths(request: &ToolRequest) -> (Option<String>, Vec<Pat
             (Some(format!("request_user_input {prompt}")), Vec::new())
         }
         ToolRequestKind::ViewImage { path } => (Some(format!("view_image {path}")), Vec::new()),
+        ToolRequestKind::LinuxReadOnly {
+            operation,
+            arguments,
+        } => (
+            Some(format!("linux_readonly/{operation} {arguments}")),
+            Vec::new(),
+        ),
     }
 }
 

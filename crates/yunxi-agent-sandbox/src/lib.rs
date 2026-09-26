@@ -1129,10 +1129,14 @@ fn target_within_workspace(root: &Path, cwd: &Path, raw: &str) -> bool {
     let cwd = absolute_normalized(cwd);
     let target = PathBuf::from(raw);
     let target = if target.is_absolute() {
-        normalize_components(&target)
+        target
     } else {
-        normalize_components(&cwd.join(target))
+        cwd.join(target)
     };
+    // Resolve the existing prefix so a workspace-local symlink cannot smuggle a
+    // write target outside the workspace. The final component may not exist yet,
+    // therefore `absolute_normalized` deliberately preserves missing suffixes.
+    let target = absolute_normalized(&target);
     path_has_prefix(&target, &root)
 }
 
@@ -1456,7 +1460,12 @@ mod tests {
             workspace_root: workspace.path().to_path_buf(),
         };
 
-        let parent_escape = policy.evaluate(workspace.path(), Some("echo hi > ..\\outside.txt"));
+        let parent_escape_command = if cfg!(windows) {
+            "echo hi > ..\\outside.txt"
+        } else {
+            "echo hi > ../outside.txt"
+        };
+        let parent_escape = policy.evaluate(workspace.path(), Some(parent_escape_command));
         assert!(matches!(
             parent_escape.decision,
             PolicyDecision::Blocked { ref reason }

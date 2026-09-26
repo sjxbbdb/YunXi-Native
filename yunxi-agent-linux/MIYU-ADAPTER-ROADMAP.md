@@ -93,7 +93,7 @@ Miyu 使用 MIT License。直接复用或实质改写 Miyu 源码时：
 在继续适配前，已对固定版本的 Miyu checkout 做全文件清单和关键路径源码审计，见 [`MIYU-SOURCE-AUDIT.md`](MIYU-SOURCE-AUDIT.md) 与 [`audit/miyu-file-inventory.csv`](audit/miyu-file-inventory.csv)。审计确认 daemon、Web 宿主、运行时、IPC、fish hook 和会话生命周期相互耦合；因此“复制 daemon.rs”或“基础 hook 能跑”都不能视为适配完成。
 
 - fish hook：已有实验实现，**未达到 Miyu 行为等价**；缺 `type -q`、复杂 fallback、PTY 回归和完整安装器保护；
-- Unix daemon：已有基础 socket 原型，**未达到发布标准**；缺协议版本/帧上限/单例锁/Follow/Cancel/断线语义/持久会话；
+- Unix daemon：已补齐协议版本、frame 上限、单例锁、Ping、Cancel 和已完成回合的有界 Follow 回放；**尚未达到发布标准**，活动回合断线续跑、持久会话、build identity 与完整 PTY 验收仍缺失；
 - Linux 工具插件：尚未迁移，必须逐个改写为 YunXi Tool/MCP/Skills；
 - Miyu 数据导入：尚未实现，禁止直接合并两个数据库；
 - zsh/bash：尚未迁移，不在 fish 行为门通过前扩展；

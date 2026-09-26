@@ -4499,6 +4499,15 @@ fn tool_call_started_event(call: yunxi_agent_protocol::ToolCall) -> AgentEvent {
             name: "view_image".to_string(),
             arguments_json: Some(format!(r#"{{"path":{}}}"#, json_string(&path))),
         },
+        yunxi_agent_protocol::ToolCall::LinuxReadOnly {
+            id,
+            operation,
+            arguments_json,
+        } => AgentEvent::ToolCallStarted {
+            id,
+            name: format!("linux_readonly:{operation}"),
+            arguments_json,
+        },
     }
 }
 
@@ -4540,6 +4549,15 @@ fn provider_tool_call_from_protocol(call: ToolCall) -> AgentResult<ProviderToolC
             Ok(ProviderToolCall::RequestUserInput { id, prompt })
         }
         ToolCall::ViewImage { id, path } => Ok(ProviderToolCall::ViewImage { id, path }),
+        ToolCall::LinuxReadOnly {
+            id,
+            operation,
+            arguments_json,
+        } => Ok(ProviderToolCall::LinuxReadOnly {
+            id,
+            operation,
+            arguments_json,
+        }),
     }
 }
 
@@ -4594,6 +4612,11 @@ fn provider_tool_call_from_function(
             id,
             path: required_json_string(&args, "path")?,
         }),
+        "linux_readonly" => Ok(ProviderToolCall::LinuxReadOnly {
+            id,
+            operation: required_json_string(&args, "operation")?,
+            arguments_json: linux_readonly_arguments_json(&args),
+        }),
         other if other.starts_with("skill__") => Ok(ProviderToolCall::Skill {
             id,
             name: optional_json_string(&args, "name")
@@ -4628,6 +4651,7 @@ fn provider_tool_call_id(call: &ProviderToolCall) -> Option<&str> {
         | ProviderToolCall::ToolSearch { id, .. }
         | ProviderToolCall::RequestUserInput { id, .. }
         | ProviderToolCall::ViewImage { id, .. } => id.as_deref(),
+        ProviderToolCall::LinuxReadOnly { id, .. } => id.as_deref(),
     }
 }
 
@@ -4641,6 +4665,7 @@ fn ensure_provider_tool_call_id(call: &mut ProviderToolCall, fallback: String) -
         | ProviderToolCall::ToolSearch { id, .. }
         | ProviderToolCall::RequestUserInput { id, .. }
         | ProviderToolCall::ViewImage { id, .. } => id,
+        ProviderToolCall::LinuxReadOnly { id, .. } => id,
     };
     id.get_or_insert(fallback).clone()
 }
@@ -4662,6 +4687,13 @@ fn optional_json_string(value: &serde_json::Value, key: &str) -> Option<String> 
             .map(ToString::to_string)
             .unwrap_or_else(|| argument.to_string())
     })
+}
+
+fn linux_readonly_arguments_json(value: &serde_json::Value) -> Option<String> {
+    let mut arguments = value.as_object()?.clone();
+    arguments.remove("operation");
+    arguments.remove("arguments_json");
+    (!arguments.is_empty()).then(|| serde_json::Value::Object(arguments).to_string())
 }
 
 fn inject_multi_agent_parent(
@@ -4979,6 +5011,21 @@ fn map_tool_call(
             kind: ToolRequestKind::ViewImage { path },
             policy,
         },
+        ProviderToolCall::LinuxReadOnly {
+            id,
+            operation,
+            arguments_json,
+        } => ToolRequest {
+            id,
+            cwd,
+            kind: ToolRequestKind::LinuxReadOnly {
+                operation,
+                arguments: arguments_json
+                    .and_then(|value| serde_json::from_str(&value).ok())
+                    .unwrap_or_else(|| serde_json::json!({})),
+            },
+            policy,
+        },
     }
 }
 
@@ -5016,6 +5063,10 @@ fn tool_request_command(request: &ToolRequest) -> Option<String> {
             Some(format!("request_user_input {prompt}"))
         }
         ToolRequestKind::ViewImage { path } => Some(format!("view_image {path}")),
+        ToolRequestKind::LinuxReadOnly {
+            operation,
+            arguments,
+        } => Some(format!("linux_readonly/{operation} {arguments}")),
     }
 }
 
@@ -5353,6 +5404,21 @@ where
                 })
                 .await?;
             }
+            ToolRuntimeEvent::LinuxReadOnly {
+                operation,
+                status,
+                command,
+                exit_code,
+                truncated,
+            } => {
+                sink.emit(AgentEvent::Reasoning {
+                    content: format!(
+                        "Linux read-only tool: operation={operation}, status={status}, exit_code={}, truncated={truncated}, command={command}",
+                        exit_code.map_or_else(|| "none".to_string(), |code| code.to_string())
+                    ),
+                })
+                .await?;
+            }
         }
     }
     Ok(())
@@ -5482,6 +5548,23 @@ where
             })
             .await
         }
+        ToolRequestKind::LinuxReadOnly {
+            operation,
+            arguments,
+        } => {
+            sink.emit(AgentEvent::ToolCallStarted {
+                id: request.id.clone(),
+                name: "linux_readonly".to_string(),
+                arguments_json: Some(
+                    serde_json::json!({
+                        "operation": operation,
+                        "arguments": arguments,
+                    })
+                    .to_string(),
+                ),
+            })
+            .await
+        }
     }
 }
 
@@ -5572,6 +5655,15 @@ where
             sink.emit(AgentEvent::ToolCallCompleted {
                 id: response.id.clone(),
                 name: "view_image".to_string(),
+                output: render_tool_response(response),
+                status: map_tool_response_status(response),
+            })
+            .await
+        }
+        ToolRequestKind::LinuxReadOnly { operation, .. } => {
+            sink.emit(AgentEvent::ToolCallCompleted {
+                id: response.id.clone(),
+                name: format!("linux_readonly:{operation}"),
                 output: render_tool_response(response),
                 status: map_tool_response_status(response),
             })

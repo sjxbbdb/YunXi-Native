@@ -89,7 +89,7 @@ Miyu 是重要的架构和源码参照，但不是第二个 Runtime。所有吸�
 - 只拦截明确的自然语言意图，已知命令、alias、function 和带 shell 语法的输入交给 fish；
 - 保留原始输入、当前 cwd、终端尺寸、环境摘要和命令历史的边界，不把完整环境变量写入日志；
 - 支持多行、Ctrl+J、粘贴、光标重绘、PTY resize、Ctrl+C 和 Ctrl+D；
-- 通过事件 id、origin、session id 防止重复执行、回显错位和跨终端串线；
+- 通过事件 id、origin、session id 防止重复执行、回显错位和跨终端串线；fish hook 使用当前 fish 进程派生的 session id，不再仅按 cwd 共享上下文；
 - 所有自然语言执行结果都返回“做了什么、实际命令、退出码、变更摘要、下一步”。
 
 ### 4.3 Linux 工具层
@@ -261,12 +261,14 @@ knowledge_fts
 - 完成用户级单例锁、socket 权限、PID/start-time 检查和 graceful shutdown；
 - 提供 `systemd --user` 单元与无 systemd 启动路径。
 
+当前已提供 `yunxi-linux systemd-unit` 输出模板、用户级服务示例、SIGTERM/SIGINT 清理路径、PID/start-time 锁校验，以及有界的“已完成回合”事件游标回放；daemon lock metadata 采用临时文件同步后硬链接抢占，损坏 metadata 不会被直接删除。活动回合断线续跑仍不支持，真实 PTY 矩阵由 Phase 2 的 smoke 先行覆盖。
+
 **门槛**：并发启动、陈旧锁、权限、断线、重连、过期游标和 daemon 崩溃恢复测试通过。
 
 ### Phase 2：fish 原生接管
 
 - 完成首词分类、`type -q`、多行、粘贴、Ctrl+J、command-not-found 和嵌套命令边界；
-- 建立真实 fish PTY 测试矩阵；
+- 已建立真实 fish PTY smoke，覆盖 alias/function、中文自然语言、Ctrl+J、多行、命令替换、重定向和管道；继续扩展为完整行为矩阵；
 - 记录 cwd/session/origin，保证 Shell 回显和 YunXi 结果不重叠。
 
 **门槛**：普通命令零误拦截，自然语言零重复执行，PTY resize/中断/退出码一致。
@@ -276,6 +278,8 @@ knowledge_fts
 - 按只读 → 预览 → 可回滚 → 高风险修改顺序接入工具；
 - 建立 pacman/systemd/man/process/network 的 ToolSpec、审批策略和审计事件；
 - 可选吸收 Landlock backend，不改变 YunXi 策略层。
+
+**当前增量**：已先落地 `linux_readonly` 固定 ToolSpec，覆盖 `systemd_status`、`man_page`、`process_list` 和 `network_snapshot` 四类本机只读查询。参数经过严格 schema 与 token 校验，执行使用固定 argv 的 `DirectProcessRunner`，不经过 `sh -c`，输出限制为 64 KiB，并记录 Linux tool runtime event。工具仍进入现有 `ToolRouter`、`ToolPolicy`、审批与沙盒诊断链路；缺少发行版工具时返回结构化 `unavailable`，不会把缺包误报为执行成功。当前 CLI 的 `linux-tool` 仍是便捷探针，通用 Runtime ToolSpec 是模型可见的正式入口。
 
 **门槛**：每个工具有 schema、权限矩阵、错误恢复、单元测试和至少一个真实 Linux 验收脚本。
 

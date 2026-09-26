@@ -15,7 +15,7 @@
 | 能力 | Miyu | YunXi | Linux 决策 |
 |---|---|---|---|
 | TUI 对话 | 已有，普通模式与 Dev 模式 | 已有，统一 Runtime 事件流 | 已接入，保留 YunXi TUI |
-| fish 接管 | 已有，完整 Enter hook、原始首词判断、多行、兜底 | 主项目此前没有 Linux 原生 fish 宿主 | 已有实验实现；行为等价待真实 fish PTY 验收 |
+| fish 接管 | 已有，完整 Enter hook、原始首词判断、多行、运行时命令识别、兜底 | 主项目此前没有 Linux 原生 fish 宿主 | 已有实验实现；复杂语法和完整 PTY 矩阵仍待验收 |
 | zsh 接管 | 已有，单行集成 | 暂无 Linux 版实现 | 后续可移植，不与 fish 共用未经验证的 hook |
 | bash 接管 | 已有，单行集成 | 暂无 Linux 版实现 | 后续可移植 |
 | Web UI | 已有 | 已有 | 暂不纳入 Linux 版 |
@@ -30,13 +30,13 @@
 | 原始首词分类 | `commandline --tokens-raw`，避免命令替换和 glob 副作用 | 已按同样思路实现 | 需要继续覆盖更多 fish 语法边界 |
 | 普通命令放行 | 可识别命令原样交给 fish | 已实现 | 保持 fish 作为最终执行者 |
 | 自然语言转发 | 未识别命令转 daemon | 已实现 | 由 YunXi Runtime 处理人格、记忆和工具 |
-| `fish_command_not_found` | 第二道兜底 | 已实现 | 需要继续做 fish 实机回归 |
+| `fish_command_not_found` | 第二道兜底 | 已实现保守分支 | 需要覆盖复合命令、未知命令和 127 退出码 |
 | 多行输入 | 完整处理 | 基础实现 | 后续补齐提示符重绘和复杂语法判断 |
 | Ctrl+J 换行 | 已有 | 已接入 | 保持一致 |
 | 剪贴板/附件 | fish hook 内置粘贴处理 | 暂无 Linux 版附件协议 | 需要先定义 YunXi 附件模型 |
 | 历史记录 | 接管输入可写入 Miyu 历史 | Runtime 有会话历史 | 需要统一 fish 历史与 YunXi 会话记录的边界 |
 | 提示符与光标 | Miyu 处理光标隐藏、提示符重绘、AI 输入回放 | 基础输出已实现 | 可移植，但需单独做终端兼容性测试 |
-| Unix socket | 已有成熟 IPC、协议版本和单例生命周期 | 已实现基础 socket daemon | 需要补协议版本、24 MiB frame 上限、锁、Ping、Follow、Cancel |
+| Unix socket | 已有成熟 IPC、协议版本和单例生命周期 | 已实现版本化 socket daemon、有界完成回合回放、Ping、Cancel 契约 | 活动回合断线续跑、过期游标与真实客户端矩阵仍需验收 |
 | 断线继续 | 可重连客户端继续；one-shot CLI/shellhook 断线取消 | 当前连接断开时生命周期不完整 | 按客户端类型分别实现，不能统一写成“断线继续” |
 | 会话续接 | 终端会话、命名会话、Normal/Dev 车道 | YunXi 父子 session 与本地存储 | 需要建立 fish origin → YunXi session 的持久映射 |
 
@@ -65,6 +65,7 @@
 | Skills | 有 persona 级技能资源 | Skills crate 与技能路由 | 直接复用 YunXi |
 | 多 Agent | Dev/后台任务/子代理 | Multi-agent Runtime | 直接复用 YunXi，后续接 daemon 后台任务 |
 | Linux/Arch 专用工具 | AUR、Arch Wiki、PKGBUILD、Man、ProtonDB、游戏兼容性 | 当前没有同等专用插件集合 | 可增加为 YunXi Linux Skills，不直接复制 Miyu 插件状态模型 |
+| Linux 只读主机 ToolSpec | systemd、Man、process、network 通过插件/工具层 | `linux_readonly` 固定 argv ToolSpec，沿用 Approval/Sandbox/Audit | 已接入四类观察能力；修改类工具仍需单独设计 |
 | 网络搜索/网页读取 | 内置或可选搜索服务 | 由 MCP/工具能力承载 | 先保持 YunXi Provider/工具边界 |
 | 天气/汇率/闹钟 | 作为内置插件 | 不是当前核心 Runtime 能力 | 后续作为可选 Skills，不进入第一版核心 |
 | 生图/搜图/视觉 | 由插件和多模态模型提供 | 非 Arch TUI 第一阶段目标 | 暂不纳入 |
@@ -90,7 +91,7 @@
 - 用户级 Unix socket daemon 的协议、单例锁和生命周期模型；
 - daemon 与客户端分离，支持审批/用户输入事件；
 - Linux 上使用 XDG runtime/state 路径；
-- 后续增加协议版本、单例锁、Follow、Cancel 和断线恢复。
+- 已增加协议版本、单例锁、Follow（仅已完成回合的有界回放）和 Cancel；活动回合断线恢复仍待实现。
 
 ### 保留 YunXi 作为唯一真相源
 
@@ -112,9 +113,9 @@
 
 - Arch TUI：已有。
 - XDG 存储目录：已有。
-- fish hook 基础接管：已有实验实现，尚未通过 Miyu 行为等价和真实 fish PTY 验收。
-- Unix socket daemon：已有基础实现，尚未补齐协议版本、frame 上限、单例锁、Follow/Cancel 和断线语义。
-- daemon 断线续跑、Follow/Cancel、协议版本与持久化会话映射：待实现。
+- fish hook 基础接管：已有实验实现，已通过真实 fish + PTY smoke；尚未完成 Miyu 行为等价和完整 PTY 矩阵。
+- Unix socket daemon：已补齐协议版本、frame 上限、单例锁、Ping、Cancel，以及已完成回合的有界 Follow 回放；活动回合断线续跑仍未实现。
+- daemon 活动回合断线续跑、过期游标和持久化会话映射：待实现。
 - Miyu Linux 专用 Skills：待评估，不在核心 Runtime 中硬编码。
 
 这份矩阵不是把两个项目合并成一个产品，而是定义 YunXi Native 的适配边界：宿主层可以借鉴成熟实现，Runtime、人格、记忆和安全语义仍由 YunXi 负责，避免 Linux 版在扩展时失去一致性。

@@ -71,6 +71,12 @@ fish / TUI / future terminal clients
 
 Linux Host 负责终端接入、daemon 生命周期、IPC、事件回放和 Linux 路径；Runtime 负责真正的 Agent 能力。二者不能互相复制人格、记忆或权限逻辑。
 
+### Linux 系统工具层（当前增量）
+
+Linux 版已经开始把系统能力接入为固定的 `linux_readonly` ToolSpec：`systemd_status`、`man_page`、`process_list`、`network_snapshot`。它们只读本机状态，使用严格的 JSON schema、参数白名单和固定 argv 直接进程执行，不经过 `sh -c`，并沿用 YunXi 既有的 ToolRouter、ToolPolicy、审批、沙盒诊断和审计事件。缺少发行版工具时返回结构化 `unavailable`，不会自动改用任意 shell 命令。
+
+这条边界是 Linux 原生交互的第一步：先让 YunXi 能可靠地理解并观察系统，再进入预览、可回滚修改和高风险操作。CLI 还提供 `yunxi-linux linux-tool describe|processes|network|systemd-status|man` 作为本机诊断入口；它与 Runtime ToolSpec 同样禁止写入和任意命令拼接。
+
 ## 仓库结构
 
 ```text
@@ -146,7 +152,30 @@ git status                     → 交给 fish
 解释一下这个编译错误             → 交给 YunXi
 ```
 
-当前 hook 仍处于 Linux-native foundation 阶段。真正发布前还必须通过：function/alias、glob/命令替换、多行、Ctrl+J、`command_not_found`、嵌套命令返回 127、终端尺寸变化、PTY 断线和 daemon 重启测试。
+当前 hook 仍处于 Linux-native foundation 阶段。已覆盖 fish 运行时 alias/function、中文自然语言、Ctrl+J 多行的真实 PTY smoke；真正发布前还必须通过 glob/命令替换、`command_not_found`、嵌套命令返回 127、终端尺寸变化、PTY 断线和 daemon 重启测试。
+
+## systemd 用户服务
+
+Linux 版同时提供不依赖 systemd 的手动/按需启动路径，以及可选的 `systemd --user` 常驻方式。先把 release binary 放到约定位置，再安装 unit：
+
+```bash
+install -Dm755 target/release/yunxi-linux ~/.local/bin/yunxi-linux
+mkdir -p ~/.config/systemd/user
+yunxi-linux systemd-unit > ~/.config/systemd/user/yunxi-linux.service
+systemctl --user daemon-reload
+systemctl --user enable --now yunxi-linux.service
+```
+
+查看、停止和移除：
+
+```bash
+systemctl --user status yunxi-linux.service
+journalctl --user -u yunxi-linux.service -f
+systemctl --user disable --now yunxi-linux.service
+rm -f ~/.config/systemd/user/yunxi-linux.service
+```
+
+该 unit 以当前用户运行，不使用 root，不开放 TCP；daemon 自己仍负责 Unix socket、单例锁、审批和会话。没有 `systemd --user` 的环境继续使用 `yunxi-linux daemon` 或 fish hook 的按需拉起路径。
 
 ## 安全边界
 

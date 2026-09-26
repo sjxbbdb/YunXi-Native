@@ -198,6 +198,11 @@ pub enum ProviderToolCall {
         id: Option<String>,
         path: String,
     },
+    LinuxReadOnly {
+        id: Option<String>,
+        operation: String,
+        arguments_json: Option<String>,
+    },
 }
 
 impl From<ProviderToolCall> for ToolCall {
@@ -239,6 +244,15 @@ impl From<ProviderToolCall> for ToolCall {
                 Self::RequestUserInput { id, prompt }
             }
             ProviderToolCall::ViewImage { id, path } => Self::ViewImage { id, path },
+            ProviderToolCall::LinuxReadOnly {
+                id,
+                operation,
+                arguments_json,
+            } => Self::LinuxReadOnly {
+                id,
+                operation,
+                arguments_json,
+            },
         }
     }
 }
@@ -2271,6 +2285,15 @@ fn provider_tool_call_request_json(tool_call: &ProviderToolCall, index: usize) -
             "view_image",
             json!({"path": path}).to_string(),
         ),
+        ProviderToolCall::LinuxReadOnly {
+            id,
+            operation,
+            arguments_json,
+        } => (
+            id.as_deref(),
+            "linux_readonly",
+            linux_readonly_request_arguments(operation, arguments_json.clone()),
+        ),
     };
     json!({
         "id": id.map(ToString::to_string).unwrap_or_else(|| format!("yunxi-call-{index}")),
@@ -2916,6 +2939,11 @@ fn parse_openai_tool_call(
             id,
             path: required_string(&args, "path")?,
         }),
+        "linux_readonly" => Ok(ProviderToolCall::LinuxReadOnly {
+            id,
+            operation: required_string(&args, "operation")?,
+            arguments_json: linux_readonly_arguments_json(&args),
+        }),
         other if other.starts_with("skill__") => Ok(ProviderToolCall::Skill {
             id,
             name: optional_json_argument(&args, "name")
@@ -2947,6 +2975,27 @@ fn optional_json_argument(value: &Value, key: &str) -> Option<String> {
             .map(ToString::to_string)
             .unwrap_or_else(|| argument.to_string())
     })
+}
+
+fn linux_readonly_arguments_json(value: &Value) -> Option<String> {
+    let mut arguments = value.as_object()?.clone();
+    arguments.remove("operation");
+    arguments.remove("arguments_json");
+    (!arguments.is_empty()).then(|| Value::Object(arguments).to_string())
+}
+
+fn linux_readonly_request_arguments(operation: &str, arguments_json: Option<String>) -> String {
+    let mut arguments = serde_json::Map::new();
+    arguments.insert(
+        "operation".to_string(),
+        Value::String(operation.to_string()),
+    );
+    if let Some(raw) = arguments_json {
+        if let Ok(Value::Object(extra)) = serde_json::from_str::<Value>(&raw) {
+            arguments.extend(extra.into_iter().filter(|(key, _)| key != "operation"));
+        }
+    }
+    Value::Object(arguments).to_string()
 }
 
 fn required_string(value: &Value, key: &str) -> AgentResult<String> {

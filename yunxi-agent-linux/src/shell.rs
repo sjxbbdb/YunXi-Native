@@ -14,7 +14,7 @@ use clap::Subcommand;
 #[cfg(unix)]
 use serde::{Deserialize, Serialize};
 #[cfg(unix)]
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::fs;
 #[cfg(unix)]
 use std::io::Write;
@@ -23,11 +23,15 @@ use std::path::{Path, PathBuf};
 #[cfg(unix)]
 use std::sync::Arc;
 #[cfg(unix)]
+use std::sync::atomic::{AtomicU64, Ordering};
+#[cfg(unix)]
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 #[cfg(unix)]
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 #[cfg(unix)]
 use tokio::net::{UnixListener, UnixStream};
+#[cfg(unix)]
+use tokio::signal::unix::{SignalKind, signal};
 #[cfg(unix)]
 use tokio::sync::{Mutex, mpsc};
 #[cfg(unix)]
@@ -44,6 +48,10 @@ use yunxi_agent_protocol::linux_ipc::{
 };
 #[cfg(unix)]
 use yunxi_agent_runtime::YunXiRuntimeBackend;
+
+#[path = "linux_tools.rs"]
+mod linux_tools;
+use linux_tools::LinuxToolCommand;
 
 const HOOK_MARKER: &str = "# YunXi Agent fish hook";
 
@@ -70,6 +78,9 @@ pub(crate) enum LinuxShellCommand {
         shell: String,
         #[arg(long)]
         stdin: bool,
+        /// Stable identity of the interactive shell that submitted this turn.
+        #[arg(long)]
+        session_id: Option<String>,
         #[arg(long, default_value = ".")]
         cwd: PathBuf,
         #[arg(long)]
@@ -80,6 +91,13 @@ pub(crate) enum LinuxShellCommand {
         provider: Option<String>,
         #[arg(long)]
         model: Option<String>,
+    },
+    /// Print the user-level systemd unit used to host the daemon.
+    SystemdUnit,
+    /// Run a bounded read-only Linux host probe.
+    LinuxTool {
+        #[command(subcommand)]
+        command: LinuxToolCommand,
     },
     /// Hidden long-lived process used by shell-intercept.
     #[command(hide = true)]
@@ -101,6 +119,7 @@ pub(crate) async fn run_command(command: LinuxShellCommand) -> Result<()> {
         LinuxShellCommand::ShellIntercept {
             shell,
             stdin,
+            session_id,
             cwd,
             offline,
             live,
@@ -108,11 +127,21 @@ pub(crate) async fn run_command(command: LinuxShellCommand) -> Result<()> {
             model,
         } => {
             let input = read_shell_input(stdin)?;
-            run_shell_intercept(shell, cwd, input, offline, live, provider, model).await
+            run_shell_intercept(
+                shell, session_id, cwd, input, offline, live, provider, model,
+            )
+            .await
         }
+        LinuxShellCommand::SystemdUnit => {
+            print!("{SYSTEMD_UNIT}");
+            Ok(())
+        }
+        LinuxShellCommand::LinuxTool { command } => linux_tools::run(command),
         LinuxShellCommand::Daemon => run_daemon().await,
     }
 }
+
+const SYSTEMD_UNIT: &str = include_str!("../packaging/systemd/yunxi-linux.service");
 
 fn read_shell_input(stdin: bool) -> Result<String> {
     if stdin {
@@ -199,8 +228,24 @@ set -g __yunxi_binary "{binary}"
 
 function __yunxi_head_is_plain_word
     test -n "$argv[1]"; or return 1
-    string match -qr '[\x27"$()~{{}}%;&|<>#^!\\\s]' -- "$argv[1]"; and return 1
+    string match -qr '[\x27\x22$()~{{}}%;&|<>#^!\x5c[:space:]]' -- "$argv[1]"; and return 1
     return 0
+end
+
+function __yunxi_line_is_plain_prose
+    test -n "$argv[1]"; or return 1
+    string match -qr '[\x27\x22$()~{{}}%;&|<>#^!\x5c]' -- "$argv[1]"; and return 1
+    return 0
+end
+
+function __yunxi_line_has_cjk
+    string match -qr '[\x{{4e00}}-\x{{9fff}}]' -- "$argv[1]"
+end
+
+function __yunxi_fish_knows_head
+    __yunxi_head_is_plain_word "$argv[1]"; or return 1
+    functions -q -- "$argv[1]"; and return 0
+    type -q -- "$argv[1]"
 end
 
 function __yunxi_first_token_raw
@@ -212,6 +257,14 @@ function __yunxi_first_token_raw
             continue
         end
         printf '%s' "$token"
+        return 0
+    end
+    # Fish's token parser can return no token for a runtime-defined alias or
+    # function in an interactive commandline. Fall back to the first lexical
+    # word without evaluating expansions so those commands still stay in fish.
+    set -l fallback (string replace -r '^[[:space:]]*([^[:space:]]+).*' '$1' -- "$argv[1]")
+    if test -n "$fallback"
+        printf '%s' "$fallback"
         return 0
     end
     return 1
@@ -254,6 +307,20 @@ function __yunxi_accept_line
     end
     if not __yunxi_buffer_is_multiline "$buffer"
         set -l head (__yunxi_first_token_raw "$buffer")
+        if test (count $head) -eq 0
+            if __yunxi_line_is_plain_prose "$buffer"
+                __yunxi_hand_to_ai "$buffer"
+                return
+            end
+        end
+        if __yunxi_fish_knows_head "$head"
+            __yunxi_execute_or_continue
+            return
+        end
+        if __yunxi_line_has_cjk "$buffer"; and __yunxi_line_is_plain_prose "$buffer"
+            __yunxi_hand_to_ai "$buffer"
+            return
+        end
         if __yunxi_head_is_plain_word "$head"
             printf '%s' "$buffer" | "$__yunxi_binary" shell-classify --shell fish --stdin >/dev/null 2>/dev/null
             if test $status -eq 1
@@ -261,6 +328,11 @@ function __yunxi_accept_line
                 return
             end
         end
+        __yunxi_execute_or_continue
+        return
+    end
+    set -l head (__yunxi_first_token_raw "$buffer")
+    if __yunxi_fish_knows_head "$head"
         __yunxi_execute_or_continue
         return
     end
@@ -286,17 +358,25 @@ function __yunxi_on_prompt --on-event fish_prompt
     set -l buffer $__yunxi_pending_buffer
     set -e __yunxi_pending_buffer
     printf '\n'
-    printf '%s' "$buffer" | "$__yunxi_binary" shell-intercept --shell fish --cwd "$PWD" --stdin
+    printf '%s' "$buffer" | "$__yunxi_binary" shell-intercept --shell fish --session-id "fish-"$fish_pid --cwd "$PWD" --stdin
 end
 
 function fish_command_not_found
     status is-interactive; or return 127
     set -l current_line (status current-commandline 2>/dev/null | string collect)
-    if test -n "$current_line"
+    test -n "$current_line"; or return 127
+    __yunxi_buffer_is_multiline "$current_line"; and return 127
+    set -l head (__yunxi_first_token_raw "$current_line")
+    if test (count $head) -eq 0
+        __yunxi_line_is_plain_prose "$current_line"; or return 127
         printf '\n'
-        printf '%s' "$current_line" | "$__yunxi_binary" shell-intercept --shell fish --cwd "$PWD" --stdin
+        printf '%s' "$current_line" | "$__yunxi_binary" shell-intercept --shell fish --session-id "fish-"$fish_pid --cwd "$PWD" --stdin
         return 127
     end
+    __yunxi_fish_knows_head "$head"; and return 127
+    __yunxi_head_is_plain_word "$head"; or return 127
+    printf '\n'
+    printf '%s' "$current_line" | "$__yunxi_binary" shell-intercept --shell fish --session-id "fish-"$fish_pid --cwd "$PWD" --stdin
     return 127
 end
 "#
@@ -533,7 +613,17 @@ enum ClientFrame {
         request_id: String,
     },
     Follow {
-        session_id: String,
+        /// New clients identify the completed turn directly.
+        #[serde(default)]
+        run_id: Option<String>,
+        /// Legacy clients may still send their old session id field. The
+        /// shell-intercept command never sends Follow, so this keeps the
+        /// command-line path source-compatible while the replay contract
+        /// moves to run ids.
+        #[serde(default)]
+        session_id: Option<String>,
+        #[serde(default)]
+        after_seq: u64,
     },
     ApprovalResponse {
         id: Option<String>,
@@ -547,7 +637,7 @@ enum ClientFrame {
 }
 
 #[cfg(unix)]
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 enum ServerFrame {
     HelloAck {
@@ -557,6 +647,16 @@ enum ServerFrame {
     },
     Pong {
         request_id: Option<String>,
+    },
+    RunAccepted {
+        run_id: String,
+    },
+    /// Numbered output event. The wrapper lets a reconnecting client persist
+    /// the exact cursor it has consumed without guessing from payloads.
+    Event {
+        run_id: String,
+        seq: u64,
+        frame: Box<ServerFrame>,
     },
     Thread {
         thread_id: String,
@@ -579,12 +679,203 @@ enum ServerFrame {
         status: String,
     },
     ResyncRequired {
-        session_id: String,
+        run_id: String,
         reason: String,
     },
     Error {
         message: String,
     },
+}
+
+#[cfg(unix)]
+const REPLAY_MAX_RUNS: usize = 128;
+
+#[cfg(unix)]
+const REPLAY_MAX_ACTIVE_RUNS: usize = 16;
+
+#[cfg(unix)]
+const REPLAY_MAX_EVENTS_PER_RUN: usize = 64;
+
+#[cfg(unix)]
+const REPLAY_MAX_BYTES_PER_RUN: usize = 2 * 1024 * 1024;
+
+/// An event retained for a completed run. Only user-visible output is kept;
+/// approvals and user-input prompts are intentionally excluded because they
+/// are tied to an active connection and cannot be safely replayed later.
+#[cfg(unix)]
+#[derive(Debug, Clone)]
+struct ReplayEvent {
+    seq: u64,
+    bytes: usize,
+    frame: ServerFrame,
+}
+
+#[cfg(unix)]
+#[derive(Debug, Default)]
+struct ReplayRun {
+    next_seq: u64,
+    events: VecDeque<ReplayEvent>,
+    event_bytes: usize,
+    complete: bool,
+}
+
+#[cfg(unix)]
+#[derive(Debug)]
+enum ReplayLookup {
+    Unknown,
+    Active,
+    Stale,
+    Events(Vec<ReplayEvent>),
+}
+
+#[cfg(unix)]
+#[derive(Debug)]
+struct ReplayStore {
+    runs: HashMap<String, ReplayRun>,
+    completed_order: VecDeque<String>,
+    max_runs: usize,
+    max_active_runs: usize,
+    max_events_per_run: usize,
+    max_bytes_per_run: usize,
+}
+
+#[cfg(unix)]
+impl Default for ReplayStore {
+    fn default() -> Self {
+        Self {
+            runs: HashMap::new(),
+            completed_order: VecDeque::new(),
+            max_runs: REPLAY_MAX_RUNS,
+            max_active_runs: REPLAY_MAX_ACTIVE_RUNS,
+            max_events_per_run: REPLAY_MAX_EVENTS_PER_RUN,
+            max_bytes_per_run: REPLAY_MAX_BYTES_PER_RUN,
+        }
+    }
+}
+
+#[cfg(unix)]
+impl ReplayStore {
+    fn begin(&mut self, run_id: &str) -> bool {
+        if self.runs.values().filter(|run| !run.complete).count() >= self.max_active_runs {
+            return false;
+        }
+        self.runs.insert(run_id.to_string(), ReplayRun::default());
+        true
+    }
+
+    fn discard(&mut self, run_id: &str) {
+        self.runs.remove(run_id);
+        self.completed_order.retain(|id| id != run_id);
+    }
+
+    fn record(&mut self, run_id: &str, frame: &ServerFrame) -> Option<u64> {
+        let run = self.runs.get_mut(run_id)?;
+        if run.complete || !is_replayable_frame(frame) {
+            return None;
+        }
+        let bytes = serde_json::to_vec(frame).ok()?.len();
+        if self.max_events_per_run == 0 {
+            return None;
+        }
+        run.next_seq = run.next_seq.saturating_add(1);
+        let seq = run.next_seq;
+        // Keep an oversized event as the sole ring entry. Dropping it and
+        // sending an unnumbered frame would make completed-run replay
+        // silently lossy.
+        while run.events.len() >= self.max_events_per_run
+            || (bytes <= self.max_bytes_per_run
+                && run.event_bytes.saturating_add(bytes) > self.max_bytes_per_run)
+        {
+            let Some(evicted) = run.events.pop_front() else {
+                break;
+            };
+            run.event_bytes = run.event_bytes.saturating_sub(evicted.bytes);
+        }
+        run.events.push_back(ReplayEvent {
+            seq,
+            bytes,
+            frame: frame.clone(),
+        });
+        run.event_bytes = run.event_bytes.saturating_add(bytes);
+        Some(seq)
+    }
+
+    fn finish(&mut self, run_id: &str) {
+        let Some(run) = self.runs.get_mut(run_id) else {
+            return;
+        };
+        run.complete = true;
+        self.completed_order.push_back(run_id.to_string());
+        while self.completed_order.len() > self.max_runs {
+            if let Some(evicted) = self.completed_order.pop_front() {
+                self.runs.remove(&evicted);
+            }
+        }
+    }
+
+    fn lookup(&self, run_id: &str, after_seq: u64) -> ReplayLookup {
+        let Some(run) = self.runs.get(run_id) else {
+            return ReplayLookup::Unknown;
+        };
+        if !run.complete {
+            return ReplayLookup::Active;
+        }
+        let Some(oldest) = run.events.front().map(|event| event.seq) else {
+            return ReplayLookup::Events(Vec::new());
+        };
+        if after_seq < oldest.saturating_sub(1) {
+            return ReplayLookup::Stale;
+        }
+        ReplayLookup::Events(
+            run.events
+                .iter()
+                .filter(|event| event.seq > after_seq)
+                .cloned()
+                .collect(),
+        )
+    }
+}
+
+#[cfg(unix)]
+struct ReplayRunGuard {
+    replays: Arc<Mutex<ReplayStore>>,
+    run_id: String,
+}
+
+#[cfg(unix)]
+impl ReplayRunGuard {
+    fn new(replays: Arc<Mutex<ReplayStore>>, run_id: String) -> Self {
+        Self { replays, run_id }
+    }
+
+    async fn finish(self) {
+        self.replays.lock().await.finish(&self.run_id);
+    }
+
+    async fn discard(self) {
+        self.replays.lock().await.discard(&self.run_id);
+    }
+}
+
+#[cfg(unix)]
+static REQUEST_ID_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+#[cfg(unix)]
+fn new_request_id() -> String {
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let counter = REQUEST_ID_COUNTER.fetch_add(1, Ordering::Relaxed);
+    format!("{}-{timestamp}-{counter}", std::process::id())
+}
+
+#[cfg(unix)]
+fn is_replayable_frame(frame: &ServerFrame) -> bool {
+    matches!(
+        frame,
+        ServerFrame::Thread { .. } | ServerFrame::Message { .. } | ServerFrame::Done { .. }
+    )
 }
 
 #[cfg(unix)]
@@ -655,19 +946,20 @@ fn daemon_lock_path(socket: &Path) -> PathBuf {
 }
 
 #[cfg(unix)]
-fn new_request_id() -> String {
-    let timestamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
-    format!("{}-{timestamp}", std::process::id())
-}
-
-#[cfg(unix)]
 struct DaemonLock {
     path: PathBuf,
     _file: fs::File,
 }
+
+#[cfg(unix)]
+#[derive(Debug, Serialize, Deserialize)]
+struct DaemonLockMetadata {
+    pid: u32,
+    start_time_ticks: Option<u64>,
+}
+
+#[cfg(unix)]
+static DAEMON_LOCK_TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 #[cfg(unix)]
 impl Drop for DaemonLock {
@@ -679,27 +971,20 @@ impl Drop for DaemonLock {
 #[cfg(unix)]
 fn acquire_daemon_lock(path: &Path) -> Result<DaemonLock> {
     for _ in 0..2 {
-        match fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(path)
-        {
-            Ok(mut file) => {
-                writeln!(file, "{}", std::process::id())?;
-                restrict_mode(path, 0o600)?;
-                return Ok(DaemonLock {
-                    path: path.to_path_buf(),
-                    _file: file,
-                });
-            }
+        match try_create_daemon_lock(path) {
+            Ok(lock) => return Ok(lock),
             Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
-                let owner = fs::read_to_string(path)
-                    .ok()
-                    .and_then(|value| value.trim().parse::<u32>().ok());
-                if let Some(pid) = owner {
-                    if process_alive(pid) {
-                        bail!("YunXi shell daemon 已在运行（pid {pid}）");
-                    }
+                let value = fs::read_to_string(path).with_context(|| {
+                    format!("读取 YunXi daemon lock metadata 失败: {}", path.display())
+                })?;
+                let (pid, start_time_ticks) = parse_daemon_lock_owner(&value).ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "YunXi daemon lock metadata 无效，拒绝删除锁: {}",
+                        path.display()
+                    )
+                })?;
+                if process_alive(pid, start_time_ticks) {
+                    bail!("YunXi shell daemon 已在运行（pid {pid}）");
                 }
                 fs::remove_file(path).with_context(|| {
                     format!("删除失效 YunXi daemon lock 失败: {}", path.display())
@@ -715,15 +1000,95 @@ fn acquire_daemon_lock(path: &Path) -> Result<DaemonLock> {
 }
 
 #[cfg(unix)]
-fn process_alive(pid: u32) -> bool {
+fn try_create_daemon_lock(path: &Path) -> io::Result<DaemonLock> {
+    let temp_path = daemon_lock_temp_path(path);
+    let result = (|| {
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temp_path)?;
+        let metadata = DaemonLockMetadata {
+            pid: std::process::id(),
+            start_time_ticks: process_start_time(std::process::id()),
+        };
+        serde_json::to_writer(&mut file, &metadata).map_err(|error| {
+            io::Error::other(format!("写入 daemon lock metadata 失败: {error}"))
+        })?;
+        file.write_all(b"\n")?;
+        file.sync_all()?;
+        restrict_mode(&temp_path, 0o600)
+            .map_err(|error| io::Error::other(format!("设置 daemon lock 权限失败: {error}")))?;
+
+        // hard_link creates the final name without replacing an existing lock.
+        // This makes the fully-written metadata visible at the same moment as
+        // ownership is claimed, while preserving create-new semantics.
+        fs::hard_link(&temp_path, path)?;
+        let _ = fs::remove_file(&temp_path);
+        Ok(DaemonLock {
+            path: path.to_path_buf(),
+            _file: file,
+        })
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&temp_path);
+    }
+    result
+}
+
+#[cfg(unix)]
+fn daemon_lock_temp_path(path: &Path) -> PathBuf {
+    let counter = DAEMON_LOCK_TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let mut name = path
+        .file_name()
+        .unwrap_or_else(|| std::ffi::OsStr::new("yunxi-daemon.lock"))
+        .to_os_string();
+    name.push(format!(".{}.{}.tmp", std::process::id(), counter));
+    path.with_file_name(name)
+}
+
+#[cfg(unix)]
+fn parse_daemon_lock_owner(value: &str) -> Option<(u32, Option<u64>)> {
+    serde_json::from_str::<DaemonLockMetadata>(value)
+        .map(|metadata| (metadata.pid, metadata.start_time_ticks))
+        .or_else(|_| value.trim().parse::<u32>().map(|pid| (pid, None)))
+        .ok()
+}
+
+#[cfg(unix)]
+fn process_alive(pid: u32, expected_start_time: Option<u64>) -> bool {
     #[cfg(target_os = "linux")]
     {
-        return Path::new("/proc").join(pid.to_string()).exists();
+        if !Path::new("/proc").join(pid.to_string()).exists() {
+            return false;
+        }
+        return expected_start_time
+            .map(|expected| process_start_time(pid) == Some(expected))
+            .unwrap_or(true);
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (pid, expected_start_time);
+        true
+    }
+}
+
+#[cfg(unix)]
+fn process_start_time(pid: u32) -> Option<u64> {
+    #[cfg(target_os = "linux")]
+    {
+        let stat = fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+        let (_, fields) = stat.rsplit_once(')')?;
+        // `/proc/<pid>/stat` starts numbering at 3 after the command name;
+        // starttime is field 22, hence index 19 in the remaining sequence.
+        return fields
+            .split_whitespace()
+            .nth(19)
+            .and_then(|value| value.parse::<u64>().ok());
     }
     #[cfg(not(target_os = "linux"))]
     {
         let _ = pid;
-        false
+        None
     }
 }
 
@@ -741,6 +1106,7 @@ fn restrict_mode(path: &Path, mode: u32) -> Result<()> {
 #[cfg(unix)]
 async fn run_shell_intercept(
     shell: String,
+    session_id: Option<String>,
     cwd: PathBuf,
     prompt: String,
     offline: bool,
@@ -792,7 +1158,7 @@ async fn run_shell_intercept(
             request_id,
             cwd: cwd.display().to_string(),
             prompt,
-            session_id: std::env::var("YUNXI_SHELL_SESSION").ok(),
+            session_id: session_id.or_else(|| std::env::var("YUNXI_SHELL_SESSION").ok()),
             offline,
             live,
             provider,
@@ -800,7 +1166,10 @@ async fn run_shell_intercept(
         },
     )
     .await?;
-    while let Some(frame) = read_frame::<_, ServerFrame>(&mut reader).await? {
+    loop {
+        let Some(frame) = read_frame::<_, ServerFrame>(&mut reader).await? else {
+            bail!("YunXi shell daemon 在回合完成前断开连接");
+        };
         match frame {
             ServerFrame::Message { content } => {
                 println!("{content}");
@@ -854,18 +1223,31 @@ async fn run_shell_intercept(
             }
             ServerFrame::Done { status } => {
                 if status != "completed" {
-                    eprintln!("[yunxi {status}]");
+                    bail!("yunxi {status}");
                 }
                 return Ok(());
             }
+            ServerFrame::Event { frame, .. } => match *frame {
+                ServerFrame::Message { content } => println!("{content}"),
+                ServerFrame::Thread { thread_id } => {
+                    eprintln!("[yunxi session {thread_id}]");
+                }
+                ServerFrame::Done { status } => {
+                    if status != "completed" {
+                        bail!("yunxi {status}");
+                    }
+                    return Ok(());
+                }
+                _ => {}
+            },
             ServerFrame::Error { message } => bail!("{message}"),
             ServerFrame::HelloAck { .. } | ServerFrame::Pong { .. } => {}
-            ServerFrame::ResyncRequired { session_id, reason } => {
-                eprintln!("[yunxi resync required: {session_id}] {reason}");
+            ServerFrame::ResyncRequired { run_id, reason } => {
+                eprintln!("[yunxi resync required: {run_id}] {reason}");
             }
+            ServerFrame::RunAccepted { .. } => {}
         }
     }
-    Ok(())
 }
 
 #[cfg(unix)]
@@ -900,6 +1282,7 @@ fn read_terminal_line(prompt: &str) -> Result<String> {
 #[cfg(not(unix))]
 async fn run_shell_intercept(
     _shell: String,
+    _session_id: Option<String>,
     _cwd: PathBuf,
     _prompt: String,
     _offline: bool,
@@ -1007,21 +1390,34 @@ async fn run_daemon() -> Result<()> {
         .with_context(|| format!("绑定 YunXi shell socket 失败: {}", socket.display()))?;
     restrict_mode(&socket, 0o600)?;
     let sessions = Arc::new(Mutex::new(HashMap::<String, String>::new()));
+    let replays = Arc::new(Mutex::new(ReplayStore::default()));
+    let mut terminate = signal(SignalKind::terminate()).context("注册 SIGTERM handler 失败")?;
+    let mut interrupt = signal(SignalKind::interrupt()).context("注册 SIGINT handler 失败")?;
     loop {
-        let (stream, _) = listener.accept().await?;
-        let sessions = Arc::clone(&sessions);
-        tokio::spawn(async move {
-            if let Err(error) = handle_connection(stream, sessions).await {
-                eprintln!("yunxi daemon connection error: {error:#}");
+        tokio::select! {
+            accepted = listener.accept() => {
+                let (stream, _) = accepted?;
+                let sessions = Arc::clone(&sessions);
+                let replays = Arc::clone(&replays);
+                tokio::spawn(async move {
+                    if let Err(error) = handle_connection(stream, sessions, replays).await {
+                        eprintln!("yunxi daemon connection error: {error:#}");
+                    }
+                });
             }
-        });
+            _ = terminate.recv() => break,
+            _ = interrupt.recv() => break,
+        }
     }
+    let _ = fs::remove_file(&socket);
+    Ok(())
 }
 
 #[cfg(unix)]
 async fn handle_connection(
     stream: UnixStream,
     sessions: Arc<Mutex<HashMap<String, String>>>,
+    replays: Arc<Mutex<ReplayStore>>,
 ) -> Result<()> {
     let (reader, mut writer) = stream.into_split();
     let (tx, mut rx) = mpsc::channel::<ClientFrame>(16);
@@ -1063,6 +1459,7 @@ async fn handle_connection(
                 "turn".to_string(),
                 "cancel".to_string(),
                 "follow_resync".to_string(),
+                "follow_replay".to_string(),
             ],
         },
     )
@@ -1088,6 +1485,7 @@ async fn handle_connection(
                 &mut writer,
                 &mut rx,
                 sessions,
+                replays,
                 request_id,
                 cwd,
                 prompt,
@@ -1099,15 +1497,64 @@ async fn handle_connection(
             )
             .await?;
         }
-        ClientFrame::Follow { session_id } => {
-            write_frame(
-                &mut writer,
-                &ServerFrame::ResyncRequired {
-                    session_id,
-                    reason: "当前版本已定义 Follow 契约，但事件回放队列尚未启用".to_string(),
-                },
-            )
-            .await?;
+        ClientFrame::Follow {
+            run_id,
+            session_id,
+            after_seq,
+        } => {
+            let Some(run_id) = run_id.or(session_id) else {
+                write_frame(
+                    &mut writer,
+                    &ServerFrame::ResyncRequired {
+                        run_id: "".to_string(),
+                        reason: "Follow 缺少 run_id".to_string(),
+                    },
+                )
+                .await?;
+                return Ok(());
+            };
+            let lookup = replays.lock().await.lookup(&run_id, after_seq);
+            match lookup {
+                ReplayLookup::Events(events) => {
+                    for event in events {
+                        write_frame(
+                            &mut writer,
+                            &numbered_replay_frame(&run_id, event.seq, event.frame),
+                        )
+                        .await?;
+                    }
+                }
+                ReplayLookup::Unknown => {
+                    write_frame(
+                        &mut writer,
+                        &ServerFrame::ResyncRequired {
+                            run_id,
+                            reason: "未知或已被回收的 run_id".to_string(),
+                        },
+                    )
+                    .await?;
+                }
+                ReplayLookup::Active => {
+                    write_frame(
+                        &mut writer,
+                        &ServerFrame::ResyncRequired {
+                            run_id,
+                            reason: "当前回合仍在运行；不支持活动回合断线续跑".to_string(),
+                        },
+                    )
+                    .await?;
+                }
+                ReplayLookup::Stale => {
+                    write_frame(
+                        &mut writer,
+                        &ServerFrame::ResyncRequired {
+                            run_id,
+                            reason: "请求的 after_seq 已超出回放 ring，必须重新同步".to_string(),
+                        },
+                    )
+                    .await?;
+                }
+            }
         }
         ClientFrame::Hello { .. }
         | ClientFrame::Cancel { .. }
@@ -1130,6 +1577,7 @@ async fn run_daemon_turn<W: tokio::io::AsyncWrite + Unpin>(
     writer: &mut W,
     rx: &mut mpsc::Receiver<ClientFrame>,
     sessions: Arc<Mutex<HashMap<String, String>>>,
+    replays: Arc<Mutex<ReplayStore>>,
     request_id: String,
     cwd: String,
     prompt: String,
@@ -1139,6 +1587,91 @@ async fn run_daemon_turn<W: tokio::io::AsyncWrite + Unpin>(
     provider: Option<String>,
     model: Option<String>,
 ) -> Result<()> {
+    let run_id = new_request_id();
+    if !replays.lock().await.begin(&run_id) {
+        bail!("YunXi shell daemon 当前活动回合过多，请稍后重试");
+    }
+    let guard = ReplayRunGuard::new(Arc::clone(&replays), run_id.clone());
+    let result = run_daemon_turn_inner(
+        writer,
+        rx,
+        sessions,
+        Arc::clone(&replays),
+        run_id,
+        request_id,
+        cwd,
+        prompt,
+        requested_session,
+        offline,
+        live,
+        provider,
+        model,
+    )
+    .await;
+    match result {
+        Ok(()) => {
+            guard.finish().await;
+            Ok(())
+        }
+        Err(error) => {
+            guard.discard().await;
+            Err(error)
+        }
+    }
+}
+
+#[cfg(unix)]
+async fn emit_agent_event<W: tokio::io::AsyncWrite + Unpin>(
+    writer: &mut W,
+    replays: &Arc<Mutex<ReplayStore>>,
+    run_id: &str,
+    thread_id: &mut Option<String>,
+    message_sent: &mut bool,
+    event: AgentEvent,
+) -> Result<()> {
+    match event {
+        AgentEvent::ThreadStarted { thread_id: id } => {
+            *thread_id = Some(id.clone());
+            emit_replay_frame(
+                writer,
+                replays,
+                run_id,
+                ServerFrame::Thread { thread_id: id },
+            )
+            .await?;
+        }
+        AgentEvent::Message { content, .. } => {
+            *message_sent = true;
+            emit_replay_frame(writer, replays, run_id, ServerFrame::Message { content }).await?;
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+async fn run_daemon_turn_inner<W: tokio::io::AsyncWrite + Unpin>(
+    writer: &mut W,
+    rx: &mut mpsc::Receiver<ClientFrame>,
+    sessions: Arc<Mutex<HashMap<String, String>>>,
+    replays: Arc<Mutex<ReplayStore>>,
+    run_id: String,
+    request_id: String,
+    cwd: String,
+    prompt: String,
+    requested_session: Option<String>,
+    offline: bool,
+    live: bool,
+    provider: Option<String>,
+    model: Option<String>,
+) -> Result<()> {
+    write_frame(
+        writer,
+        &ServerFrame::RunAccepted {
+            run_id: run_id.clone(),
+        },
+    )
+    .await?;
     let cwd_path = PathBuf::from(&cwd);
     let mut config = AgentConfig::new(cwd_path.clone());
     if let Some(provider) = provider {
@@ -1153,10 +1686,13 @@ async fn run_daemon_turn<W: tokio::io::AsyncWrite + Unpin>(
     } else {
         YunXiRuntimeBackend::for_workspace(&cwd_path)
     };
+    let session_key = requested_session
+        .clone()
+        .unwrap_or_else(|| format!("cwd:{cwd}"));
     let prior = if requested_session.is_some() {
         requested_session
     } else {
-        sessions.lock().await.get(&cwd).cloned()
+        sessions.lock().await.get(&session_key).cloned()
     };
     config.session_title = Some("YunXi Linux fish shell".to_string());
     config.parent_session_id = prior;
@@ -1167,21 +1703,25 @@ async fn run_daemon_turn<W: tokio::io::AsyncWrite + Unpin>(
         Box::pin(agent.run_with_backend_stream(&backend, AgentInput::text(prompt), run_control));
     let mut thread_id = None;
     let mut result = None;
+    let mut message_sent = false;
     loop {
         if result.is_some() {
             break;
         }
         tokio::select! {
-            event = stream.events.recv() => match event {
-                Some(AgentEvent::ThreadStarted { thread_id: id }) => {
-                    thread_id = Some(id.clone());
-                    write_frame(writer, &ServerFrame::Thread { thread_id: id }).await?;
-                }
-                Some(AgentEvent::Message { content, .. }) => {
-                    write_frame(writer, &ServerFrame::Message { content }).await?;
-                }
-                Some(_) => {}
-                None => {}
+            biased;
+            turn_result = &mut turn => {
+                result = Some(turn_result.context("YunXi Runtime 执行失败")?);
+            }
+            event = stream.events.recv() => if let Some(event) = event {
+                emit_agent_event(
+                    writer,
+                    &replays,
+                    &run_id,
+                    &mut thread_id,
+                    &mut message_sent,
+                    event,
+                ).await?;
             },
             request = stream.approvals.recv() => if let Some(request) = request {
                 write_frame(writer, &ServerFrame::Approval {
@@ -1191,44 +1731,67 @@ async fn run_daemon_turn<W: tokio::io::AsyncWrite + Unpin>(
                     command: request.command.clone(),
                     cwd: request.cwd.clone(),
                 }).await?;
-                let decision = await_approval(rx, request.id.as_deref()).await?;
+                let decision = await_approval(rx, request.id.as_deref()).await;
+                if decision.is_err() {
+                    control.cancel();
+                }
+                let decision = decision?;
                 let _ = request.respond_to.send(AgentRunApprovalDecision { approved: decision.0, reason: decision.1 });
             },
             request = stream.user_inputs.recv() => if let Some(request) = request {
                 write_frame(writer, &ServerFrame::UserInput { id: request.id.clone(), prompt: request.prompt.clone() }).await?;
-                let value = await_user_input(rx, request.id.as_deref()).await?;
+                let value = await_user_input(rx, request.id.as_deref()).await;
+                if value.is_err() {
+                    control.cancel();
+                }
+                let value = value?;
                 let _ = request.respond_to.send(AgentRunUserInputResponse { value });
             },
-            frame = rx.recv() => if let Some(frame) = frame {
-                match frame {
+            frame = rx.recv() => match frame {
+                Some(frame) => match frame {
                     ClientFrame::Cancel { request_id: cancelled } if cancelled == request_id => {
                         control.cancel();
                     }
                     ClientFrame::Ping { request_id } => {
                         write_frame(writer, &ServerFrame::Pong { request_id }).await?;
                     }
-                    ClientFrame::Follow { session_id } => {
+                    ClientFrame::Follow {
+                        run_id,
+                        session_id,
+                        ..
+                    } => {
+                        let run_id = run_id.or(session_id).unwrap_or_default();
                         write_frame(writer, &ServerFrame::ResyncRequired {
-                            session_id,
-                            reason: "当前回合仍在运行；请等待 Done 后重新 Follow".to_string(),
+                            run_id,
+                            reason: "当前回合仍在运行；不支持活动回合断线续跑".to_string(),
                         }).await?;
                     }
                     _ => {}
                 }
-            },
-            turn_result = &mut turn => {
-                result = Some(turn_result.context("YunXi Runtime 执行失败")?);
+                None => {
+                    control.cancel();
+                    bail!("shell client disconnected");
+                }
             }
         }
     }
     let result = result.expect("turn result is set before leaving loop");
-    if !result
-        .events
-        .iter()
-        .any(|event| matches!(event, AgentEvent::Message { .. }))
-        && let Some(content) = result.final_response
-    {
-        write_frame(writer, &ServerFrame::Message { content }).await?;
+    // A completed runtime turn may win the biased select at the same time as
+    // its final stream events. Drain those events before emitting Done so every
+    // Message gets its replay sequence first.
+    while let Ok(event) = stream.events.try_recv() {
+        emit_agent_event(
+            writer,
+            &replays,
+            &run_id,
+            &mut thread_id,
+            &mut message_sent,
+            event,
+        )
+        .await?;
+    }
+    if !message_sent && let Some(content) = result.final_response {
+        emit_replay_frame(writer, &replays, &run_id, ServerFrame::Message { content }).await?;
     }
     let status = match result.status {
         AgentRunStatus::Completed => "completed",
@@ -1236,11 +1799,13 @@ async fn run_daemon_turn<W: tokio::io::AsyncWrite + Unpin>(
         AgentRunStatus::Cancelled => "cancelled",
     };
     if let Some(thread_id) = thread_id {
-        sessions.lock().await.insert(cwd, thread_id);
+        sessions.lock().await.insert(session_key, thread_id);
     }
-    write_frame(
+    emit_replay_frame(
         writer,
-        &ServerFrame::Done {
+        &replays,
+        &run_id,
+        ServerFrame::Done {
             status: status.to_string(),
         },
     )
@@ -1249,11 +1814,38 @@ async fn run_daemon_turn<W: tokio::io::AsyncWrite + Unpin>(
 }
 
 #[cfg(unix)]
+async fn emit_replay_frame<W: tokio::io::AsyncWrite + Unpin>(
+    writer: &mut W,
+    replays: &Arc<Mutex<ReplayStore>>,
+    run_id: &str,
+    frame: ServerFrame,
+) -> Result<()> {
+    let seq = replays.lock().await.record(run_id, &frame);
+    if let Some(seq) = seq {
+        write_frame(writer, &numbered_replay_frame(run_id, seq, frame)).await
+    } else {
+        write_frame(writer, &frame).await
+    }
+}
+
+#[cfg(unix)]
+fn numbered_replay_frame(run_id: &str, seq: u64, frame: ServerFrame) -> ServerFrame {
+    ServerFrame::Event {
+        run_id: run_id.to_string(),
+        seq,
+        frame: Box::new(frame),
+    }
+}
+
+#[cfg(unix)]
 async fn await_approval(
     rx: &mut mpsc::Receiver<ClientFrame>,
     expected: Option<&str>,
 ) -> Result<(bool, Option<String>)> {
-    while let Some(frame) = rx.recv().await {
+    loop {
+        let Some(frame) = rx.recv().await else {
+            bail!("shell client disconnected");
+        };
         if let ClientFrame::ApprovalResponse {
             id,
             approved,
@@ -1264,7 +1856,6 @@ async fn await_approval(
             return Ok((approved, reason));
         }
     }
-    Ok((false, Some("shell client disconnected".to_string())))
 }
 
 #[cfg(unix)]
@@ -1272,14 +1863,16 @@ async fn await_user_input(
     rx: &mut mpsc::Receiver<ClientFrame>,
     expected: Option<&str>,
 ) -> Result<Option<String>> {
-    while let Some(frame) = rx.recv().await {
+    loop {
+        let Some(frame) = rx.recv().await else {
+            bail!("shell client disconnected");
+        };
         if let ClientFrame::UserInputResponse { id, value } = frame
             && id.as_deref() == expected
         {
             return Ok(value);
         }
     }
-    Ok(None)
 }
 
 #[cfg(test)]
@@ -1304,9 +1897,155 @@ mod tests {
         let hook = fish_hook(Path::new("/home/user/.local/bin/yunxi-linux"));
         assert!(hook.contains("commandline --input=\"$argv[1]\" --tokens-raw"));
         assert!(hook.contains("shell-classify --shell fish --stdin"));
-        assert!(hook.contains("shell-intercept --shell fish --cwd \"$PWD\" --stdin"));
+        assert!(hook.contains("type -q -- \"$argv[1]\""));
+        assert!(hook.contains("functions -q -- \"$argv[1]\""));
+        assert!(hook.contains("string replace -r '^[[:space:]]*([^[:space:]]+).*'"));
+        assert!(hook.contains(
+            "shell-intercept --shell fish --session-id \"fish-\"$fish_pid --cwd \"$PWD\" --stdin"
+        ));
         assert!(hook.contains("fish_command_not_found"));
         assert!(hook.contains("bind enter __yunxi_accept_line"));
         assert!(hook.contains("bind ctrl-j __yunxi_insert_newline"));
+    }
+
+    #[test]
+    fn systemd_unit_is_user_scoped_and_daemon_only() {
+        assert!(SYSTEMD_UNIT.contains("ExecStart=%h/.local/bin/yunxi-linux daemon"));
+        assert!(SYSTEMD_UNIT.contains("WantedBy=default.target"));
+        assert!(SYSTEMD_UNIT.contains("KillSignal=SIGTERM"));
+        assert!(!SYSTEMD_UNIT.contains("User=root"));
+        assert!(!SYSTEMD_UNIT.contains("ListenStream="));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn completed_run_replays_with_monotonic_sequences() {
+        let mut store = ReplayStore {
+            max_runs: 2,
+            max_events_per_run: 3,
+            ..ReplayStore::default()
+        };
+        store.begin("run-1");
+        store.record(
+            "run-1",
+            &ServerFrame::Thread {
+                thread_id: "thread-1".to_string(),
+            },
+        );
+        store.record(
+            "run-1",
+            &ServerFrame::Message {
+                content: "hello".to_string(),
+            },
+        );
+        store.record(
+            "run-1",
+            &ServerFrame::Done {
+                status: "completed".to_string(),
+            },
+        );
+        store.finish("run-1");
+
+        let ReplayLookup::Events(events) = store.lookup("run-1", 0) else {
+            panic!("completed run should be replayable");
+        };
+        assert_eq!(
+            events.iter().map(|event| event.seq).collect::<Vec<_>>(),
+            vec![1, 2, 3]
+        );
+        let ReplayLookup::Events(events) = store.lookup("run-1", 1) else {
+            panic!("after_seq should filter already received events");
+        };
+        assert_eq!(
+            events.iter().map(|event| event.seq).collect::<Vec<_>>(),
+            vec![2, 3]
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn replay_ring_reports_stale_active_and_unknown_runs() {
+        let mut store = ReplayStore {
+            max_runs: 1,
+            max_events_per_run: 2,
+            ..ReplayStore::default()
+        };
+        store.begin("active");
+        assert!(matches!(store.lookup("active", 0), ReplayLookup::Active));
+
+        store.begin("run-1");
+        for content in ["one", "two", "three"] {
+            store.record(
+                "run-1",
+                &ServerFrame::Message {
+                    content: content.to_string(),
+                },
+            );
+        }
+        store.finish("run-1");
+        assert!(matches!(store.lookup("run-1", 0), ReplayLookup::Stale));
+        assert!(matches!(store.lookup("missing", 0), ReplayLookup::Unknown));
+
+        store.begin("run-2");
+        store.record(
+            "run-2",
+            &ServerFrame::Done {
+                status: "completed".to_string(),
+            },
+        );
+        store.finish("run-2");
+        assert!(matches!(store.lookup("run-1", 2), ReplayLookup::Unknown));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn replay_store_discards_aborted_runs() {
+        let mut store = ReplayStore::default();
+        store.begin("aborted");
+        store.record(
+            "aborted",
+            &ServerFrame::Message {
+                content: "partial".to_string(),
+            },
+        );
+        store.discard("aborted");
+        assert!(matches!(store.lookup("aborted", 0), ReplayLookup::Unknown));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn daemon_lock_uses_process_start_time_to_avoid_pid_reuse() {
+        let pid = std::process::id();
+        let start_time = process_start_time(pid).expect("current process start time");
+        assert!(process_alive(pid, Some(start_time)));
+        assert!(!process_alive(pid, Some(start_time.saturating_add(1))));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn daemon_lock_metadata_parser_rejects_partial_contents() {
+        assert_eq!(
+            parse_daemon_lock_owner(r#"{"pid":42,"start_time_ticks":7}"#),
+            Some((42, Some(7)))
+        );
+        assert_eq!(parse_daemon_lock_owner("42"), Some((42, None)));
+        assert_eq!(parse_daemon_lock_owner(""), None);
+        assert_eq!(parse_daemon_lock_owner(r#"{"pid":"#), None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn daemon_lock_does_not_remove_invalid_metadata() {
+        let path = std::env::temp_dir().join(format!(
+            "yunxi-daemon-lock-test-{}-{}",
+            std::process::id(),
+            DAEMON_LOCK_TEMP_COUNTER.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::write(&path, b"{}").expect("write invalid lock metadata");
+
+        let result = acquire_daemon_lock(&path);
+        assert!(result.is_err());
+        assert!(path.exists(), "invalid metadata must not be deleted");
+        fs::remove_file(path).expect("remove test lock");
     }
 }

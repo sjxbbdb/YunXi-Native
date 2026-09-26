@@ -114,7 +114,7 @@ Miyu IPC 的协议版本为 3，使用 4 字节长度前缀 + JSON frame；发�
 - [protocol.rs](https://github.com/SHORiN-KiWATA/miyu-agent/blob/04a23ccbfc1ee081ec8e2d82090edfa553552456/crates/miyu-core/src/ipc/protocol.rs#L11-L13)
 - [protocol.rs send/receive](https://github.com/SHORiN-KiWATA/miyu-agent/blob/04a23ccbfc1ee081ec8e2d82090edfa553552456/crates/miyu-core/src/ipc/protocol.rs#L549-L568)
 
-命令面不止“发一句文本”：包含 StartTurn、Follow、Cancel、问题回答/关闭、作业、session 操作、ToolCall、catalog、sandbox、voice 和 admin 命令。YunXi 当前基础 socket 实验仍缺少协议版本/构建身份握手、Ping、frame 上限、命令能力协商、取消和 Follow，因此只能标记为原型。
+命令面不止“发一句文本”：包含 StartTurn、Follow、Cancel、问题回答/关闭、作业、session 操作、ToolCall、catalog、sandbox、voice 和 admin 命令。YunXi 当前 Linux IPC 已有协议版本、Ping、24 MiB frame 上限、Cancel，以及已完成回合的有界 Follow 回放；构建身份协商、活动回合断线续跑和更完整的能力协商仍未进入本阶段。
 
 ### 4.3 daemon 与断线：常驻和一次性客户端是两种语义
 
@@ -125,7 +125,7 @@ Miyu 在 [`runtime/run.rs`](https://github.com/SHORiN-KiWATA/miyu-agent/blob/04a
 
 IPC server 在 [`web/ipc_server.rs`](https://github.com/SHORiN-KiWATA/miyu-agent/blob/04a23ccbfc1ee081ec8e2d82090edfa553552456/crates/miyu-hosts/src/web/ipc_server.rs#L1111-L1147) 设置 `one_shot`，不是所有客户端都“断线继续”。
 
-当前 YunXi 实验 daemon 的问题：future 归属于连接、连接断开可能丢 turn；没有持久的 run registry、event cursor、Follow/Cancel；session map 以 cwd 为键且只在内存中，重启丢失并会让同目录终端意外共享会话；缺少家目录 singleton lock、starter lock、setsid、Ping/build 校验；连接读取也需要大小/超时上限。
+当前 YunXi daemon 的剩余问题：future 仍归属于连接，活动回合断开可能丢 turn；完成回合的 run registry、event cursor 和 Follow 仅保存在 daemon 内存中，重启即失效；session map 虽已支持 fish 进程 session id，但仍会在重启时丢失；尚未引入 build identity、setsid 和完整的连接超时策略。
 
 ### 4.4 事件流与会话
 

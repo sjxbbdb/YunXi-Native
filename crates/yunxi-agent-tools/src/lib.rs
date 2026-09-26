@@ -28,6 +28,8 @@ use yunxi_agent_skills::{
     load_skill_injection, workspace_dynamic_tools,
 };
 
+mod linux_readonly;
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ToolRequest {
     pub id: Option<String>,
@@ -96,6 +98,10 @@ pub enum ToolRequestKind {
     ViewImage {
         path: String,
     },
+    LinuxReadOnly {
+        operation: String,
+        arguments: Value,
+    },
 }
 
 impl ToolRequestKind {
@@ -109,6 +115,7 @@ impl ToolRequestKind {
             Self::ToolSearch { .. } => ToolName::ToolSearch,
             Self::RequestUserInput { .. } => ToolName::RequestUserInput,
             Self::ViewImage { .. } => ToolName::ViewImage,
+            Self::LinuxReadOnly { .. } => ToolName::LinuxReadOnly,
         }
     }
 
@@ -122,6 +129,10 @@ impl ToolRequestKind {
             Self::ToolSearch { query } => Some(format!("tool_search {query}")),
             Self::RequestUserInput { prompt } => Some(format!("request_user_input {prompt}")),
             Self::ViewImage { path } => Some(format!("view_image {path}")),
+            Self::LinuxReadOnly {
+                operation,
+                arguments,
+            } => Some(format!("linux_readonly/{operation} {arguments}")),
         }
     }
 }
@@ -137,6 +148,7 @@ pub enum ToolName {
     ToolSearch,
     RequestUserInput,
     ViewImage,
+    LinuxReadOnly,
 }
 
 impl ToolName {
@@ -150,6 +162,7 @@ impl ToolName {
             Self::ToolSearch => "tool_search",
             Self::RequestUserInput => "request_user_input",
             Self::ViewImage => "view_image",
+            Self::LinuxReadOnly => "linux_readonly",
         }
     }
 }
@@ -318,6 +331,8 @@ pub fn default_tool_registry() -> ToolRegistry {
         tool_search_tool_spec(),
         request_user_input_tool_spec(),
         view_image_tool_spec(),
+        #[cfg(target_os = "linux")]
+        linux_readonly_tool_spec(),
     ])
 }
 
@@ -552,6 +567,16 @@ fn view_image_tool_spec() -> ToolSpec {
             "required": ["path"],
             "additionalProperties": false
         }),
+        true,
+    )
+}
+
+#[cfg(target_os = "linux")]
+fn linux_readonly_tool_spec() -> ToolSpec {
+    ToolSpec::new(
+        ToolName::LinuxReadOnly,
+        "Read-only Linux host inspection through a fixed argv allowlist. It cannot start services, change networking, kill processes, or execute shell syntax.",
+        linux_readonly::parameters_schema(),
         true,
     )
 }
@@ -817,6 +842,13 @@ pub enum ToolRuntimeEvent {
         path: Option<String>,
         line: Option<usize>,
     },
+    LinuxReadOnly {
+        operation: String,
+        status: String,
+        command: String,
+        exit_code: Option<i32>,
+        truncated: bool,
+    },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -1028,6 +1060,7 @@ impl ToolRuntime for ShellToolRuntime {
         request: ToolRequest,
         control: &AgentRunControl,
     ) -> AgentResult<ToolResponse> {
+        let request = normalize_linux_readonly_policy(request);
         let runtime_events = policy_runtime_events(&request);
         if let Some(response) = declined_by_policy(&request) {
             return Ok(response);
@@ -1056,7 +1089,8 @@ impl ToolRuntime for ShellToolRuntime {
             )),
             ToolRequestKind::Mcp { .. }
             | ToolRequestKind::Skill { .. }
-            | ToolRequestKind::MultiAgent { .. } => Ok(ToolResponse::declined(
+            | ToolRequestKind::MultiAgent { .. }
+            | ToolRequestKind::LinuxReadOnly { .. } => Ok(ToolResponse::declined(
                 request.id,
                 "YunXi has registered this tool but the specialized runtime is not attached",
             )),
@@ -1195,6 +1229,7 @@ impl ToolRuntime for CompositeToolRuntime {
         request: ToolRequest,
         control: &AgentRunControl,
     ) -> AgentResult<ToolResponse> {
+        let request = normalize_linux_readonly_policy(request);
         let runtime_events = policy_runtime_events(&request);
         if let Some(response) = declined_by_policy(&request) {
             return Ok(response);
@@ -1231,10 +1266,35 @@ impl ToolRuntime for CompositeToolRuntime {
                 action,
                 arguments_json,
             } => run_multi_agent(request.id, &self.agents, action, arguments_json),
+            ToolRequestKind::LinuxReadOnly {
+                operation,
+                arguments,
+            } => {
+                return linux_readonly::execute(
+                    request.id,
+                    &request.cwd,
+                    &operation,
+                    &arguments,
+                    request.policy.execution_policy.clone(),
+                    control.cancellation_token(),
+                )
+                .await
+                .map(|response| response.with_runtime_events(runtime_events));
+            }
             _ => return self.shell.execute_with_control(request, control).await,
         }?;
         Ok(response.with_runtime_events(runtime_events))
     }
+}
+
+fn normalize_linux_readonly_policy(mut request: ToolRequest) -> ToolRequest {
+    if matches!(&request.kind, ToolRequestKind::LinuxReadOnly { .. }) {
+        request.policy.sandbox = SandboxPolicy::ReadOnly;
+        request.policy.network = NetworkPolicy::Disabled;
+        request.policy.execution_policy.sandbox = SandboxRequirement::ReadOnly;
+        request.policy.execution_policy.network = NetworkPolicy::Disabled;
+    }
+    request
 }
 
 async fn run_shell(

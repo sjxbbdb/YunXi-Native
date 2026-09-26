@@ -1,0 +1,17 @@
+[Unit]
+Description=YunXi Native Linux Agent daemon
+After=default.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/yunxi-linux daemon
+Restart=on-failure
+RestartSec=2s
+KillSignal=SIGTERM
+TimeoutStopSec=10s
+NoNewPrivileges=yes
+PrivateTmp=yes
+UMask=0077
+
+[Install]
+WantedBy=default.target

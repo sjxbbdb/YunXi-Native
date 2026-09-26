@@ -30,6 +30,7 @@ Linux 版不是“只有一个聊天框”的裁剪版。共享 Runtime 中与 L
 - 陪伴策略、情绪线索、主动关怀、情书任务与本地信箱；
 - Provider 自动选择、离线回退、工具路由、Shell、补丁、Sandbox、MCP、Skills 和多 Agent；
 - 工具审批、用户输入、取消、诊断事件和 XDG 本地存储；
+- Linux 只读主机工具：systemd 状态、man 页面、进程快照和网络状态；
 - Miyu 风格的 fish 接管与按需常驻 daemon。
 
 这些能力通过同一个 `yunxi-agent-runtime` 进入 TUI 或 fish daemon，不会为 Linux 复制一套人格、记忆或会话逻辑。TUI 中输入 `/capabilities` 可以查看同一份边界摘要。
@@ -87,6 +88,29 @@ cargo build --release -p yunxi-agent-linux
 
 TUI 内置命令：`/help`、`/clear`、`/status`、`/exit`。工具调用仍遵循 Runtime 的审批策略；按 `Ctrl+C` 可取消当前回合。
 
+## Linux 只读工具层（Phase 3 起点）
+
+自然语言请求可以由模型路由到固定的 `linux_readonly` ToolSpec。它只允许四种操作：
+
+- `systemd_status`：读取 user 或 system manager 的 unit 状态；
+- `man_page`：以 `MANPAGER=cat` 读取单个本地手册主题；
+- `process_list`：读取有界进程快照；
+- `network_snapshot`：读取本机接口、路由或 socket 状态。
+
+这些操作不接受任意命令、路径或 shell 片段，不执行启动/停止服务、杀进程、网络配置、HTTP 探测或写文件。实际执行使用固定 argv 的直接进程 runner，经过 YunXi 现有的 ToolPolicy、审批、沙盒诊断与审计事件；缺少 `systemctl`、`man`、`ps`、`ip` 或 `ss` 时返回结构化 `unavailable`。
+
+也可以直接检查 CLI 探针（用于安装和发行版诊断）：
+
+```bash
+yunxi-linux linux-tool describe
+yunxi-linux linux-tool processes --limit 20
+yunxi-linux linux-tool network
+yunxi-linux linux-tool systemd-status --unit yunxi-linux.service
+yunxi-linux linux-tool man fish
+```
+
+CLI 探针与模型可见的 `linux_readonly` ToolSpec 共用同一只读边界，但 CLI 输出是诊断入口，不替代 Runtime 的审批链路。
+
 ## fish 接管（Miyu 风格）
 
 安装 fish hook：
@@ -104,7 +128,7 @@ source ~/.config/fish/conf.d/yunxi.fish
 - 工具调用仍会弹出审批，不会因为通过 shell 接管而自动放行；
 - `Ctrl+C` 仍由当前 fish/终端负责，关闭 fish 后 daemon 不会继续接收新输入。
 
-hook 的设计目标参考 Miyu：回车时使用 `commandline --tokens-raw` 读取首词，尽量避免在分类阶段触发命令替换、通配符或其他副作用；真正的命令交回 fish，自然语言才送入 `shell-intercept`。`fish_command_not_found` 是第二道兜底。当前实验 hook 尚未完成 `type -q`、复杂多行/嵌套命令、提示符重绘和真实 PTY 回归，不能把这段设计说明当成已验收的行为保证。
+hook 的设计目标参考 Miyu：回车时使用 `commandline --tokens-raw` 读取首词，尽量避免在分类阶段触发命令替换、通配符或其他副作用；解析器无 token 时再使用不求值的首词回退。真正的命令交回 fish，自然语言才送入 `shell-intercept`。对 alias/function 等 fish 运行时定义的命令，hook 会先用 `functions -q`/`type -q` 判断，不把它们误送给 YunXi。`fish_command_not_found` 是第二道兜底；含 shell 语法或多行的未知命令不会被重复转发。每个交互式 fish 进程会携带独立的 `fish-<pid>` session id，因此两个终端即使位于同一目录，也不会误用同一个 YunXi Runtime 会话；手动调用 `shell-intercept` 时仍可用 `YUNXI_SHELL_SESSION` 提供兼容 session id。真实 fish + PTY smoke 已覆盖 alias/function、中文自然语言、Ctrl+J、多行、命令替换、重定向和管道；复杂嵌套命令、提示符重绘和完整 PTY 中断矩阵仍未完成，不能把这段设计说明当成已验收的行为保证。
 
 卸载：
 
@@ -121,11 +145,27 @@ printf '%s' '解释一下 Cargo.lock' | ./target/release/yunxi-linux shell-class
 
 `shell-classify` 返回码为 0 表示交给 fish，1 表示交给 YunXi。daemon socket 优先放在 `$XDG_RUNTIME_DIR/yunxi/yunxi.sock`，否则放在 `$XDG_STATE_HOME/yunxi/run/yunxi.sock`，目录为 0700、socket 为 0600。daemon 只允许当前用户通过本地 socket 访问。
 
+IPC 已提供有界的完成回合回放：`Turn` 会先返回 `run_accepted`，随后可见输出以 `event(run_id, seq, frame)` 发送；客户端重连后使用 `follow(run_id, after_seq)` 获取缺失事件。回放按回合数、事件数和事件总字节数限制，只保留 daemon 生命周期内最近的有限回合；活动回合、daemon 重启后的 run 或已淘汰游标会明确返回 `resync_required`，不伪装成断线续跑。
+
+### systemd --user（可选）
+
+unit 模板位于 `packaging/systemd/yunxi-linux.service`，也可以由 CLI 输出：
+
+```bash
+install -Dm755 target/release/yunxi-linux ~/.local/bin/yunxi-linux
+mkdir -p ~/.config/systemd/user
+yunxi-linux systemd-unit > ~/.config/systemd/user/yunxi-linux.service
+systemctl --user daemon-reload
+systemctl --user enable --now yunxi-linux.service
+```
+
+没有 systemd 的环境不受影响，继续使用手动 daemon 或 fish hook 的按需启动。
+
 ## 数据位置
 
 人格、灵魂和全局设置默认位于 `$XDG_DATA_HOME/yunxi`，没有设置时使用 `$HOME/.local/share/yunxi`；工作区会话与工作区记忆位于 `<workspace>/.yunxi`。状态与缓存分别使用 `$XDG_STATE_HOME/yunxi`、`$XDG_CACHE_HOME/yunxi`，没有设置时回退到 `$HOME/.local/state/yunxi`、`$HOME/.cache/yunxi`。可通过 `YUNXI_HOME` 改变全局目录。
 
-程序会创建并限制这些目录为 0700。不要把 `.yunxi`、XDG 状态目录或 daemon socket 提交到 Git。
+程序会创建并限制这些目录为 0700。daemon lock metadata 会先写入临时文件并同步，再以不可覆盖的硬链接抢占最终路径；读取到空/损坏 metadata 时会拒绝删除，避免并发启动误删活动锁。不要把 `.yunxi`、XDG 状态目录或 daemon socket 提交到 Git。
 
 ## 验收
 
@@ -139,6 +179,12 @@ cargo build --release -p yunxi-agent-linux
 
 ```bash
 fish -n ~/.config/fish/conf.d/yunxi.fish
+```
+
+可执行真实 PTY smoke（需要 `fish`、`python3` 和 release binary）：
+
+```bash
+bash yunxi-agent-linux/tests/fish_pty_smoke.sh ./target/release/yunxi-linux
 ```
 
 Linux 发行构建只使用本子项目的 `yunxi-linux` 二进制；Windows/Web/语音/微信参考源码位于仓库的 `references/`，不作为依赖构建。
