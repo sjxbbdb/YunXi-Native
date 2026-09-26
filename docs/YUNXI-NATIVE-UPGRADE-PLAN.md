@@ -313,6 +313,11 @@ FTS 内容或孤立向量；文档 hash 与分块参数都未变化时会跳过�
 空间、generation、chunk 引用和维度，再在一个事务内替换指定模型的向量集合，拒绝
 批次时旧索引保持不变。
 
+知识库还提供 `index_document_with_embeddings`：它复用现有本地字符 n-gram provider
+为当前文档 chunk 生成向量，再通过上述批量边界写入独立的 `knowledge_vectors`。
+这里复用的是 embedding 算法，不是记忆数据库或记忆表；后续替换为更强的本地模型
+只需保持 provider 的模型、维度和批量写入契约。
+
 当前还新增了 Linux P0 `man` 采集器：只接受经过 token 校验的 topic/section，使用
 固定 `man --locale=C -P cat` argv、只读执行策略、`MANPAGER/PAGER/TERM` 固定环境和
 64 KiB 输出上限；成功结果带稳定的 `system-man:<section>:<topic>` 文档身份并调用

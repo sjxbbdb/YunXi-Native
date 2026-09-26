@@ -1,5 +1,6 @@
 use rusqlite::Connection;
 use tempfile::tempdir;
+use yunxi_agent_persona::{LocalChargramEmbedding, MemoryEmbeddingProvider};
 use yunxi_agent_storage::{
     KnowledgeChunk, KnowledgeChunkingOptions, KnowledgeDocument, KnowledgeSearchScope,
     KnowledgeSpaceKind, KnowledgeSpaceSpec, KnowledgeVector, KnowledgeVisibility,
@@ -521,4 +522,53 @@ fn replace_document_vectors_is_atomic_and_removes_stale_model_rows() {
         .expect("vector search after rejected batch");
     assert_eq!(matches_after_error.len(), 1);
     assert_eq!(matches_after_error[0].chunk_id, second_chunk.chunk_id);
+}
+
+#[test]
+fn local_embedding_indexes_knowledge_chunks_without_touching_memory_vectors() {
+    let dir = tempdir().expect("tempdir");
+    let store = SqliteKnowledgeStore::new(dir.path().join("knowledge.sqlite3"));
+    store
+        .upsert_space(&space(
+            "system-linux",
+            KnowledgeSpaceKind::System,
+            "system",
+            KnowledgeVisibility::Public,
+            1,
+        ))
+        .expect("space");
+    let document = document("system-linux", "system", KnowledgeVisibility::Public);
+    store.upsert_document(&document).expect("document");
+    store
+        .upsert_chunk(&chunk(
+            &document.document_id,
+            "system",
+            KnowledgeVisibility::Public,
+            "systemctl status shows a service state",
+        ))
+        .expect("chunk");
+
+    let provider = LocalChargramEmbedding::default();
+    let summary = store
+        .index_document_with_embeddings(&document.document_id, &provider)
+        .expect("knowledge embeddings");
+    assert_eq!(summary.chunks_indexed, 1);
+    assert_eq!(summary.embedding_model, provider.model_id());
+    assert_eq!(summary.dimensions, provider.dimensions());
+    let query = provider.embed("systemctl status").expect("query embedding");
+    let matches = store
+        .search_vectors(
+            &query.values,
+            provider.model_id(),
+            &KnowledgeSearchScope {
+                space_id: "system-linux".to_string(),
+                owner: "system".to_string(),
+                generation: 1,
+                visibility: KnowledgeVisibility::Public,
+            },
+            5,
+        )
+        .expect("knowledge vector search");
+    assert_eq!(matches.len(), 1);
+    assert_eq!(matches[0].document_id, document.document_id);
 }

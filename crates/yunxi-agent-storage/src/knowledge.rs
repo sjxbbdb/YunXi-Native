@@ -13,7 +13,7 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 use yunxi_agent_core::{AgentError, AgentResult};
-use yunxi_agent_persona::{cosine_similarity, yunxi_home_dir};
+use yunxi_agent_persona::{MemoryEmbeddingProvider, cosine_similarity, yunxi_home_dir};
 
 const KNOWLEDGE_DATABASE_FILE: &str = "knowledge.sqlite3";
 
@@ -140,6 +140,14 @@ pub struct KnowledgeVectorMatch {
     pub embedding_model: String,
     pub generation: i64,
     pub score: f32,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct KnowledgeEmbeddingSummary {
+    pub document_id: String,
+    pub embedding_model: String,
+    pub dimensions: usize,
+    pub chunks_indexed: usize,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -506,6 +514,84 @@ impl SqliteKnowledgeStore {
             sqlite_error(&self.database, "commit knowledge vector batch", error)
         })?;
         Ok(vectors.len())
+    }
+
+    /// Embeds every current chunk and atomically replaces this document's
+    /// vectors for the provider model. The knowledge vector type and storage
+    /// remain distinct from the long-term memory vector domain.
+    pub fn index_document_with_embeddings<P: MemoryEmbeddingProvider>(
+        &self,
+        document_id: &str,
+        provider: &P,
+    ) -> AgentResult<KnowledgeEmbeddingSummary> {
+        if document_id.trim().is_empty() {
+            return Err(storage_error("knowledge embedding document id is empty"));
+        }
+        let connection = self.open_connection()?;
+        initialize_schema(&connection, &self.database)?;
+        let document = connection
+            .query_row(
+                "SELECT space_id, generation FROM knowledge_documents WHERE document_id = ?1",
+                params![document_id],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
+            )
+            .optional()
+            .map_err(|error| {
+                sqlite_error(&self.database, "read knowledge embedding document", error)
+            })?
+            .ok_or_else(|| storage_error("knowledge embedding references an unknown document"))?;
+        let mut statement = connection
+            .prepare(
+                "SELECT chunk_id, space_id, generation, content
+                 FROM knowledge_chunks WHERE document_id = ?1 ORDER BY ordinal ASC",
+            )
+            .map_err(|error| {
+                sqlite_error(&self.database, "prepare knowledge embedding chunks", error)
+            })?;
+        let rows = statement
+            .query_map(params![document_id], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, String>(3)?,
+                ))
+            })
+            .map_err(|error| {
+                sqlite_error(&self.database, "query knowledge embedding chunks", error)
+            })?;
+        let mut vectors = Vec::new();
+        for row in rows {
+            let (chunk_id, space_id, generation, content) = row.map_err(|error| {
+                sqlite_error(&self.database, "read knowledge embedding chunk", error)
+            })?;
+            let embedding = provider.embed(&content).map_err(|error| {
+                storage_error(format!("knowledge embedding provider failed: {error}"))
+            })?;
+            if embedding.model != provider.model_id()
+                || embedding.dimensions() != provider.dimensions()
+            {
+                return Err(storage_error(
+                    "knowledge embedding provider returned unexpected model or dimensions",
+                ));
+            }
+            vectors.push(KnowledgeVector {
+                chunk_id,
+                space_id,
+                embedding_model: embedding.model,
+                generation,
+                vector: embedding.values,
+            });
+        }
+        drop(statement);
+        let chunks_indexed =
+            self.replace_document_vectors(document_id, provider.model_id(), document.1, &vectors)?;
+        Ok(KnowledgeEmbeddingSummary {
+            document_id: document_id.to_string(),
+            embedding_model: provider.model_id().to_string(),
+            dimensions: provider.dimensions(),
+            chunks_indexed,
+        })
     }
 
     pub fn ingest_text(
