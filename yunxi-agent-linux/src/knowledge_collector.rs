@@ -90,9 +90,12 @@ pub fn ingest_collected_knowledge(
     collected: &CollectedKnowledge,
     options: &KnowledgeChunkingOptions,
 ) -> AgentResult<KnowledgeIngestSummary> {
-    if collected.status != CollectionStatus::Ok || collected.exit_code != Some(0) {
+    if collected.status != CollectionStatus::Ok
+        || collected.exit_code != Some(0)
+        || collected.truncated
+    {
         return Err(yunxi_agent_core::AgentError::Execution {
-            message: "cannot ingest an unsuccessful man-page collection".to_string(),
+            message: "cannot ingest an unsuccessful or truncated knowledge collection".to_string(),
         });
     }
     if collected.text.trim().is_empty() {
@@ -298,11 +301,8 @@ async fn collect_fixed_command(
         .unwrap_or_else(|| (trace.summary.aggregated_output.clone(), String::new()));
     let stdout = bounded_text(&stdout);
     let stderr = bounded_text(&stderr);
-    let status = if trace.summary.exit_code == Some(0) && !trace.summary.timed_out {
-        CollectionStatus::Ok
-    } else {
-        CollectionStatus::Failed
-    };
+    let truncated = stdout.1 || stderr.1;
+    let status = collection_status(trace.summary.exit_code, trace.summary.timed_out, truncated);
     Ok(CollectedKnowledge {
         document,
         text: stdout.0,
@@ -310,7 +310,7 @@ async fn collect_fixed_command(
         exit_code: trace.summary.exit_code,
         status,
         stderr: stderr.0,
-        truncated: stdout.1 || stderr.1,
+        truncated,
     })
 }
 
@@ -323,6 +323,14 @@ fn bounded_text(value: &str) -> (String, bool) {
         end -= 1;
     }
     (value[..end].to_string(), true)
+}
+
+fn collection_status(exit_code: Option<i32>, timed_out: bool, truncated: bool) -> CollectionStatus {
+    if exit_code == Some(0) && !timed_out && !truncated {
+        CollectionStatus::Ok
+    } else {
+        CollectionStatus::Failed
+    }
 }
 
 #[cfg(test)]
@@ -401,5 +409,21 @@ mod tests {
         assert!(truncated);
         assert!(output.len() <= MAX_OUTPUT_BYTES);
         assert!(output.is_char_boundary(output.len()));
+    }
+
+    #[test]
+    fn truncated_success_is_not_ingestable() {
+        assert_eq!(
+            collection_status(Some(0), false, true),
+            CollectionStatus::Failed
+        );
+        assert_eq!(
+            collection_status(Some(0), true, false),
+            CollectionStatus::Failed
+        );
+        assert_eq!(
+            collection_status(Some(0), false, false),
+            CollectionStatus::Ok
+        );
     }
 }
