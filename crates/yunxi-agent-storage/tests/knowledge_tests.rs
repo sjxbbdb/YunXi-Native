@@ -316,7 +316,7 @@ fn knowledge_schema_migrates_retry_schedule_and_generation_manifest_idempotently
             row.get::<_, i64>(0)
         })
         .expect("schema version");
-    assert_eq!(version, 4);
+    assert_eq!(version, 5);
     let has_retry_schedule = connection
         .prepare("PRAGMA table_info(knowledge_embedding_jobs)")
         .expect("job table info")
@@ -336,6 +336,69 @@ fn knowledge_schema_migrates_retry_schedule_and_generation_manifest_idempotently
         )
         .expect("manifest table");
     assert_eq!(manifest_table_count, 1);
+    let staging_table_count = connection
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master
+             WHERE type = 'table' AND name = 'knowledge_staging_documents'",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .expect("staging table");
+    assert_eq!(staging_table_count, 1);
+}
+
+#[test]
+fn staging_document_can_shadow_active_identity_without_touching_active_tables() {
+    let (dir, store, active_document) = queue_fixture();
+    let building = store
+        .begin_generation_build(
+            "system-linux",
+            "system",
+            KnowledgeVisibility::Public,
+            Some("fixture-v1"),
+            Some(2),
+        )
+        .expect("begin staging generation");
+    let mut staging_document = active_document.clone();
+    staging_document.generation = building.generation;
+    staging_document.title = "staged systemctl reference".to_string();
+    let summary = store
+        .stage_text_document(
+            &staging_document,
+            "systemctl status shows the staged service state",
+            &KnowledgeChunkingOptions::default(),
+        )
+        .expect("stage document");
+    assert_eq!(summary.document_id, active_document.document_id);
+    assert_eq!(summary.chunks_written, 1);
+
+    let connection = Connection::open(dir.path().join("knowledge.sqlite3")).expect("database");
+    let staged_documents = connection
+        .query_row(
+            "SELECT COUNT(*) FROM knowledge_staging_documents
+             WHERE space_id = 'system-linux' AND generation = ?1 AND document_id = ?2",
+            rusqlite::params![building.generation, active_document.document_id],
+            |row| row.get::<_, i64>(0),
+        )
+        .expect("staged document count");
+    let staged_chunks = connection
+        .query_row(
+            "SELECT COUNT(*) FROM knowledge_staging_chunks
+             WHERE space_id = 'system-linux' AND generation = ?1 AND document_id = ?2",
+            rusqlite::params![building.generation, active_document.document_id],
+            |row| row.get::<_, i64>(0),
+        )
+        .expect("staged chunk count");
+    let active_title = connection
+        .query_row(
+            "SELECT title FROM knowledge_documents WHERE document_id = ?1",
+            [&active_document.document_id],
+            |row| row.get::<_, String>(0),
+        )
+        .expect("active document");
+    assert_eq!(staged_documents, 1);
+    assert_eq!(staged_chunks, 1);
+    assert_eq!(active_title, active_document.title);
 }
 
 #[test]

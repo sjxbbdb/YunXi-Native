@@ -1192,6 +1192,156 @@ impl SqliteKnowledgeStore {
         })
     }
 
+    /// Ingest one document into a building generation without touching active tables.
+    ///
+    /// The staging key includes `space_id + generation + document_id`, so a
+    /// refresh can prepare the same logical document while the active copy
+    /// remains readable. Vector staging and activation are separate steps.
+    pub fn stage_text_document(
+        &self,
+        document: &KnowledgeDocument,
+        input: &str,
+        options: &KnowledgeChunkingOptions,
+    ) -> AgentResult<KnowledgeIngestSummary> {
+        validate_document(document)?;
+        let normalized = normalize_knowledge_text(input, options.max_input_chars)?;
+        let drafts = chunk_knowledge_text(&normalized, options)?;
+        let document_hash = content_hash(&normalized);
+        let mut connection = self.open_connection()?;
+        initialize_schema(&connection, &self.database)?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|error| sqlite_error(&self.database, "begin staging ingest", error))?;
+        let space = transaction
+            .query_row(
+                "SELECT owner, visibility, source, version FROM knowledge_spaces
+                 WHERE space_id = ?1",
+                params![document.space_id],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(|error| sqlite_error(&self.database, "read staging space", error))?
+            .ok_or_else(|| storage_error("staging document references an unknown space"))?;
+        let manifest_state = transaction
+            .query_row(
+                "SELECT state FROM knowledge_generation_manifests
+                 WHERE space_id = ?1 AND generation = ?2",
+                params![document.space_id, document.generation],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(|error| sqlite_error(&self.database, "read staging generation", error))?;
+        if manifest_state.as_deref() != Some(KnowledgeGenerationState::Building.as_str()) {
+            return Err(storage_error(
+                "staging document requires a building generation manifest",
+            ));
+        }
+        if space.0 != document.owner
+            || space.1 != document.visibility.as_str()
+            || space.2 != document.source
+            || (space.3 != document.version && space.3 != "mixed")
+        {
+            return Err(storage_error(
+                "staging document metadata does not match its space",
+            ));
+        }
+        let existing_chunks = transaction
+            .query_row(
+                "SELECT COUNT(*) FROM knowledge_staging_chunks
+                 WHERE space_id = ?1 AND generation = ?2 AND document_id = ?3",
+                params![document.space_id, document.generation, document.document_id],
+                |row| row.get::<_, i64>(0),
+            )
+            .map_err(|error| sqlite_error(&self.database, "count staging chunks", error))?;
+        let now = now_millis();
+        transaction
+            .execute(
+                "INSERT INTO knowledge_staging_documents
+                    (space_id, generation, document_id, title, source, version,
+                     owner, visibility, metadata_json, content_hash,
+                     created_at_millis, updated_at_millis)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?11)
+                 ON CONFLICT(space_id, generation, document_id) DO UPDATE SET
+                    title = excluded.title, source = excluded.source,
+                    version = excluded.version, owner = excluded.owner,
+                    visibility = excluded.visibility, metadata_json = excluded.metadata_json,
+                    content_hash = excluded.content_hash, updated_at_millis = excluded.updated_at_millis",
+                params![
+                    document.space_id,
+                    document.generation,
+                    document.document_id,
+                    document.title,
+                    document.source,
+                    document.version,
+                    document.owner,
+                    document.visibility.as_str(),
+                    document.metadata_json,
+                    document_hash,
+                    now,
+                ],
+            )
+            .map_err(|error| sqlite_error(&self.database, "write staging document", error))?;
+        transaction
+            .execute(
+                "DELETE FROM knowledge_staging_chunks
+                 WHERE space_id = ?1 AND generation = ?2 AND document_id = ?3",
+                params![document.space_id, document.generation, document.document_id],
+            )
+            .map_err(|error| sqlite_error(&self.database, "remove staging chunks", error))?;
+        for draft in &drafts {
+            let chunk_id = format!("{}#chunk-{}", document.document_id, draft.ordinal);
+            let metadata_json = serde_json::json!({
+                "content_hash": draft.content_hash,
+                "document_hash": document_hash,
+                "chunking": {
+                    "max_input_chars": options.max_input_chars,
+                    "max_chunk_chars": options.max_chunk_chars,
+                    "overlap_chars": options.overlap_chars,
+                },
+            })
+            .to_string();
+            transaction
+                .execute(
+                    "INSERT INTO knowledge_staging_chunks
+                        (space_id, generation, chunk_id, document_id, ordinal, content,
+                         source, version, owner, visibility, metadata_json,
+                         created_at_millis, updated_at_millis)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?12)",
+                    params![
+                        document.space_id,
+                        document.generation,
+                        chunk_id,
+                        document.document_id,
+                        draft.ordinal,
+                        draft.content,
+                        document.source,
+                        document.version,
+                        document.owner,
+                        document.visibility.as_str(),
+                        metadata_json,
+                        now,
+                    ],
+                )
+                .map_err(|error| sqlite_error(&self.database, "write staging chunk", error))?;
+        }
+        transaction
+            .commit()
+            .map_err(|error| sqlite_error(&self.database, "commit staging ingest", error))?;
+        Ok(KnowledgeIngestSummary {
+            document_id: document.document_id.clone(),
+            content_hash: document_hash,
+            chunks_written: drafts.len(),
+            chunks_removed: usize::try_from(existing_chunks).unwrap_or(usize::MAX),
+        })
+    }
+
     pub fn upsert_document(&self, document: &KnowledgeDocument) -> AgentResult<()> {
         validate_document(document)?;
         let mut connection = self.open_connection()?;
@@ -2348,7 +2498,7 @@ fn initialize_schema(connection: &Connection, path: &Path) -> AgentResult<()> {
              );
              INSERT INTO knowledge_schema(schema_version)
                 SELECT 1 WHERE NOT EXISTS (SELECT 1 FROM knowledge_schema);
-             UPDATE knowledge_schema SET schema_version = 4 WHERE schema_version < 4;
+             UPDATE knowledge_schema SET schema_version = 5 WHERE schema_version < 5;
              CREATE TABLE IF NOT EXISTS knowledge_spaces (
                 space_id TEXT PRIMARY KEY,
                 kind TEXT NOT NULL CHECK(kind IN ('system', 'project', 'private')),
@@ -2375,6 +2525,44 @@ fn initialize_schema(connection: &Connection, path: &Path) -> AgentResult<()> {
              );
              CREATE INDEX IF NOT EXISTS idx_knowledge_generation_manifests_state
                 ON knowledge_generation_manifests(space_id, state, generation);
+             CREATE TABLE IF NOT EXISTS knowledge_staging_documents (
+                space_id TEXT NOT NULL,
+                generation INTEGER NOT NULL,
+                document_id TEXT NOT NULL,
+                title TEXT NOT NULL,
+                source TEXT NOT NULL,
+                version TEXT NOT NULL,
+                owner TEXT NOT NULL,
+                visibility TEXT NOT NULL CHECK(visibility IN ('public', 'owner', 'private')),
+                metadata_json TEXT NOT NULL,
+                content_hash TEXT NOT NULL,
+                created_at_millis INTEGER NOT NULL,
+                updated_at_millis INTEGER NOT NULL,
+                PRIMARY KEY(space_id, generation, document_id),
+                FOREIGN KEY(space_id, generation)
+                    REFERENCES knowledge_generation_manifests(space_id, generation)
+             );
+             CREATE TABLE IF NOT EXISTS knowledge_staging_chunks (
+                space_id TEXT NOT NULL,
+                generation INTEGER NOT NULL,
+                chunk_id TEXT NOT NULL,
+                document_id TEXT NOT NULL,
+                ordinal INTEGER NOT NULL CHECK(ordinal >= 0),
+                content TEXT NOT NULL,
+                source TEXT NOT NULL,
+                version TEXT NOT NULL,
+                owner TEXT NOT NULL,
+                visibility TEXT NOT NULL CHECK(visibility IN ('public', 'owner', 'private')),
+                metadata_json TEXT NOT NULL,
+                created_at_millis INTEGER NOT NULL,
+                updated_at_millis INTEGER NOT NULL,
+                PRIMARY KEY(space_id, generation, chunk_id),
+                UNIQUE(space_id, generation, document_id, ordinal),
+                FOREIGN KEY(space_id, generation, document_id)
+                    REFERENCES knowledge_staging_documents(space_id, generation, document_id)
+             );
+             CREATE INDEX IF NOT EXISTS idx_knowledge_staging_chunks_document
+                ON knowledge_staging_chunks(space_id, generation, document_id, ordinal);
              CREATE TABLE IF NOT EXISTS knowledge_documents (
                 document_id TEXT PRIMARY KEY,
                 space_id TEXT NOT NULL REFERENCES knowledge_spaces(space_id),
@@ -2480,7 +2668,7 @@ fn initialize_schema(connection: &Connection, path: &Path) -> AgentResult<()> {
     }
     connection
         .execute(
-            "UPDATE knowledge_schema SET schema_version = 4 WHERE schema_version < 4",
+            "UPDATE knowledge_schema SET schema_version = 5 WHERE schema_version < 5",
             [],
         )
         .map_err(|error| sqlite_error(path, "update knowledge schema version", error))?;

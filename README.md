@@ -93,6 +93,11 @@ embedding 模型/维度与文档完整性计数，并在校验完成后标记为
 改变 `knowledge_spaces.generation`，也不会影响当前 RAG 查询。真正的 staging 文档、
 向量搬运与原子激活会在后续增量中实现。
 
+当前已可将文档文本写入 generation-scoped staging 表：同一个 `document_id` 可以在
+active 主表和候选 generation 中同时存在，staging 事务只替换候选代际自己的 chunks，
+不会触碰 FTS、主向量或 active 文档。staging 向量、完整性校验后的激活和旧代际保留
+仍未开放为用户命令。
+
 队列闭环现在也可显式验证：先用
 `yunxi-linux knowledge-enqueue <document-id> --cwd .` 为文档当前 generation 入队，
 再用 `yunxi-linux knowledge-worker --max-jobs 1 --cwd .` 处理有限数量的任务。worker
