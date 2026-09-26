@@ -6,6 +6,7 @@
 //! approval, sandboxing, and command execution remain outside this boundary.
 
 use crate::linux_source;
+use std::time::Instant;
 use yunxi_agent_core::AgentConfig;
 use yunxi_agent_persona::{LocalChargramEmbedding, MemoryEmbeddingProvider};
 use yunxi_agent_storage::{KnowledgeSearchResult, KnowledgeVectorMatch, SqliteKnowledgeStore};
@@ -20,6 +21,7 @@ pub(crate) struct LinuxPlanContext {
     source_version: Option<String>,
     keyword_matches: Vec<KnowledgeSearchResult>,
     vector_matches: Vec<KnowledgeVectorMatch>,
+    retrieval_latency_millis: u64,
 }
 
 impl LinuxPlanContext {
@@ -35,6 +37,7 @@ impl LinuxPlanContext {
             source_version,
             keyword_matches,
             vector_matches,
+            retrieval_latency_millis: 0,
         }
     }
 
@@ -55,6 +58,7 @@ impl LinuxPlanContext {
             source_version: self.source_version.clone(),
             keyword_evidence: self.keyword_matches.len(),
             vector_evidence: self.vector_matches.len(),
+            retrieval_latency_millis: self.retrieval_latency_millis,
             provenance,
         }
     }
@@ -135,6 +139,7 @@ pub(crate) fn build(config: &AgentConfig, prompt: &str) -> Option<LinuxPlanConte
     if prompt.trim().chars().count() < 3 {
         return None;
     }
+    let started = Instant::now();
     let store = SqliteKnowledgeStore::for_workspace(&config.cwd);
     let scope = store
         .active_space_scope(
@@ -178,5 +183,6 @@ pub(crate) fn build(config: &AgentConfig, prompt: &str) -> Option<LinuxPlanConte
         source_version,
         keyword_matches,
         vector_matches,
+        retrieval_latency_millis: started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64,
     })
 }

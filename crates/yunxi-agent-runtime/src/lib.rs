@@ -1102,6 +1102,14 @@ impl YunXiRuntimeBackend {
                             .unwrap_or_else(|| "0".to_string()),
                     ),
                     (
+                        "knowledge_retrieval_latency_ms",
+                        initial_messages
+                            .knowledge_diagnostic
+                            .as_ref()
+                            .map(|diagnostic| diagnostic.retrieval_latency_millis.to_string())
+                            .unwrap_or_else(|| "0".to_string()),
+                    ),
+                    (
                         "knowledge_source_version",
                         initial_messages
                             .knowledge_diagnostic
@@ -2059,6 +2067,7 @@ struct KnowledgeRecallDiagnostic {
     source_version: Option<String>,
     keyword_evidence: usize,
     vector_evidence: usize,
+    retrieval_latency_millis: u64,
     provenance: Vec<KnowledgeEvidenceDiagnostic>,
 }
 
