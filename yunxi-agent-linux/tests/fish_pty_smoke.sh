@@ -11,6 +11,10 @@ BINARY="${1:-${ROOT_DIR}/target/release/yunxi-linux}"
 command -v fish >/dev/null || { echo "fish is required" >&2; exit 77; }
 command -v python3 >/dev/null || { echo "python3 is required" >&2; exit 77; }
 test -x "$BINARY" || { echo "release binary not found: $BINARY" >&2; exit 77; }
+# `fish-init --print` resolves the running executable to an absolute path.  Use
+# the same canonical spelling for the replacement below so callers may pass a
+# convenient relative path such as `./target/release/yunxi-linux`.
+BINARY="$(cd "$(dirname "$BINARY")" && pwd)/$(basename "$BINARY")"
 
 TMP_ROOT="$(mktemp -d)"
 trap 'rm -rf "$TMP_ROOT"' EXIT

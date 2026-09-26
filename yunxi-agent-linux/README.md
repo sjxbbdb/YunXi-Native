@@ -187,4 +187,14 @@ fish -n ~/.config/fish/conf.d/yunxi.fish
 bash yunxi-agent-linux/tests/fish_pty_smoke.sh ./target/release/yunxi-linux
 ```
 
+可执行真实 Unix socket daemon smoke（不需要模型凭据，不会执行真实工具）：
+
+```bash
+bash yunxi-agent-linux/tests/daemon_ipc_smoke.sh ./target/release/yunxi-linux
+```
+
+它会启动真实 daemon，验证版本握手、Ping、未知回合的 Follow 重同步、回合失败的
+结构化 `Error` 帧，以及 SIGTERM 后 socket 清理。脚本使用临时 XDG 目录，结束后会
+自动删除测试状态。
+
 Linux 发行构建只使用本子项目的 `yunxi-linux` 二进制；Windows/Web/语音/微信参考源码位于仓库的 `references/`，不作为依赖构建。

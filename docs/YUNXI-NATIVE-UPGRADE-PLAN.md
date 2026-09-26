@@ -263,6 +263,12 @@ knowledge_fts
 
 当前已提供 `yunxi-linux systemd-unit` 输出模板、用户级服务示例、SIGTERM/SIGINT 清理路径、PID/start-time 锁校验，以及有界的“已完成回合”事件游标回放；daemon lock metadata 采用临时文件同步后硬链接抢占，损坏 metadata 不会被直接删除。活动回合断线续跑仍不支持，真实 PTY 矩阵由 Phase 2 的 smoke 先行覆盖。
 
+同时提供真实 Unix socket smoke：`yunxi-agent-linux/tests/daemon_ipc_smoke.sh` 在临时
+XDG 目录启动 release daemon，验证版本握手、Ping、未知回合 Follow 重同步、确定性
+Provider 配置失败的结构化 `Error` 帧，以及 SIGTERM 后 socket 清理；它不需要模型凭据，
+也不执行真实系统工具。该 smoke 与单元测试互补，前者覆盖真实进程/套接字生命周期，
+后者继续覆盖锁、回放和协议细节。
+
 **门槛**：并发启动、陈旧锁、权限、断线、重连、过期游标和 daemon 崩溃恢复测试通过。
 
 ### Phase 2：fish 原生接管
