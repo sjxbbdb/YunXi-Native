@@ -586,6 +586,180 @@ fn staging_embedding_worker_round_trip_keeps_active_queue_and_vectors_untouched(
 }
 
 #[test]
+fn ready_staging_generation_activates_atomically_and_rebuilds_fts() {
+    let (_dir, store, active_document) = queue_fixture();
+    let active_chunk = chunk(
+        &active_document.document_id,
+        "system",
+        KnowledgeVisibility::Public,
+        "systemctl status old active content",
+    );
+    store.upsert_chunk(&active_chunk).expect("active chunk");
+    let provider = LocalChargramEmbedding::default();
+    let active_embedding = provider
+        .embed(&active_chunk.content)
+        .expect("active embedding");
+    store
+        .upsert_vector(&KnowledgeVector {
+            chunk_id: active_chunk.chunk_id,
+            space_id: active_document.space_id.clone(),
+            embedding_model: active_embedding.model,
+            generation: 1,
+            vector: active_embedding.values,
+        })
+        .expect("active vector");
+
+    let building = store
+        .begin_generation_build(
+            "system-linux",
+            "system",
+            KnowledgeVisibility::Public,
+            Some(provider.model_id()),
+            Some(provider.dimensions()),
+        )
+        .expect("begin generation");
+    let mut staging_document = active_document.clone();
+    staging_document.generation = building.generation;
+    staging_document.title = "refreshed systemctl reference".to_string();
+    store
+        .stage_text_document(
+            &staging_document,
+            "systemctl status new active content",
+            &KnowledgeChunkingOptions::default(),
+        )
+        .expect("stage document");
+    store
+        .enqueue_staging_embedding_job(
+            &staging_document.space_id,
+            &staging_document.document_id,
+            provider.model_id(),
+            building.generation,
+        )
+        .expect("enqueue staging job");
+    let worker = store
+        .process_next_staging_embedding_job("activation-worker", &provider)
+        .expect("staging worker")
+        .expect("staging result");
+    assert_eq!(worker.job.status, KnowledgeEmbeddingJobStatus::Completed);
+    store
+        .mark_generation_ready(
+            &staging_document.space_id,
+            building.generation,
+            1,
+            1,
+            "activation-digest",
+        )
+        .expect("mark ready");
+
+    let candidate_scope = KnowledgeSearchScope {
+        space_id: staging_document.space_id.clone(),
+        owner: staging_document.owner.clone(),
+        generation: building.generation,
+        visibility: staging_document.visibility,
+    };
+    let activated = store
+        .activate_generation(&candidate_scope, provider.model_id(), provider.dimensions())
+        .expect("activate generation");
+    assert_eq!(activated.generation, building.generation);
+    assert_eq!(
+        activated.state,
+        yunxi_agent_storage::KnowledgeGenerationState::Ready
+    );
+    let active_scope = store
+        .active_space_scope("system-linux", "system", KnowledgeVisibility::Public)
+        .expect("active scope")
+        .expect("active scope exists");
+    assert_eq!(active_scope.generation, building.generation);
+
+    let lexical = store
+        .search("new active content", &active_scope, 5)
+        .expect("active FTS search");
+    assert_eq!(lexical.len(), 1);
+    assert_eq!(lexical[0].title, "refreshed systemctl reference");
+    let vector_query = provider
+        .embed("new active content")
+        .expect("query embedding");
+    let vectors = store
+        .search_vectors(&vector_query.values, provider.model_id(), &active_scope, 5)
+        .expect("active vector search");
+    assert_eq!(vectors.len(), 1);
+    assert_eq!(vectors[0].generation, building.generation);
+
+    let connection = Connection::open(store.database()).expect("database");
+    let staging_rows = connection
+        .query_row(
+            "SELECT COUNT(*) FROM knowledge_staging_documents
+             WHERE space_id = ?1 AND generation = ?2",
+            rusqlite::params![staging_document.space_id, building.generation],
+            |row| row.get::<_, i64>(0),
+        )
+        .expect("staging cleanup");
+    assert_eq!(staging_rows, 0);
+}
+
+#[test]
+fn failed_activation_leaves_previous_generation_searchable() {
+    let (_dir, store, active_document) = queue_fixture();
+    let active_chunk = chunk(
+        &active_document.document_id,
+        "system",
+        KnowledgeVisibility::Public,
+        "systemctl status rollback content",
+    );
+    store.upsert_chunk(&active_chunk).expect("active chunk");
+    let building = store
+        .begin_generation_build(
+            "system-linux",
+            "system",
+            KnowledgeVisibility::Public,
+            Some("fixture-v1"),
+            Some(2),
+        )
+        .expect("begin generation");
+    let mut staging_document = active_document.clone();
+    staging_document.generation = building.generation;
+    store
+        .stage_text_document(
+            &staging_document,
+            "systemctl status incomplete candidate",
+            &KnowledgeChunkingOptions::default(),
+        )
+        .expect("stage document");
+    store
+        .mark_generation_ready(
+            &staging_document.space_id,
+            building.generation,
+            1,
+            1,
+            "rollback-digest",
+        )
+        .expect("mark ready");
+    let error = store
+        .activate_generation(
+            &KnowledgeSearchScope {
+                space_id: staging_document.space_id,
+                owner: staging_document.owner,
+                generation: building.generation,
+                visibility: staging_document.visibility,
+            },
+            "fixture-v1",
+            2,
+        )
+        .expect_err("missing staging vectors must reject activation");
+    assert!(error.to_string().contains("vector coverage"));
+    let active_scope = store
+        .active_space_scope("system-linux", "system", KnowledgeVisibility::Public)
+        .expect("active scope")
+        .expect("active scope exists");
+    assert_eq!(active_scope.generation, 1);
+    let lexical = store
+        .search("rollback content", &active_scope, 5)
+        .expect("old active search");
+    assert_eq!(lexical.len(), 1);
+    assert_eq!(lexical[0].content, active_chunk.content);
+}
+
+#[test]
 fn embedding_jobs_are_idempotent_and_have_bounded_transitions() {
     let (_dir, store, document) = queue_fixture();
 

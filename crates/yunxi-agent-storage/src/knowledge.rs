@@ -1677,6 +1677,372 @@ impl SqliteKnowledgeStore {
         })
     }
 
+    /// Atomically promote a ready staging generation to the active scope.
+    ///
+    /// All validation and data movement happen inside one IMMEDIATE
+    /// transaction. Until commit, readers continue to observe the previous
+    /// active generation; any validation, foreign-key or uniqueness failure
+    /// rolls the old generation back into place.
+    pub fn activate_generation(
+        &self,
+        scope: &KnowledgeSearchScope,
+        embedding_model: &str,
+        dimensions: usize,
+    ) -> AgentResult<KnowledgeGeneration> {
+        validate_search_scope(scope)?;
+        if embedding_model.trim().is_empty() || dimensions == 0 {
+            return Err(storage_error(
+                "knowledge activation embedding metadata is invalid",
+            ));
+        }
+        let mut connection = self.open_connection()?;
+        initialize_schema(&connection, &self.database)?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|error| sqlite_error(&self.database, "begin knowledge activation", error))?;
+        let space = transaction
+            .query_row(
+                "SELECT owner, visibility, generation FROM knowledge_spaces
+                 WHERE space_id = ?1",
+                params![scope.space_id],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, i64>(2)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(|error| sqlite_error(&self.database, "read activation space", error))?
+            .ok_or_else(|| storage_error("knowledge activation references an unknown space"))?;
+        if space.0 != scope.owner || space.1 != scope.visibility.as_str() {
+            return Err(storage_error(
+                "knowledge activation scope does not match its space",
+            ));
+        }
+        if space.2 == scope.generation {
+            return Err(storage_error("knowledge generation is already active"));
+        }
+        let manifest = transaction
+            .query_row(
+                "SELECT state, expected_documents, indexed_documents,
+                        embedding_model, vector_dimensions, content_digest
+                 FROM knowledge_generation_manifests
+                 WHERE space_id = ?1 AND generation = ?2",
+                params![scope.space_id, scope.generation],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, i64>(1)?,
+                        row.get::<_, i64>(2)?,
+                        row.get::<_, Option<String>>(3)?,
+                        row.get::<_, Option<i64>>(4)?,
+                        row.get::<_, Option<String>>(5)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(|error| sqlite_error(&self.database, "read activation manifest", error))?
+            .ok_or_else(|| storage_error("knowledge activation generation is unknown"))?;
+        if manifest.0 != KnowledgeGenerationState::Ready.as_str() {
+            return Err(storage_error(
+                "knowledge activation requires a ready generation manifest",
+            ));
+        }
+        if manifest.2 != manifest.1 || manifest.1 < 0 {
+            return Err(storage_error(
+                "knowledge activation manifest document counts are inconsistent",
+            ));
+        }
+        if manifest.3.as_deref() != Some(embedding_model)
+            || manifest.4 != Some(i64::try_from(dimensions).unwrap_or(i64::MAX))
+        {
+            return Err(storage_error(
+                "knowledge activation embedding metadata does not match its manifest",
+            ));
+        }
+        if manifest.5.as_deref().is_none_or(str::is_empty) {
+            return Err(storage_error(
+                "knowledge activation manifest content digest is missing",
+            ));
+        }
+
+        let staged_documents = transaction
+            .query_row(
+                "SELECT COUNT(*) FROM knowledge_staging_documents
+                 WHERE space_id = ?1 AND generation = ?2
+                   AND owner = ?3 AND visibility = ?4",
+                params![
+                    scope.space_id,
+                    scope.generation,
+                    scope.owner,
+                    scope.visibility.as_str()
+                ],
+                |row| row.get::<_, i64>(0),
+            )
+            .map_err(|error| sqlite_error(&self.database, "count activation documents", error))?;
+        let staged_chunks = transaction
+            .query_row(
+                "SELECT COUNT(*) FROM knowledge_staging_chunks
+                 WHERE space_id = ?1 AND generation = ?2
+                   AND owner = ?3 AND visibility = ?4",
+                params![
+                    scope.space_id,
+                    scope.generation,
+                    scope.owner,
+                    scope.visibility.as_str()
+                ],
+                |row| row.get::<_, i64>(0),
+            )
+            .map_err(|error| sqlite_error(&self.database, "count activation chunks", error))?;
+        if staged_documents != manifest.1 {
+            return Err(storage_error(
+                "knowledge activation staging document count does not match its manifest",
+            ));
+        }
+        let metadata_mismatches = transaction
+            .query_row(
+                "SELECT COUNT(*) FROM knowledge_staging_documents
+                 WHERE space_id = ?1 AND generation = ?2
+                   AND (owner != ?3 OR visibility != ?4)",
+                params![
+                    scope.space_id,
+                    scope.generation,
+                    scope.owner,
+                    scope.visibility.as_str()
+                ],
+                |row| row.get::<_, i64>(0),
+            )
+            .map_err(|error| {
+                sqlite_error(&self.database, "check activation document metadata", error)
+            })?;
+        let chunk_metadata_mismatches = transaction
+            .query_row(
+                "SELECT COUNT(*) FROM knowledge_staging_chunks
+                 WHERE space_id = ?1 AND generation = ?2
+                   AND (owner != ?3 OR visibility != ?4)",
+                params![
+                    scope.space_id,
+                    scope.generation,
+                    scope.owner,
+                    scope.visibility.as_str()
+                ],
+                |row| row.get::<_, i64>(0),
+            )
+            .map_err(|error| {
+                sqlite_error(&self.database, "check activation chunk metadata", error)
+            })?;
+        if metadata_mismatches > 0 || chunk_metadata_mismatches > 0 {
+            return Err(storage_error(
+                "knowledge activation staging metadata does not match its scope",
+            ));
+        }
+        let staged_vectors = transaction
+            .query_row(
+                "SELECT COUNT(*) FROM knowledge_staging_vectors v
+                 JOIN knowledge_staging_chunks c
+                   ON c.space_id = v.space_id
+                  AND c.generation = v.generation
+                  AND c.chunk_id = v.chunk_id
+                 WHERE v.space_id = ?1 AND v.generation = ?2
+                   AND v.embedding_model = ?3 AND v.dimensions = ?4
+                   AND length(v.vector) = ?4 * 4
+                   AND c.owner = ?5 AND c.visibility = ?6",
+                params![
+                    scope.space_id,
+                    scope.generation,
+                    embedding_model,
+                    i64::try_from(dimensions).unwrap_or(i64::MAX),
+                    scope.owner,
+                    scope.visibility.as_str()
+                ],
+                |row| row.get::<_, i64>(0),
+            )
+            .map_err(|error| sqlite_error(&self.database, "count activation vectors", error))?;
+        if staged_vectors != staged_chunks {
+            return Err(storage_error(
+                "knowledge activation staging vector coverage is incomplete",
+            ));
+        }
+        let invalid_vectors = transaction
+            .query_row(
+                "SELECT COUNT(*) FROM knowledge_staging_vectors v
+                 JOIN knowledge_staging_chunks c
+                   ON c.space_id = v.space_id
+                  AND c.generation = v.generation
+                  AND c.chunk_id = v.chunk_id
+                 WHERE v.space_id = ?1 AND v.generation = ?2
+                   AND (v.embedding_model != ?3 OR v.dimensions != ?4
+                        OR length(v.vector) != v.dimensions * 4)",
+                params![
+                    scope.space_id,
+                    scope.generation,
+                    embedding_model,
+                    i64::try_from(dimensions).unwrap_or(i64::MAX)
+                ],
+                |row| row.get::<_, i64>(0),
+            )
+            .map_err(|error| sqlite_error(&self.database, "check activation vectors", error))?;
+        if invalid_vectors > 0 {
+            return Err(storage_error(
+                "knowledge activation staging contains invalid vectors",
+            ));
+        }
+        let incomplete_jobs = transaction
+            .query_row(
+                "SELECT COUNT(*) FROM knowledge_staging_embedding_jobs
+                 WHERE space_id = ?1 AND generation = ?2
+                   AND status IN ('pending', 'running', 'failed')",
+                params![scope.space_id, scope.generation],
+                |row| row.get::<_, i64>(0),
+            )
+            .map_err(|error| sqlite_error(&self.database, "check activation jobs", error))?;
+        if incomplete_jobs > 0 {
+            return Err(storage_error(
+                "knowledge activation staging has incomplete embedding jobs",
+            ));
+        }
+        let cross_space_collisions = transaction
+            .query_row(
+                "SELECT COUNT(*) FROM knowledge_staging_documents sd
+                 JOIN knowledge_documents d ON d.document_id = sd.document_id
+                 WHERE sd.space_id = ?1 AND sd.generation = ?2
+                   AND d.space_id != ?1",
+                params![scope.space_id, scope.generation],
+                |row| row.get::<_, i64>(0),
+            )
+            .map_err(|error| {
+                sqlite_error(
+                    &self.database,
+                    "check activation document collisions",
+                    error,
+                )
+            })?;
+        if cross_space_collisions > 0 {
+            return Err(storage_error(
+                "knowledge activation document id collides with another space",
+            ));
+        }
+
+        transaction
+            .execute(
+                "DELETE FROM knowledge_vectors
+                 WHERE chunk_id IN (SELECT chunk_id FROM knowledge_chunks WHERE space_id = ?1)",
+                params![scope.space_id],
+            )
+            .map_err(|error| sqlite_error(&self.database, "remove active vectors", error))?;
+        transaction
+            .execute(
+                "DELETE FROM knowledge_embedding_jobs
+                 WHERE document_id IN (SELECT document_id FROM knowledge_documents WHERE space_id = ?1)",
+                params![scope.space_id],
+            )
+            .map_err(|error| sqlite_error(&self.database, "remove active embedding jobs", error))?;
+        transaction
+            .execute(
+                "DELETE FROM knowledge_chunks WHERE space_id = ?1",
+                params![scope.space_id],
+            )
+            .map_err(|error| sqlite_error(&self.database, "remove active chunks", error))?;
+        transaction
+            .execute(
+                "DELETE FROM knowledge_documents WHERE space_id = ?1",
+                params![scope.space_id],
+            )
+            .map_err(|error| sqlite_error(&self.database, "remove active documents", error))?;
+        transaction
+            .execute(
+                "INSERT INTO knowledge_documents
+                    (document_id, space_id, title, source, version, generation, owner,
+                     visibility, metadata_json, created_at_millis, updated_at_millis)
+                 SELECT document_id, space_id, title, source, version, generation, owner,
+                        visibility, metadata_json, created_at_millis, updated_at_millis
+                 FROM knowledge_staging_documents
+                 WHERE space_id = ?1 AND generation = ?2",
+                params![scope.space_id, scope.generation],
+            )
+            .map_err(|error| sqlite_error(&self.database, "copy staging documents", error))?;
+        transaction
+            .execute(
+                "INSERT INTO knowledge_chunks
+                    (chunk_id, document_id, space_id, ordinal, content, source, version,
+                     generation, owner, visibility, metadata_json, created_at_millis,
+                     updated_at_millis)
+                 SELECT chunk_id, document_id, space_id, ordinal, content, source, version,
+                        generation, owner, visibility, metadata_json, created_at_millis,
+                        updated_at_millis
+                 FROM knowledge_staging_chunks
+                 WHERE space_id = ?1 AND generation = ?2",
+                params![scope.space_id, scope.generation],
+            )
+            .map_err(|error| sqlite_error(&self.database, "copy staging chunks", error))?;
+        transaction
+            .execute(
+                "INSERT INTO knowledge_vectors
+                    (chunk_id, space_id, embedding_model, dimensions, vector,
+                     generation, indexed_at_millis)
+                 SELECT chunk_id, space_id, embedding_model, dimensions, vector,
+                        generation, indexed_at_millis
+                 FROM knowledge_staging_vectors
+                 WHERE space_id = ?1 AND generation = ?2 AND embedding_model = ?3",
+                params![scope.space_id, scope.generation, embedding_model],
+            )
+            .map_err(|error| sqlite_error(&self.database, "copy staging vectors", error))?;
+        let updated = transaction
+            .execute(
+                "UPDATE knowledge_spaces SET generation = ?1, updated_at_millis = ?2
+                 WHERE space_id = ?3 AND generation = ?4",
+                params![scope.generation, now_millis(), scope.space_id, space.2],
+            )
+            .map_err(|error| sqlite_error(&self.database, "update active generation", error))?;
+        if updated != 1 {
+            return Err(storage_error(
+                "knowledge activation active scope changed during transaction",
+            ));
+        }
+        transaction
+            .execute(
+                "DELETE FROM knowledge_staging_embedding_jobs
+                 WHERE space_id = ?1 AND generation = ?2",
+                params![scope.space_id, scope.generation],
+            )
+            .map_err(|error| {
+                sqlite_error(&self.database, "remove staging embedding jobs", error)
+            })?;
+        transaction
+            .execute(
+                "DELETE FROM knowledge_staging_vectors
+                 WHERE space_id = ?1 AND generation = ?2",
+                params![scope.space_id, scope.generation],
+            )
+            .map_err(|error| sqlite_error(&self.database, "remove staging vectors", error))?;
+        transaction
+            .execute(
+                "DELETE FROM knowledge_staging_chunks
+                 WHERE space_id = ?1 AND generation = ?2",
+                params![scope.space_id, scope.generation],
+            )
+            .map_err(|error| sqlite_error(&self.database, "remove staging chunks", error))?;
+        transaction
+            .execute(
+                "DELETE FROM knowledge_staging_documents
+                 WHERE space_id = ?1 AND generation = ?2",
+                params![scope.space_id, scope.generation],
+            )
+            .map_err(|error| sqlite_error(&self.database, "remove staging documents", error))?;
+        let generation = read_knowledge_generation(
+            &transaction,
+            &self.database,
+            &scope.space_id,
+            scope.generation,
+        )?;
+        transaction
+            .commit()
+            .map_err(|error| sqlite_error(&self.database, "commit knowledge activation", error))?;
+        Ok(generation)
+    }
+
     /// Ingest one document into a building generation without touching active tables.
     ///
     /// The staging key includes `space_id + generation + document_id`, so a

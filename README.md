@@ -99,7 +99,10 @@ active 主表和候选 generation 中同时存在，staging 事务只替换候�
 staging 向量，并让 readiness 读取候选文档/chunk/vector 覆盖。候选代际现在还有独立的
 `knowledge_staging_embedding_jobs` 队列与有界 worker：它只处理 staging 文档和向量，
 拥有与 active 队列相同的 lease、退避、重试和失败诊断语义，不会写 active 表或修改
-`knowledge_spaces.generation`。完整性校验后的激活和旧代际保留仍未开放为用户命令。
+`knowledge_spaces.generation`。storage 层现在还提供原子 `activate_generation`：只有
+ready 候选通过文档、向量、任务和跨空间 ID 校验后，才在一个 SQLite `IMMEDIATE` 事务中
+替换 active 文档/chunk/vector、刷新 FTS 并切换 generation；失败会回滚，旧代际仍可检索。
+旧代际保留和面向用户的激活命令仍未开放。
 
 队列闭环现在也可显式验证：先用
 `yunxi-linux knowledge-enqueue <document-id> --cwd .` 为文档当前 generation 入队，
