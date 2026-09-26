@@ -56,10 +56,10 @@ use yunxi_agent_multi_agent::{
 use yunxi_agent_persona::{
     CompiledPersonaContext, ConversationState, HumanProfile, HumanProfileStore,
     LocalChargramEmbedding, MemoryKind, MemoryPipeline, MemoryPipelineInput,
-    MemoryRecallExplanation, MemoryRecallResult, MemoryRecallRouter, MemoryRecallRouterRequest,
-    MemorySensitivity, MemoryStatus, MemoryWritePolicy, PersonaProfile, PersonaProfileStore,
-    PersonaPromptCompiler, PersonaSettings, RelationshipFamiliarity, RelationshipGraphLite,
-    RelationshipState, SCHEMA_VERSION, now_millis as persona_now_millis,
+    MemoryRecallExplanation, MemoryRecallResult, MemoryRecallRoute, MemoryRecallRouter,
+    MemoryRecallRouterRequest, MemorySensitivity, MemoryStatus, MemoryWritePolicy, PersonaProfile,
+    PersonaProfileStore, PersonaPromptCompiler, PersonaSettings, RelationshipFamiliarity,
+    RelationshipGraphLite, RelationshipState, SCHEMA_VERSION, now_millis as persona_now_millis,
 };
 use yunxi_agent_protocol::{
     ProtocolRole, ResponseItem, ResponseItemDelta, ResponseStatus, StreamEvent,
@@ -1032,6 +1032,7 @@ impl YunXiRuntimeBackend {
             .build_initial_messages(&runtime_config, prompt, input_modality, input_channel)
             .await?;
         let context_state = initial_messages.context_state.clone();
+        let memory_diagnostic = memory_recall_diagnostic(&initial_messages.persona);
         sink.emit(AgentEvent::ContextStatus {
             active_context_tokens: context_state.status.active_context_tokens,
             token_limit_reached: context_state.status.token_limit_reached,
@@ -1067,6 +1068,82 @@ impl YunXiRuntimeBackend {
                     (
                         "history_fragments",
                         context_state.history_fragments.to_string(),
+                    ),
+                    (
+                        "knowledge_context",
+                        if initial_messages.knowledge_diagnostic.is_some() {
+                            "present".to_string()
+                        } else {
+                            "absent".to_string()
+                        },
+                    ),
+                    (
+                        "knowledge_active_generation",
+                        initial_messages
+                            .knowledge_diagnostic
+                            .as_ref()
+                            .map(|diagnostic| diagnostic.generation.to_string())
+                            .unwrap_or_else(|| "none".to_string()),
+                    ),
+                    (
+                        "knowledge_keyword_evidence",
+                        initial_messages
+                            .knowledge_diagnostic
+                            .as_ref()
+                            .map(|diagnostic| diagnostic.keyword_evidence.to_string())
+                            .unwrap_or_else(|| "0".to_string()),
+                    ),
+                    (
+                        "knowledge_vector_evidence",
+                        initial_messages
+                            .knowledge_diagnostic
+                            .as_ref()
+                            .map(|diagnostic| diagnostic.vector_evidence.to_string())
+                            .unwrap_or_else(|| "0".to_string()),
+                    ),
+                    (
+                        "knowledge_source_version",
+                        initial_messages
+                            .knowledge_diagnostic
+                            .as_ref()
+                            .and_then(|diagnostic| diagnostic.source_version.clone())
+                            .unwrap_or_else(|| "unknown".to_string()),
+                    ),
+                    (
+                        "memory_boot_selected",
+                        memory_diagnostic.boot_selected.to_string(),
+                    ),
+                    (
+                        "memory_dynamic_selected",
+                        memory_diagnostic.dynamic_selected.to_string(),
+                    ),
+                    (
+                        "memory_selected_by_source",
+                        serde_json::to_string(&memory_diagnostic.selected_by_source)
+                            .unwrap_or_else(|_| "{}".to_string()),
+                    ),
+                    (
+                        "memory_selected_by_scope",
+                        serde_json::to_string(&memory_diagnostic.selected_by_scope)
+                            .unwrap_or_else(|_| "{}".to_string()),
+                    ),
+                    (
+                        "memory_dropped_by_route",
+                        serde_json::to_string(&memory_diagnostic.dropped_by_route)
+                            .unwrap_or_else(|_| "{}".to_string()),
+                    ),
+                    ("memory_truncated", memory_diagnostic.truncated.to_string()),
+                    (
+                        "memory_dropped_unrelated",
+                        memory_diagnostic.dropped_unrelated.to_string(),
+                    ),
+                    (
+                        "memory_dropped_by_budget",
+                        memory_diagnostic.dropped_by_budget.to_string(),
+                    ),
+                    (
+                        "memory_dropped_duplicates",
+                        memory_diagnostic.dropped_duplicates.to_string(),
                     ),
                 ]),
             )
@@ -1962,6 +2039,87 @@ struct InitialMessages {
     restored_history: Option<RestoredHistory>,
     context_state: ContextManagerState,
     persona: PersonaTurnContext,
+    knowledge_diagnostic: Option<KnowledgeRecallDiagnostic>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct KnowledgeRecallDiagnostic {
+    generation: i64,
+    source_version: Option<String>,
+    keyword_evidence: usize,
+    vector_evidence: usize,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct MemoryRecallDiagnostic {
+    boot_selected: usize,
+    dynamic_selected: usize,
+    selected_by_source: BTreeMap<String, usize>,
+    selected_by_scope: BTreeMap<String, usize>,
+    dropped_by_route: BTreeMap<String, usize>,
+    truncated: bool,
+    dropped_unrelated: usize,
+    dropped_by_budget: usize,
+    dropped_duplicates: usize,
+}
+
+struct KnowledgeContext {
+    content: String,
+    diagnostic: KnowledgeRecallDiagnostic,
+}
+
+fn memory_recall_diagnostic(persona: &PersonaTurnContext) -> MemoryRecallDiagnostic {
+    let mut selected_by_source = BTreeMap::new();
+    let mut selected_by_scope = BTreeMap::new();
+    let mut dropped_by_route = BTreeMap::new();
+    let mut boot_selected = 0;
+    let mut dynamic_selected = 0;
+
+    for explanation in &persona.recall_explanations {
+        if explanation.selected {
+            match explanation.route {
+                MemoryRecallRoute::Boot => boot_selected += 1,
+                MemoryRecallRoute::Dynamic => dynamic_selected += 1,
+                _ => {}
+            }
+            *selected_by_source
+                .entry(explanation.source.clone())
+                .or_insert(0) += 1;
+            *selected_by_scope
+                .entry(explanation.scope.clone())
+                .or_insert(0) += 1;
+        } else {
+            *dropped_by_route
+                .entry(memory_recall_route_label(explanation.route).to_string())
+                .or_insert(0) += 1;
+        }
+    }
+
+    MemoryRecallDiagnostic {
+        boot_selected,
+        dynamic_selected,
+        selected_by_source,
+        selected_by_scope,
+        dropped_by_route,
+        truncated: persona.boot_context.truncated || persona.dynamic_recall.truncated,
+        dropped_unrelated: persona.boot_context.dropped_unrelated
+            + persona.dynamic_recall.dropped_unrelated,
+        dropped_by_budget: persona.boot_context.dropped_by_budget
+            + persona.dynamic_recall.dropped_by_budget,
+        dropped_duplicates: persona.boot_context.dropped_duplicates
+            + persona.dynamic_recall.dropped_duplicates,
+    }
+}
+
+fn memory_recall_route_label(route: MemoryRecallRoute) -> &'static str {
+    match route {
+        MemoryRecallRoute::Boot => "boot",
+        MemoryRecallRoute::Dynamic => "dynamic",
+        MemoryRecallRoute::DroppedDuplicate => "dropped_duplicate",
+        MemoryRecallRoute::DroppedUnrelated => "dropped_unrelated",
+        MemoryRecallRoute::DroppedBudget => "dropped_budget",
+        MemoryRecallRoute::DroppedInvalid => "dropped_invalid",
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -2475,9 +2633,9 @@ impl YunXiRuntimeBackend {
             messages.push(ProviderMessage::system(instructions));
         }
 
-        #[cfg(target_os = "linux")]
-        if let Some(knowledge_context) = load_linux_knowledge_context(config, prompt) {
-            messages.push(ProviderMessage::system(knowledge_context));
+        let knowledge_context = load_linux_knowledge_context_with_diagnostic(config, prompt);
+        if let Some(knowledge_context) = &knowledge_context {
+            messages.push(ProviderMessage::system(knowledge_context.content.clone()));
         }
 
         let mentioned_context = load_mentioned_file_context(&config.cwd, prompt)?;
@@ -2537,6 +2695,7 @@ impl YunXiRuntimeBackend {
             restored_history,
             context_state,
             persona,
+            knowledge_diagnostic: knowledge_context.map(|context| context.diagnostic),
         })
     }
 
@@ -2573,9 +2732,22 @@ fn channel_style_instructions(channel: AgentInputChannel) -> Option<&'static str
     }
 }
 
-#[cfg(target_os = "linux")]
-fn load_linux_knowledge_context(config: &AgentConfig, prompt: &str) -> Option<String> {
-    linux_planner::build(config, prompt).map(linux_planner::LinuxPlanContext::render)
+fn load_linux_knowledge_context_with_diagnostic(
+    config: &AgentConfig,
+    prompt: &str,
+) -> Option<KnowledgeContext> {
+    #[cfg(target_os = "linux")]
+    {
+        linux_planner::build(config, prompt).map(|plan| KnowledgeContext {
+            diagnostic: plan.diagnostic(),
+            content: plan.render(),
+        })
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (config, prompt);
+        None
+    }
 }
 
 #[cfg(target_os = "linux")]
@@ -6046,6 +6218,66 @@ mod companion_input_tests {
     }
 
     #[test]
+    fn memory_recall_diagnostic_aggregates_sources_without_memory_content() {
+        let mut persona = persona_with_relationship_explanation(true);
+        persona.boot_context = MemoryRecallResult {
+            truncated: true,
+            dropped_unrelated: 1,
+            dropped_by_budget: 2,
+            dropped_duplicates: 3,
+            ..MemoryRecallResult::default()
+        };
+        persona.dynamic_recall.dropped_by_budget = 4;
+        persona.recall_explanations = vec![
+            MemoryRecallExplanation {
+                memory_id: "boot-secret".to_string(),
+                route: MemoryRecallRoute::Boot,
+                score: 0.9,
+                selected: true,
+                reason: "boot rule".to_string(),
+                source: "rule".to_string(),
+                layer: MemoryLayer::Preference,
+                scope: "global_user".to_string(),
+                kind: MemoryKind::Preference,
+                relation: None,
+                temporal_reason: None,
+            },
+            persona.recall_explanations[0].clone(),
+            MemoryRecallExplanation {
+                memory_id: "dropped-secret".to_string(),
+                route: MemoryRecallRoute::DroppedBudget,
+                score: 0.1,
+                selected: false,
+                reason: "budget".to_string(),
+                source: "provider".to_string(),
+                layer: MemoryLayer::Episode,
+                scope: "workspace:test".to_string(),
+                kind: MemoryKind::ProjectContext,
+                relation: None,
+                temporal_reason: None,
+            },
+        ];
+
+        let diagnostic = memory_recall_diagnostic(&persona);
+
+        assert_eq!(diagnostic.boot_selected, 1);
+        assert_eq!(diagnostic.dynamic_selected, 1);
+        assert_eq!(diagnostic.selected_by_source.get("rule"), Some(&1));
+        assert_eq!(diagnostic.selected_by_source.get("test"), Some(&1));
+        assert_eq!(diagnostic.selected_by_scope.get("global_user"), Some(&1));
+        assert_eq!(diagnostic.selected_by_scope.get("relationship"), Some(&1));
+        assert_eq!(diagnostic.dropped_by_route.get("dropped_budget"), Some(&1));
+        assert!(diagnostic.truncated);
+        assert_eq!(diagnostic.dropped_unrelated, 1);
+        assert_eq!(diagnostic.dropped_by_budget, 6);
+        assert_eq!(diagnostic.dropped_duplicates, 3);
+
+        let serialized = serde_json::to_string(&diagnostic.selected_by_source).expect("json");
+        assert!(!serialized.contains("boot-secret"));
+        assert!(!serialized.contains("dropped-secret"));
+    }
+
+    #[test]
     fn selected_relationship_explanations_trigger_milestones_only_for_explicit_checks() {
         let normal =
             companion_input_from_prompt("hello", &persona_with_relationship_explanation(true));
@@ -6270,7 +6502,7 @@ mod linux_knowledge_tests {
             space_id: "system-linux".to_string(),
             title: "service recovery reference".to_string(),
             source: "local-linux".to_string(),
-            version: source_version,
+            version: source_version.clone(),
             generation: 7,
             owner: "system".to_string(),
             visibility: yunxi_agent_storage::KnowledgeVisibility::Public,
@@ -6304,10 +6536,19 @@ mod linux_knowledge_tests {
             .expect("vector");
 
         let config = AgentConfig::new(directory.path().to_path_buf());
-        let context = load_linux_knowledge_context(&config, "zzzz").expect("context");
-        assert!(context.contains("[Linux planning evidence | active_generation=7"));
-        assert!(context.contains("Vector evidence 1"));
-        assert!(context.contains("service recovery restart state"));
-        assert!(context.contains("collector=linux.fixture"));
+        let context =
+            load_linux_knowledge_context_with_diagnostic(&config, "zzzz").expect("context");
+        assert_eq!(context.diagnostic.generation, 7);
+        assert_eq!(context.diagnostic.source_version, Some(source_version));
+        assert_eq!(context.diagnostic.keyword_evidence, 0);
+        assert!(context.diagnostic.vector_evidence >= 1);
+        assert!(
+            context
+                .content
+                .contains("[Linux planning evidence | active_generation=7")
+        );
+        assert!(context.content.contains("Vector evidence 1"));
+        assert!(context.content.contains("service recovery restart state"));
+        assert!(context.content.contains("collector=linux.fixture"));
     }
 }

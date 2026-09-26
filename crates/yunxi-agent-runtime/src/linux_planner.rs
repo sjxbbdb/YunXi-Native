@@ -16,11 +16,21 @@ const MAX_EVIDENCE_CHARS: usize = 12_000;
 
 pub(crate) struct LinuxPlanContext {
     generation: i64,
+    source_version: Option<String>,
     keyword_matches: Vec<KnowledgeSearchResult>,
     vector_matches: Vec<KnowledgeVectorMatch>,
 }
 
 impl LinuxPlanContext {
+    pub(crate) fn diagnostic(&self) -> crate::KnowledgeRecallDiagnostic {
+        crate::KnowledgeRecallDiagnostic {
+            generation: self.generation,
+            source_version: self.source_version.clone(),
+            keyword_evidence: self.keyword_matches.len(),
+            vector_evidence: self.vector_matches.len(),
+        }
+    }
+
     pub(crate) fn render(self) -> String {
         let mut sections = Vec::new();
         if !self.keyword_matches.is_empty() {
@@ -91,6 +101,7 @@ pub(crate) fn build(config: &AgentConfig, prompt: &str) -> Option<LinuxPlanConte
     }
     Some(LinuxPlanContext {
         generation: scope.generation,
+        source_version,
         keyword_matches,
         vector_matches,
     })

@@ -77,7 +77,7 @@ Linux 版已经开始把系统能力接入为固定的 `linux_readonly` ToolSpec
 
 ### 知识库边界（Phase 4 基础切片）
 
-Linux 知识库已经有独立的 `SqliteKnowledgeStore` 基础：数据库文件为 `knowledge.sqlite3`，与长期记忆的 `long-term-vectors.sqlite3` 物理分离。知识空间、文档、chunk、generation、owner 和 visibility 会在检索前校验，当前支持 FTS5 和按模型隔离的有界向量检索。采集前会经过确定性的文本规范化和分块，不读取任意路径；`ingest_text` 在单事务内替换文档 chunk 并清理旧向量，文档 hash 与分块参数未变化时会跳过重建，避免索引与向量残留；`replace_document_vectors` 可为 embedding worker 原子替换一个文档的模型向量集合。它还没有接入 Planner 或执行器，知识文本不会被当作 shell 命令直接运行。
+Linux 知识库已经有独立的 `SqliteKnowledgeStore` 基础：数据库文件为 `knowledge.sqlite3`，与长期记忆的 `long-term-vectors.sqlite3` 物理分离。知识空间、文档、chunk、generation、owner 和 visibility 会在检索前校验，当前支持 FTS5 和按模型隔离的有界向量检索。采集前会经过确定性的文本规范化和分块，不读取任意路径；`ingest_text` 在单事务内替换文档 chunk 并清理旧向量，文档 hash 与分块参数未变化时会跳过重建，避免索引与向量残留；`replace_document_vectors` 可为 embedding worker 原子替换一个文档的模型向量集合。Runtime 通过只读 Planner 证据边界消费它，知识文本不会被当作 shell 命令直接运行。
 
 当前可通过 Linux CLI 的 `knowledge-index` 为已登记文档建立本地字符 n-gram 向量，
 再用 `knowledge-vector-search` 做有界召回；这是同步索引基础，不代表后台 embedding
@@ -91,8 +91,8 @@ generation CLI 管道完成。
 
 存储层现已增加独立的 generation manifest：可以为某个空间创建 `building` 代际、记录
 embedding 模型/维度与文档完整性计数，并在校验完成后标记为 `ready`；这些操作不会
-改变 `knowledge_spaces.generation`，也不会影响当前 RAG 查询。真正的 staging 文档、
-向量搬运与原子激活会在后续增量中实现。
+改变 `knowledge_spaces.generation`，也不会影响当前 RAG 查询。staging 文档、向量搬运与
+原子激活现在已经由 storage 原语和 Linux CLI 显式完成。
 
 当前已可将文档文本写入 generation-scoped staging 表：同一个 `document_id` 可以在
 active 主表和候选 generation 中同时存在，staging 事务只替换候选代际自己的 chunks，
@@ -168,6 +168,11 @@ Linux Runtime 通过只读的 `LinuxPlanContext` 有限召回同一空间的 FTS
 在 Linux 上，Runtime 只读取有界的 `/etc/os-release`（缺失时尝试
 `/usr/lib/os-release`）生成精确的 `source_version` 过滤；无法可靠解析时保持未过滤
 召回，不会猜测发行版或版本。
+
+每次上下文组装的 `context_assembled` 运行时元数据会同时记录 `knowledge_context`、
+active generation、FTS/向量证据数量和 `source_version`；记忆召回则继续通过独立的
+`MemoryRecall` 事件记录 scope、预算、丢弃原因和召回数量。两套诊断只记录来源与计数，
+不把个人记忆正文写入知识诊断，也不把知识正文写回记忆台账。
 
 知识库向量化目前可复用本地字符 n-gram provider，通过独立的
 `index_document_with_embeddings` 批量生成 `knowledge_vectors`；这与长期记忆向量库
