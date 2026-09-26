@@ -66,6 +66,9 @@ with tempfile.TemporaryDirectory(prefix="yunxi-knowledge-latency-") as directory
         raise SystemExit("no allowlisted help command was available")
     run_json(workspace, "knowledge-worker", "--max-jobs", "20")
 
+    default_output = run_json(workspace, "knowledge-search", "git log")
+    assert "diagnostics" not in default_output, default_output
+
     fts_queries = [
         "git log",
         "git status",
@@ -106,6 +109,7 @@ with tempfile.TemporaryDirectory(prefix="yunxi-knowledge-latency-") as directory
         "source_version": source_version,
         "workspace": "temporary",
         "sampling": "first query is reported as cold; remaining CLI invocations are warm-ish",
+        "default_json_compatible": True,
         "collected_help_commands": collected,
         "fts": {
             "cold": summary(fts_timings[:1]),
