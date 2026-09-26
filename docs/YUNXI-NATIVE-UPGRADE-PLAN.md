@@ -427,6 +427,12 @@ CLI 还提供 `knowledge-index` 和 `knowledge-vector-search`：前者使用当�
 有界 cosine 召回。两者都不读取或写入长期记忆向量库，后续接入更强 embedding
 模型时仍通过 provider + 批量替换契约。
 
+两个只读查询 CLI 支持显式 `--diagnostics`。开启后，JSON 才会带有有界诊断：
+`knowledge-search` 记录 `retrieval_latency_us`，`knowledge-vector-search` 分开记录
+embedding、数据库检索和总耗时，并给出 `result_count`；默认输出保持既有 schema 和
+字段兼容。它们仅用于本地性能基线，不包含查询正文、路径或私有知识内容，也不改变
+召回排序、空间过滤和执行边界。
+
 为避免混合空间的跨发行版误召回，`knowledge-search` 与
 `knowledge-vector-search` 都支持可选的 `--source-version` 精确过滤；不传时保持
 向后兼容的跨版本召回，但每条结果仍保留真实版本 provenance。Linux Runtime 自动

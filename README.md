@@ -190,6 +190,10 @@ CLI 验证路径：先运行 `yunxi-linux knowledge-index <document-id> --cwd .`
 不传 `--source-version` 时保持跨版本召回；传入后 FTS 与向量检索都只返回精确匹配
 的 chunk。当前默认模型为
 `yunxi-local-chargram-v1`，这是可替换的本地 provider，不代表最终 embedding 选型。
+查询 CLI 默认保持原有 JSON 结构；显式添加 `--diagnostics` 后，关键词检索会返回
+`retrieval_latency_us`，向量检索会分别返回 embedding、数据库检索和总耗时，以及
+`result_count`，便于在真实 Linux 环境建立冷启动/热查询 p50/p95 基线。这些字段只
+描述本次查询，不改变结果排序、知识空间权限或执行策略。
 
 如果来源需要撤回，使用 `yunxi-linux knowledge-retract <document-id> --cwd .`。
 撤回只允许命中固定的 `system-linux` 公共空间，并在一个事务内删除文档、chunk、

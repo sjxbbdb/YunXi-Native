@@ -24,6 +24,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 #[cfg(unix)]
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Instant;
 #[cfg(unix)]
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 #[cfg(unix)]
@@ -140,6 +141,9 @@ pub(crate) enum LinuxShellCommand {
         /// Restrict results to one recorded distro/runtime version.
         #[arg(long)]
         source_version: Option<String>,
+        /// Include opt-in latency and result-count diagnostics in the JSON output.
+        #[arg(long)]
+        diagnostics: bool,
     },
     /// Build local embeddings for one already ingested knowledge document.
     KnowledgeIndex {
@@ -193,6 +197,9 @@ pub(crate) enum LinuxShellCommand {
         /// Restrict results to one recorded distro/runtime version.
         #[arg(long)]
         source_version: Option<String>,
+        /// Include opt-in latency and result-count diagnostics in the JSON output.
+        #[arg(long)]
+        diagnostics: bool,
     },
     /// Retract one system knowledge document and its derived index rows.
     KnowledgeRetract {
@@ -332,7 +339,8 @@ pub(crate) async fn run_command(command: LinuxShellCommand) -> Result<()> {
             cwd,
             limit,
             source_version,
-        } => run_knowledge_search(query, cwd, limit, source_version.as_deref()),
+            diagnostics,
+        } => run_knowledge_search(query, cwd, limit, source_version.as_deref(), diagnostics),
         LinuxShellCommand::KnowledgeIndex { document_id, cwd } => {
             run_knowledge_index(document_id, cwd)
         }
@@ -352,7 +360,8 @@ pub(crate) async fn run_command(command: LinuxShellCommand) -> Result<()> {
             cwd,
             limit,
             source_version,
-        } => run_knowledge_vector_search(query, cwd, limit, source_version.as_deref()),
+            diagnostics,
+        } => run_knowledge_vector_search(query, cwd, limit, source_version.as_deref(), diagnostics),
         LinuxShellCommand::KnowledgeRetract { document_id, cwd } => {
             run_knowledge_retract(document_id, cwd)
         }
@@ -393,7 +402,9 @@ fn run_knowledge_search(
     cwd: PathBuf,
     limit: usize,
     source_version: Option<&str>,
+    diagnostics: bool,
 ) -> Result<()> {
+    let started = Instant::now();
     let cwd = std::fs::canonicalize(&cwd)
         .with_context(|| format!("无法访问知识工作区: {}", cwd.display()))?;
     let store = yunxi_agent_storage::SqliteKnowledgeStore::for_workspace(&cwd);
@@ -416,16 +427,21 @@ fn run_knowledge_search(
             })
         })
         .collect::<Vec<_>>();
-    println!(
-        "{}",
-        serde_json::to_string_pretty(&serde_json::json!({
-            "schema_version": 1,
-            "query": query,
-            "source_version": source_version,
-            "space_id": "system-linux",
-            "results": results,
-        }))?
-    );
+    let result_count = results.len();
+    let mut output = serde_json::json!({
+        "schema_version": 1,
+        "query": query,
+        "source_version": source_version,
+        "space_id": "system-linux",
+        "results": results,
+    });
+    if diagnostics {
+        output["diagnostics"] = serde_json::json!({
+            "retrieval_latency_us": started.elapsed().as_micros() as u64,
+            "result_count": result_count,
+        });
+    }
+    println!("{}", serde_json::to_string_pretty(&output)?);
     Ok(())
 }
 
@@ -810,16 +826,21 @@ fn run_knowledge_vector_search(
     cwd: PathBuf,
     limit: usize,
     source_version: Option<&str>,
+    diagnostics: bool,
 ) -> Result<()> {
+    let started = Instant::now();
     let cwd = std::fs::canonicalize(&cwd)
         .with_context(|| format!("无法访问知识工作区: {}", cwd.display()))?;
     let store = yunxi_agent_storage::SqliteKnowledgeStore::for_workspace(&cwd);
     let provider = yunxi_agent_persona::LocalChargramEmbedding::default();
+    let embedding_started = Instant::now();
     let embedding = yunxi_agent_persona::MemoryEmbeddingProvider::embed(&provider, &query)
         .map_err(|error| anyhow::anyhow!("知识查询 embedding 失败: {error}"))?;
+    let embedding_latency_us = embedding_started.elapsed().as_micros() as u64;
     let Some(scope) = active_system_scope(&store)? else {
         bail!("Linux 知识库尚未初始化，请先运行 knowledge-help 或 knowledge-man");
     };
+    let retrieval_started = Instant::now();
     let matches = store.search_vectors_versioned(
         &embedding.values,
         provider.model_id(),
@@ -827,6 +848,7 @@ fn run_knowledge_vector_search(
         source_version,
         limit.min(50),
     )?;
+    let retrieval_latency_us = retrieval_started.elapsed().as_micros() as u64;
     let results = matches
         .into_iter()
         .map(|item| {
@@ -844,17 +866,24 @@ fn run_knowledge_vector_search(
             })
         })
         .collect::<Vec<_>>();
-    println!(
-        "{}",
-        serde_json::to_string_pretty(&serde_json::json!({
-            "schema_version": 1,
-            "query": query,
-            "source_version": source_version,
-            "embedding_model": provider.model_id(),
-            "space_id": "system-linux",
-            "results": results,
-        }))?
-    );
+    let result_count = results.len();
+    let mut output = serde_json::json!({
+        "schema_version": 1,
+        "query": query,
+        "source_version": source_version,
+        "embedding_model": provider.model_id(),
+        "space_id": "system-linux",
+        "results": results,
+    });
+    if diagnostics {
+        output["diagnostics"] = serde_json::json!({
+            "embedding_latency_us": embedding_latency_us,
+            "retrieval_latency_us": retrieval_latency_us,
+            "total_latency_us": started.elapsed().as_micros() as u64,
+            "result_count": result_count,
+        });
+    }
+    println!("{}", serde_json::to_string_pretty(&output)?);
     Ok(())
 }
 
