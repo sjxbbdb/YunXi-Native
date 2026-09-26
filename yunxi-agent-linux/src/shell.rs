@@ -126,6 +126,17 @@ pub(crate) enum LinuxShellCommand {
         #[arg(long, default_value = ".")]
         cwd: PathBuf,
     },
+    /// Search the isolated system knowledge space without executing results.
+    KnowledgeSearch {
+        /// FTS query text.
+        query: String,
+        /// Workspace whose `.yunxi/knowledge/knowledge.sqlite3` is queried.
+        #[arg(long, default_value = ".")]
+        cwd: PathBuf,
+        /// Maximum number of matches to return.
+        #[arg(long, default_value_t = 10)]
+        limit: usize,
+    },
     /// Hidden long-lived process used by shell-intercept.
     #[command(hide = true)]
     Daemon,
@@ -175,8 +186,48 @@ pub(crate) async fn run_command(command: LinuxShellCommand) -> Result<()> {
             source_version,
             cwd,
         } => run_knowledge_help(command, source_version, cwd).await,
+        LinuxShellCommand::KnowledgeSearch { query, cwd, limit } => {
+            run_knowledge_search(query, cwd, limit)
+        }
         LinuxShellCommand::Daemon => run_daemon().await,
     }
+}
+
+fn run_knowledge_search(query: String, cwd: PathBuf, limit: usize) -> Result<()> {
+    let cwd = std::fs::canonicalize(&cwd)
+        .with_context(|| format!("无法访问知识工作区: {}", cwd.display()))?;
+    let store = yunxi_agent_storage::SqliteKnowledgeStore::for_workspace(&cwd);
+    let scope = yunxi_agent_storage::KnowledgeSearchScope {
+        space_id: "system-linux".to_string(),
+        owner: "system".to_string(),
+        generation: 1,
+        visibility: yunxi_agent_storage::KnowledgeVisibility::Public,
+    };
+    let matches = store.search(&query, &scope, limit.min(50))?;
+    let results = matches
+        .into_iter()
+        .map(|item| {
+            serde_json::json!({
+                "chunk_id": item.chunk_id,
+                "document_id": item.document_id,
+                "title": item.title,
+                "content": item.content,
+                "source": item.source,
+                "version": item.version,
+                "rank": item.rank,
+            })
+        })
+        .collect::<Vec<_>>();
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&serde_json::json!({
+            "schema_version": 1,
+            "query": query,
+            "space_id": "system-linux",
+            "results": results,
+        }))?
+    );
+    Ok(())
 }
 
 async fn run_knowledge_help(command: String, source_version: String, cwd: PathBuf) -> Result<()> {
