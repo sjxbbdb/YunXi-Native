@@ -491,6 +491,30 @@ impl SqliteKnowledgeStore {
         generation: i64,
         vectors: &[KnowledgeVector],
     ) -> AgentResult<usize> {
+        self.replace_document_vectors_checked(
+            document_id,
+            embedding_model,
+            generation,
+            vectors,
+            None,
+        )
+    }
+
+    /// Atomically replaces vectors after checking that the chunks embedded by
+    /// the caller are still the chunks currently stored for the document.
+    ///
+    /// The optional snapshot is used by the embedding path, where reading and
+    /// embedding chunks necessarily happens outside the replacement
+    /// transaction. A concurrent chunk update must invalidate that work before
+    /// any old vectors are removed or new vectors are written.
+    fn replace_document_vectors_checked(
+        &self,
+        document_id: &str,
+        embedding_model: &str,
+        generation: i64,
+        vectors: &[KnowledgeVector],
+        expected_chunks: Option<&[(String, String)]>,
+    ) -> AgentResult<usize> {
         if document_id.trim().is_empty() || embedding_model.trim().is_empty() || generation < 0 {
             return Err(storage_error("knowledge vector batch metadata is invalid"));
         }
@@ -514,6 +538,37 @@ impl SqliteKnowledgeStore {
             return Err(storage_error(
                 "knowledge vector batch generation does not match its document",
             ));
+        }
+
+        if let Some(expected_chunks) = expected_chunks {
+            let mut statement = transaction
+                .prepare(
+                    "SELECT chunk_id, content
+                     FROM knowledge_chunks
+                     WHERE document_id = ?1 ORDER BY ordinal ASC, chunk_id ASC",
+                )
+                .map_err(|error| {
+                    sqlite_error(&self.database, "prepare knowledge chunk snapshot", error)
+                })?;
+            let current_chunks = statement
+                .query_map(params![document_id], |row| {
+                    let chunk_id = row.get::<_, String>(0)?;
+                    let content = row.get::<_, String>(1)?;
+                    Ok((chunk_id, content_hash(&content)))
+                })
+                .map_err(|error| {
+                    sqlite_error(&self.database, "query knowledge chunk snapshot", error)
+                })?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|error| {
+                    sqlite_error(&self.database, "read knowledge chunk snapshot", error)
+                })?;
+            drop(statement);
+            if current_chunks != expected_chunks {
+                return Err(storage_error(
+                    "knowledge chunks changed during embedding; retry indexing",
+                ));
+            }
         }
 
         let mut seen_chunks = HashSet::with_capacity(vectors.len());
@@ -669,7 +724,8 @@ impl SqliteKnowledgeStore {
         let mut statement = connection
             .prepare(
                 "SELECT chunk_id, space_id, generation, content
-                 FROM knowledge_chunks WHERE document_id = ?1 ORDER BY ordinal ASC",
+                 FROM knowledge_chunks
+                 WHERE document_id = ?1 ORDER BY ordinal ASC, chunk_id ASC",
             )
             .map_err(|error| {
                 sqlite_error(&self.database, "prepare knowledge embedding chunks", error)
@@ -685,12 +741,17 @@ impl SqliteKnowledgeStore {
             })
             .map_err(|error| {
                 sqlite_error(&self.database, "query knowledge embedding chunks", error)
+            })?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| {
+                sqlite_error(&self.database, "read knowledge embedding chunks", error)
             })?;
+        drop(statement);
+        let mut expected_chunks = Vec::new();
         let mut vectors = Vec::new();
         for row in rows {
-            let (chunk_id, space_id, generation, content) = row.map_err(|error| {
-                sqlite_error(&self.database, "read knowledge embedding chunk", error)
-            })?;
+            let (chunk_id, space_id, generation, content) = row;
+            expected_chunks.push((chunk_id.clone(), content_hash(&content)));
             let embedding = provider.embed(&content).map_err(|error| {
                 storage_error(format!("knowledge embedding provider failed: {error}"))
             })?;
@@ -709,9 +770,13 @@ impl SqliteKnowledgeStore {
                 vector: embedding.values,
             });
         }
-        drop(statement);
-        let chunks_indexed =
-            self.replace_document_vectors(document_id, provider.model_id(), document.1, &vectors)?;
+        let chunks_indexed = self.replace_document_vectors_checked(
+            document_id,
+            provider.model_id(),
+            document.1,
+            &vectors,
+            Some(&expected_chunks),
+        )?;
         Ok(KnowledgeEmbeddingSummary {
             document_id: document_id.to_string(),
             embedding_model: provider.model_id().to_string(),

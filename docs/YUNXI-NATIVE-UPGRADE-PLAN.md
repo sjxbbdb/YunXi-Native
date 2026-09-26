@@ -321,6 +321,8 @@ FTS 内容或孤立向量；文档 hash 与分块参数都未变化时会跳过�
 内容变化或模型/维度变化时才重建。
 即使调用方绕过 ingest 直接 `upsert_chunk` 更新内容，存储层也会在同一事务中失效该
 chunk 的旧向量，保证增量索引不会复用过期 embedding。
+Embedding 计算与批量写入之间若发生 chunk 更新，替换事务会再次核对 chunk 内容 hash，
+发现快照失效就拒绝写入并要求重试，避免旧内容向量落到新 chunk 上。
 
 当前还新增了 Linux P0 `man` 采集器：只接受经过 token 校验的 topic/section，使用
 固定 `man --locale=C -P cat` argv、只读执行策略、`MANPAGER/PAGER/TERM` 固定环境和

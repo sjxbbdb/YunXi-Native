@@ -1,6 +1,8 @@
 use rusqlite::Connection;
 use tempfile::tempdir;
-use yunxi_agent_persona::{LocalChargramEmbedding, MemoryEmbeddingProvider};
+use yunxi_agent_persona::{
+    LocalChargramEmbedding, MemoryEmbedding, MemoryEmbeddingError, MemoryEmbeddingProvider,
+};
 use yunxi_agent_storage::{
     KnowledgeChunk, KnowledgeChunkingOptions, KnowledgeDocument, KnowledgeSearchScope,
     KnowledgeSpaceKind, KnowledgeSpaceSpec, KnowledgeVector, KnowledgeVisibility,
@@ -779,4 +781,74 @@ fn local_embedding_indexes_knowledge_chunks_without_touching_memory_vectors() {
         .expect("knowledge vector search");
     assert_eq!(matches.len(), 1);
     assert_eq!(matches[0].document_id, document.document_id);
+}
+
+#[derive(Clone)]
+struct MutatingEmbeddingProvider {
+    store: SqliteKnowledgeStore,
+    replacement: KnowledgeChunk,
+}
+
+impl MemoryEmbeddingProvider for MutatingEmbeddingProvider {
+    fn model_id(&self) -> &str {
+        "fixture-mutating-v1"
+    }
+
+    fn dimensions(&self) -> usize {
+        2
+    }
+
+    fn embed(&self, _text: &str) -> Result<MemoryEmbedding, MemoryEmbeddingError> {
+        self.store
+            .upsert_chunk(&self.replacement)
+            .map_err(|error| MemoryEmbeddingError::Provider(error.to_string()))?;
+        MemoryEmbedding::new(self.model_id(), vec![1.0, 0.0])
+    }
+}
+
+#[test]
+fn embedding_index_rejects_chunks_changed_during_embedding() {
+    let dir = tempdir().expect("tempdir");
+    let store = SqliteKnowledgeStore::new(dir.path().join("knowledge.sqlite3"));
+    store
+        .upsert_space(&space(
+            "system-linux",
+            KnowledgeSpaceKind::System,
+            "system",
+            KnowledgeVisibility::Public,
+            1,
+        ))
+        .expect("space");
+    let document = document("system-linux", "system", KnowledgeVisibility::Public);
+    store.upsert_document(&document).expect("document");
+    let original = chunk(
+        &document.document_id,
+        "system",
+        KnowledgeVisibility::Public,
+        "systemctl original content",
+    );
+    store.upsert_chunk(&original).expect("chunk");
+    let mut replacement = original.clone();
+    replacement.content = "systemctl changed during embedding".to_string();
+    let provider = MutatingEmbeddingProvider {
+        store: store.clone(),
+        replacement,
+    };
+
+    let result = store.index_document_with_embeddings(&document.document_id, &provider);
+    assert!(result.is_err());
+    let matches = store
+        .search_vectors(
+            &[1.0, 0.0],
+            provider.model_id(),
+            &KnowledgeSearchScope {
+                space_id: "system-linux".to_string(),
+                owner: "system".to_string(),
+                generation: 1,
+                visibility: KnowledgeVisibility::Public,
+            },
+            5,
+        )
+        .expect("vector search");
+    assert!(matches.is_empty());
 }
