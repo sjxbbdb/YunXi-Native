@@ -403,4 +403,26 @@ fn ingest_text_replaces_stale_chunks_and_vectors_atomically() {
             .unwrap()
             .is_empty()
     );
+
+    store
+        .upsert_vector(&KnowledgeVector {
+            chunk_id: "ingested-doc#chunk-0".to_string(),
+            space_id: "system-linux".to_string(),
+            embedding_model: "fixture-v1".to_string(),
+            generation: 1,
+            vector: vec![0.0, 1.0],
+        })
+        .expect("new vector");
+    let unchanged = store
+        .ingest_text(&document, "new ip route note", &options)
+        .expect("unchanged ingest");
+    assert_eq!(unchanged.chunks_written, 0);
+    assert_eq!(unchanged.chunks_removed, 0);
+    assert_eq!(
+        store
+            .search_vectors(&[0.0, 1.0], "fixture-v1", &scope, 5)
+            .unwrap()
+            .len(),
+        1
+    );
 }

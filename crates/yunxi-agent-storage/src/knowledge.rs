@@ -429,13 +429,50 @@ impl SqliteKnowledgeStore {
                 ],
             )
             .map_err(|error| sqlite_error(&self.database, "upsert ingested document", error))?;
-        let chunks_removed = transaction
+        let existing_chunks = transaction
             .query_row(
                 "SELECT COUNT(*) FROM knowledge_chunks WHERE document_id = ?1",
                 params![document.document_id],
                 |row| row.get::<_, i64>(0),
             )
             .map_err(|error| sqlite_error(&self.database, "count stale knowledge chunks", error))?;
+        let max_input_chars = i64::try_from(options.max_input_chars).unwrap_or(i64::MAX);
+        let max_chunk_chars = i64::try_from(options.max_chunk_chars).unwrap_or(i64::MAX);
+        let overlap_chars = i64::try_from(options.overlap_chars).unwrap_or(i64::MAX);
+        let matching_chunks = transaction
+            .query_row(
+                "SELECT COUNT(*) FROM knowledge_chunks
+                 WHERE document_id = ?1
+                   AND json_extract(metadata_json, '$.document_hash') = ?2
+                   AND CAST(json_extract(metadata_json, '$.chunking.max_input_chars') AS INTEGER) = ?3
+                   AND CAST(json_extract(metadata_json, '$.chunking.max_chunk_chars') AS INTEGER) = ?4
+                   AND CAST(json_extract(metadata_json, '$.chunking.overlap_chars') AS INTEGER) = ?5",
+                params![
+                    document.document_id,
+                    document_hash,
+                    max_input_chars,
+                    max_chunk_chars,
+                    overlap_chars,
+                ],
+                |row| row.get::<_, i64>(0),
+            )
+            .map_err(|error| {
+                sqlite_error(&self.database, "check unchanged knowledge chunks", error)
+            })?;
+        if existing_chunks == i64::try_from(drafts.len()).unwrap_or(i64::MAX)
+            && matching_chunks == existing_chunks
+        {
+            transaction.commit().map_err(|error| {
+                sqlite_error(&self.database, "commit unchanged knowledge ingest", error)
+            })?;
+            return Ok(KnowledgeIngestSummary {
+                document_id: document.document_id.clone(),
+                content_hash: document_hash,
+                chunks_written: 0,
+                chunks_removed: 0,
+            });
+        }
+        let chunks_removed = existing_chunks;
         transaction
             .execute(
                 "DELETE FROM knowledge_vectors
@@ -458,6 +495,11 @@ impl SqliteKnowledgeStore {
             let metadata_json = serde_json::json!({
                 "content_hash": draft.content_hash,
                 "document_hash": document_hash,
+                "chunking": {
+                    "max_input_chars": options.max_input_chars,
+                    "max_chunk_chars": options.max_chunk_chars,
+                    "overlap_chars": options.overlap_chars,
+                },
             })
             .to_string();
             transaction
