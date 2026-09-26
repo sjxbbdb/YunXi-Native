@@ -1,5 +1,7 @@
 mod general_companion;
 #[cfg(target_os = "linux")]
+mod linux_planner;
+#[cfg(target_os = "linux")]
 mod linux_source;
 
 /// Detect the bounded Linux host source version used by knowledge provenance.
@@ -51,8 +53,6 @@ use yunxi_agent_multi_agent::{
     AgentId, AgentStatus, ChildAgentRunRequest, ChildAgentRunResult, ChildAgentRuntime,
     InMemoryAgentRegistry, MultiAgentCommand, MultiAgentCommandResult,
 };
-#[cfg(target_os = "linux")]
-use yunxi_agent_persona::MemoryEmbeddingProvider;
 use yunxi_agent_persona::{
     CompiledPersonaContext, ConversationState, HumanProfile, HumanProfileStore,
     LocalChargramEmbedding, MemoryKind, MemoryPipeline, MemoryPipelineInput,
@@ -2575,49 +2575,7 @@ fn channel_style_instructions(channel: AgentInputChannel) -> Option<&'static str
 
 #[cfg(target_os = "linux")]
 fn load_linux_knowledge_context(config: &AgentConfig, prompt: &str) -> Option<String> {
-    if prompt.trim().chars().count() < 3 {
-        return None;
-    }
-    let store = yunxi_agent_storage::SqliteKnowledgeStore::for_workspace(&config.cwd);
-    let scope = store
-        .active_space_scope(
-            "system-linux",
-            "system",
-            yunxi_agent_storage::KnowledgeVisibility::Public,
-        )
-        .ok()
-        .flatten()?;
-    let source_version = linux_source::detect_source_version();
-    let keyword_matches = store
-        .search_versioned(prompt, &scope, source_version.as_deref(), 4)
-        .unwrap_or_default();
-    let vector_matches = LocalChargramEmbedding::default()
-        .embed(prompt)
-        .ok()
-        .and_then(|embedding| {
-            store
-                .search_vectors_versioned(
-                    &embedding.values,
-                    &embedding.model,
-                    &scope,
-                    source_version.as_deref(),
-                    4,
-                )
-                .ok()
-        })
-        .unwrap_or_default();
-    let vector_matches = filter_duplicate_linux_vector_evidence(&keyword_matches, vector_matches);
-    if keyword_matches.is_empty() && vector_matches.is_empty() {
-        return None;
-    }
-    let mut contexts = Vec::new();
-    if !keyword_matches.is_empty() {
-        contexts.push(format_linux_knowledge_context(&keyword_matches));
-    }
-    if !vector_matches.is_empty() {
-        contexts.push(format_linux_knowledge_vector_context(&vector_matches));
-    }
-    Some(contexts.join("\n"))
+    linux_planner::build(config, prompt).map(linux_planner::LinuxPlanContext::render)
 }
 
 #[cfg(target_os = "linux")]
@@ -6189,6 +6147,7 @@ mod companion_input_tests {
 #[cfg(all(test, target_os = "linux"))]
 mod linux_knowledge_tests {
     use super::*;
+    use yunxi_agent_persona::MemoryEmbeddingProvider;
 
     #[test]
     fn knowledge_context_is_marked_as_untrusted_reference() {
@@ -6346,6 +6305,7 @@ mod linux_knowledge_tests {
 
         let config = AgentConfig::new(directory.path().to_path_buf());
         let context = load_linux_knowledge_context(&config, "zzzz").expect("context");
+        assert!(context.contains("[Linux planning evidence | active_generation=7"));
         assert!(context.contains("Vector evidence 1"));
         assert!(context.contains("service recovery restart state"));
         assert!(context.contains("collector=linux.fixture"));

@@ -160,8 +160,10 @@ space；topic/section 不允许 shell 语法或路径，缺少 man、非零退�
 
 采集后的 system 知识可以用 `yunxi-linux knowledge-search <query> --cwd .` 只读检查；
 在混合空间中可用 `--source-version ubuntu-24.04` 做精确版本过滤。
-Linux Runtime 会有限召回同一空间的 FTS 与本地向量证据并把它们标记为不可信参考；它不会替代
-人格、记忆、审批或沙盒，也不会把知识文本直接当作命令执行。
+Linux Runtime 通过只读的 `LinuxPlanContext` 有限召回同一空间的 FTS 与本地向量证据，
+并把它们标记为不可信参考；这个边界只负责 active generation、版本过滤、去重、来源标注
+和固定字符预算，不执行命令，也不创建 `ToolRequest`。它不会替代人格、记忆、审批或沙盒，
+也不会把知识文本直接当作命令执行。
 同一 chunk 若被两种检索同时命中，只保留一份 FTS 证据，避免重复占用上下文预算。
 在 Linux 上，Runtime 只读取有界的 `/etc/os-release`（缺失时尝试
 `/usr/lib/os-release`）生成精确的 `source_version` 过滤；无法可靠解析时保持未过滤
