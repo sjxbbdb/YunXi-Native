@@ -345,8 +345,9 @@ CLI 还提供 `knowledge-index` 和 `knowledge-vector-search`：前者使用当�
 
 为避免混合空间的跨发行版误召回，`knowledge-search` 与
 `knowledge-vector-search` 都支持可选的 `--source-version` 精确过滤；不传时保持
-向后兼容的跨版本召回，但每条结果仍保留真实版本 provenance。Runtime 自动召回
-暂不猜测发行版版本，待后续增加可靠的系统来源探测/显式配置后再接入同一过滤边界。
+向后兼容的跨版本召回，但每条结果仍保留真实版本 provenance。Linux Runtime 自动
+召回只读取有界的 `/etc/os-release`（缺失时尝试 `/usr/lib/os-release`）生成同一
+过滤值；无法可靠解析时保持未过滤召回，不会猜测发行版或版本。
 
 **门槛**：索引可增量更新、失败可回滚、来源可追踪、风险命令可标记、空间隔离和撤回测试通过、RAG 召回指标达标。
 

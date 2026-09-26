@@ -1,4 +1,6 @@
 mod general_companion;
+#[cfg(target_os = "linux")]
+mod linux_source;
 mod love_letter;
 mod runtime_state;
 mod session_driver;
@@ -2570,7 +2572,10 @@ fn load_linux_knowledge_context(config: &AgentConfig, prompt: &str) -> Option<St
         generation: 1,
         visibility: yunxi_agent_storage::KnowledgeVisibility::Public,
     };
-    let matches = store.search(prompt, &scope, 4).ok()?;
+    let source_version = linux_source::detect_source_version();
+    let matches = store
+        .search_versioned(prompt, &scope, source_version.as_deref(), 4)
+        .ok()?;
     if matches.is_empty() {
         return None;
     }

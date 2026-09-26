@@ -99,6 +99,9 @@ space；topic/section 不允许 shell 语法或路径，缺少 man、非零退�
 在混合空间中可用 `--source-version ubuntu-24.04` 做精确版本过滤。
 Linux Runtime 会有限召回同一空间的 FTS 证据并把它标记为不可信参考；它不会替代
 人格、记忆、审批或沙盒，也不会把知识文本直接当作命令执行。
+在 Linux 上，Runtime 只读取有界的 `/etc/os-release`（缺失时尝试
+`/usr/lib/os-release`）生成精确的 `source_version` 过滤；无法可靠解析时保持未过滤
+召回，不会猜测发行版或版本。
 
 知识库向量化目前可复用本地字符 n-gram provider，通过独立的
 `index_document_with_embeddings` 批量生成 `knowledge_vectors`；这与长期记忆向量库
