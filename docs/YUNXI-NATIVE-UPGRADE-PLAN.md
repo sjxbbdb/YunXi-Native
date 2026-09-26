@@ -455,9 +455,10 @@ generation 和 visibility，存储层在一个事务内先删向量、再删 chu
 - 增加“记忆来源”和“知识来源”的可解释诊断。
 
 当前已落地第一道协同诊断：Linux Runtime 的 `context_assembled` 元数据记录知识召回
-是否存在、active generation、FTS/向量证据数量和 `source_version`；记忆继续通过独立
-的 `MemoryRecall` 事件记录 scope、预算、丢弃原因和召回数量。两者只共享本轮上下文
-组装的观测面，不共享数据库、敏感度、权限或写入路径。
+是否存在、active generation、FTS/向量证据数量、`source_version` 和最多 8 条不含正文的
+`knowledge_provenance`；记忆继续通过独立的 `MemoryRecall` 事件和上下文元数据记录
+scope、source、预算、丢弃原因和召回数量。两者只共享本轮上下文组装的观测面，不共享
+数据库、敏感度、权限或写入路径。
 
 **门槛**：个人信息不自动进入知识库，知识文本不改写个人记忆，跨 workspace/用户/知识空间不可串线。
 

@@ -1110,6 +1110,17 @@ impl YunXiRuntimeBackend {
                             .unwrap_or_else(|| "unknown".to_string()),
                     ),
                     (
+                        "knowledge_provenance",
+                        initial_messages
+                            .knowledge_diagnostic
+                            .as_ref()
+                            .map(|diagnostic| {
+                                serde_json::to_string(&diagnostic.provenance)
+                                    .unwrap_or_else(|_| "[]".to_string())
+                            })
+                            .unwrap_or_else(|| "[]".to_string()),
+                    ),
+                    (
                         "memory_boot_selected",
                         memory_diagnostic.boot_selected.to_string(),
                     ),
@@ -2042,12 +2053,27 @@ struct InitialMessages {
     knowledge_diagnostic: Option<KnowledgeRecallDiagnostic>,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 struct KnowledgeRecallDiagnostic {
     generation: i64,
     source_version: Option<String>,
     keyword_evidence: usize,
     vector_evidence: usize,
+    provenance: Vec<KnowledgeEvidenceDiagnostic>,
+}
+
+#[derive(Clone, Debug, PartialEq, serde::Serialize)]
+struct KnowledgeEvidenceDiagnostic {
+    retrieval: String,
+    chunk_id: String,
+    document_id: String,
+    space_id: String,
+    source: String,
+    version: String,
+    generation: i64,
+    collector: String,
+    risk_level: String,
+    score: Option<f32>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -6482,6 +6508,56 @@ mod linux_knowledge_tests {
     }
 
     #[test]
+    fn knowledge_diagnostic_preserves_bounded_keyword_and_vector_provenance() {
+        let keyword = yunxi_agent_storage::KnowledgeSearchResult {
+            chunk_id: "keyword-chunk".to_string(),
+            document_id: "keyword-doc".to_string(),
+            space_id: "system-linux".to_string(),
+            title: "keyword fixture".to_string(),
+            content: "private keyword body".to_string(),
+            metadata_json: r#"{"collector":"linux.help","risk_level":"read_only_reference"}"#
+                .to_string(),
+            source: "local-linux".to_string(),
+            version: "arch-rolling".to_string(),
+            generation: 4,
+            owner: "system".to_string(),
+            visibility: yunxi_agent_storage::KnowledgeVisibility::Public,
+            rank: -0.2,
+        };
+        let vector = yunxi_agent_storage::KnowledgeVectorMatch {
+            chunk_id: "vector-chunk".to_string(),
+            document_id: "vector-doc".to_string(),
+            space_id: "system-linux".to_string(),
+            title: "vector fixture".to_string(),
+            content: "private vector body".to_string(),
+            metadata_json: r#"{"collector":"linux.man","risk_level":"read_only_reference"}"#
+                .to_string(),
+            source: "local-linux".to_string(),
+            version: "arch-rolling".to_string(),
+            embedding_model: "fixture".to_string(),
+            generation: 4,
+            score: 0.88,
+        };
+        let context = linux_planner::LinuxPlanContext::for_test(
+            4,
+            Some("arch-rolling".to_string()),
+            vec![keyword],
+            vec![vector],
+        );
+
+        let diagnostic = context.diagnostic();
+
+        assert_eq!(diagnostic.provenance.len(), 2);
+        assert_eq!(diagnostic.provenance[0].retrieval, "keyword");
+        assert_eq!(diagnostic.provenance[0].collector, "linux.help");
+        assert_eq!(diagnostic.provenance[1].retrieval, "vector");
+        assert_eq!(diagnostic.provenance[1].collector, "linux.man");
+        let serialized = serde_json::to_string(&diagnostic.provenance).expect("json");
+        assert!(!serialized.contains("private keyword body"));
+        assert!(!serialized.contains("private vector body"));
+    }
+
+    #[test]
     fn runtime_loads_vector_evidence_from_the_isolated_knowledge_store() {
         let directory = tempfile::tempdir().expect("tempdir");
         let store = yunxi_agent_storage::SqliteKnowledgeStore::for_workspace(directory.path());
@@ -6542,6 +6618,18 @@ mod linux_knowledge_tests {
         assert_eq!(context.diagnostic.source_version, Some(source_version));
         assert_eq!(context.diagnostic.keyword_evidence, 0);
         assert!(context.diagnostic.vector_evidence >= 1);
+        let provenance = context.diagnostic.provenance.first().expect("provenance");
+        assert_eq!(provenance.retrieval, "vector");
+        assert_eq!(provenance.chunk_id, "vector-runtime-fixture#chunk-0");
+        assert_eq!(provenance.document_id, "vector-runtime-fixture");
+        assert_eq!(provenance.space_id, "system-linux");
+        assert_eq!(provenance.source, "local-linux");
+        assert_eq!(provenance.generation, 7);
+        assert_eq!(provenance.collector, "linux.fixture");
+        assert_eq!(provenance.risk_level, "read_only_reference");
+        assert!(provenance.score.is_some());
+        let provenance_json = serde_json::to_string(&context.diagnostic.provenance).expect("json");
+        assert!(!provenance_json.contains("service recovery restart state"));
         assert!(
             context
                 .content

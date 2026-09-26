@@ -13,6 +13,7 @@ use yunxi_agent_storage::{KnowledgeSearchResult, KnowledgeVectorMatch, SqliteKno
 const MAX_KEYWORD_EVIDENCE: usize = 4;
 const MAX_VECTOR_EVIDENCE: usize = 4;
 const MAX_EVIDENCE_CHARS: usize = 12_000;
+const MAX_DIAGNOSTIC_PROVENANCE: usize = 8;
 
 pub(crate) struct LinuxPlanContext {
     generation: i64,
@@ -22,12 +23,39 @@ pub(crate) struct LinuxPlanContext {
 }
 
 impl LinuxPlanContext {
+    #[cfg(test)]
+    pub(crate) fn for_test(
+        generation: i64,
+        source_version: Option<String>,
+        keyword_matches: Vec<KnowledgeSearchResult>,
+        vector_matches: Vec<KnowledgeVectorMatch>,
+    ) -> Self {
+        Self {
+            generation,
+            source_version,
+            keyword_matches,
+            vector_matches,
+        }
+    }
+
     pub(crate) fn diagnostic(&self) -> crate::KnowledgeRecallDiagnostic {
+        let mut provenance = self
+            .keyword_matches
+            .iter()
+            .map(|item| knowledge_evidence_diagnostic("keyword", item, None))
+            .collect::<Vec<_>>();
+        provenance.extend(
+            self.vector_matches
+                .iter()
+                .take(MAX_DIAGNOSTIC_PROVENANCE.saturating_sub(provenance.len()))
+                .map(|item| knowledge_vector_evidence_diagnostic(item)),
+        );
         crate::KnowledgeRecallDiagnostic {
             generation: self.generation,
             source_version: self.source_version.clone(),
             keyword_evidence: self.keyword_matches.len(),
             vector_evidence: self.vector_matches.len(),
+            provenance,
         }
     }
 
@@ -55,6 +83,52 @@ impl LinuxPlanContext {
         }
         context
     }
+}
+
+fn knowledge_evidence_diagnostic(
+    retrieval: &str,
+    item: &KnowledgeSearchResult,
+    score: Option<f32>,
+) -> crate::KnowledgeEvidenceDiagnostic {
+    let metadata = serde_json::from_str::<serde_json::Value>(&item.metadata_json).ok();
+    crate::KnowledgeEvidenceDiagnostic {
+        retrieval: retrieval.to_string(),
+        chunk_id: item.chunk_id.clone(),
+        document_id: item.document_id.clone(),
+        space_id: item.space_id.clone(),
+        source: item.source.clone(),
+        version: item.version.clone(),
+        generation: item.generation,
+        collector: metadata_label(metadata.as_ref(), "collector"),
+        risk_level: metadata_label(metadata.as_ref(), "risk_level"),
+        score,
+    }
+}
+
+fn knowledge_vector_evidence_diagnostic(
+    item: &KnowledgeVectorMatch,
+) -> crate::KnowledgeEvidenceDiagnostic {
+    let metadata = serde_json::from_str::<serde_json::Value>(&item.metadata_json).ok();
+    crate::KnowledgeEvidenceDiagnostic {
+        retrieval: "vector".to_string(),
+        chunk_id: item.chunk_id.clone(),
+        document_id: item.document_id.clone(),
+        space_id: item.space_id.clone(),
+        source: item.source.clone(),
+        version: item.version.clone(),
+        generation: item.generation,
+        collector: metadata_label(metadata.as_ref(), "collector"),
+        risk_level: metadata_label(metadata.as_ref(), "risk_level"),
+        score: Some(item.score),
+    }
+}
+
+fn metadata_label(metadata: Option<&serde_json::Value>, key: &str) -> String {
+    metadata
+        .and_then(|value| value.get(key))
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("unknown")
+        .to_string()
 }
 
 pub(crate) fn build(config: &AgentConfig, prompt: &str) -> Option<LinuxPlanContext> {
