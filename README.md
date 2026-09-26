@@ -90,6 +90,10 @@ space；topic/section 不允许 shell 语法或路径，缺少 man、非零退�
 当前只允许 `fish`、`git`、`systemctl`、`pacman`、`ip`，始终固定为
 `<命令> --help`，不会执行用户提供的路径或参数。
 
+采集后的 system 知识可以用 `yunxi-linux knowledge-search <query> --cwd .` 只读检查。
+Linux Runtime 会有限召回同一空间的 FTS 证据并把它标记为不可信参考；它不会替代
+人格、记忆、审批或沙盒，也不会把知识文本直接当作命令执行。
+
 这条边界是 Linux 原生交互的第一步：先让 YunXi 能可靠地理解并观察系统，再进入预览、可回滚修改和高风险操作。CLI 还提供 `yunxi-linux linux-tool describe|processes|network|systemd-status|man` 作为本机诊断入口；它与 Runtime ToolSpec 同样禁止写入和任意命令拼接。
 
 ## 仓库结构
