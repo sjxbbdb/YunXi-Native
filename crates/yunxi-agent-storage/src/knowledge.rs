@@ -278,6 +278,33 @@ pub struct KnowledgeEmbeddingWorkerResult {
     pub chunks_indexed: usize,
 }
 
+/// Durable state for one staging-generation embedding request.
+///
+/// Staging jobs deliberately have their own queue table.  A candidate
+/// generation can contain the same document id as the active generation, so
+/// reusing the active queue would make retries and activation ambiguous.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct KnowledgeStagingEmbeddingJob {
+    pub job_id: i64,
+    pub space_id: String,
+    pub document_id: String,
+    pub embedding_model: String,
+    pub generation: i64,
+    pub status: KnowledgeEmbeddingJobStatus,
+    pub attempts: i64,
+    pub worker_id: Option<String>,
+    pub last_error: Option<String>,
+    pub next_attempt_at_millis: i64,
+    pub created_at_millis: i64,
+    pub updated_at_millis: i64,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct KnowledgeStagingEmbeddingWorkerResult {
+    pub job: KnowledgeStagingEmbeddingJob,
+    pub chunks_indexed: usize,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SqliteKnowledgeStore {
     database: PathBuf,
@@ -628,6 +655,400 @@ impl SqliteKnowledgeStore {
         }
     }
 
+    /// Enqueue one idempotent embedding request for a building generation.
+    pub fn enqueue_staging_embedding_job(
+        &self,
+        space_id: &str,
+        document_id: &str,
+        embedding_model: &str,
+        generation: i64,
+    ) -> AgentResult<KnowledgeStagingEmbeddingJob> {
+        if space_id.trim().is_empty() {
+            return Err(storage_error("staging embedding job space id is invalid"));
+        }
+        validate_embedding_job_input(document_id, embedding_model, generation)?;
+        let mut connection = self.open_connection()?;
+        initialize_schema(&connection, &self.database)?;
+        let transaction = connection
+            .transaction()
+            .map_err(|error| sqlite_error(&self.database, "begin staging job enqueue", error))?;
+        let document_exists = transaction
+            .query_row(
+                "SELECT 1 FROM knowledge_staging_documents
+                 WHERE space_id = ?1 AND generation = ?2 AND document_id = ?3",
+                params![space_id, generation, document_id],
+                |_| Ok(()),
+            )
+            .optional()
+            .map_err(|error| sqlite_error(&self.database, "read staging job document", error))?;
+        if document_exists.is_none() {
+            return Err(storage_error(
+                "staging embedding job references an unknown document",
+            ));
+        }
+        let manifest_state = transaction
+            .query_row(
+                "SELECT state FROM knowledge_generation_manifests
+                 WHERE space_id = ?1 AND generation = ?2",
+                params![space_id, generation],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(|error| sqlite_error(&self.database, "read staging job generation", error))?;
+        if manifest_state.as_deref() != Some(KnowledgeGenerationState::Building.as_str()) {
+            return Err(storage_error(
+                "staging embedding job requires a building generation manifest",
+            ));
+        }
+        let now = now_millis();
+        transaction
+            .execute(
+                "INSERT INTO knowledge_staging_embedding_jobs
+                    (space_id, generation, document_id, embedding_model, status, attempts,
+                     worker_id, last_error, next_attempt_at_millis,
+                     created_at_millis, updated_at_millis)
+                 VALUES (?1, ?2, ?3, ?4, 'pending', 0, NULL, NULL, ?5, ?5, ?5)
+                 ON CONFLICT(space_id, generation, document_id, embedding_model) DO NOTHING",
+                params![space_id, generation, document_id, embedding_model, now],
+            )
+            .map_err(|error| {
+                sqlite_error(&self.database, "enqueue staging embedding job", error)
+            })?;
+        let job_id = transaction
+            .query_row(
+                "SELECT job_id FROM knowledge_staging_embedding_jobs
+                 WHERE space_id = ?1 AND generation = ?2 AND document_id = ?3
+                   AND embedding_model = ?4",
+                params![space_id, generation, document_id, embedding_model],
+                |row| row.get::<_, i64>(0),
+            )
+            .map_err(|error| sqlite_error(&self.database, "read staging embedding job", error))?;
+        let job = read_staging_embedding_job(&transaction, &self.database, job_id)?;
+        transaction
+            .commit()
+            .map_err(|error| sqlite_error(&self.database, "commit staging job enqueue", error))?;
+        Ok(job)
+    }
+
+    /// Atomically claim the oldest due staging job for one worker.
+    pub fn claim_staging_embedding_job(
+        &self,
+        worker_id: &str,
+    ) -> AgentResult<Option<KnowledgeStagingEmbeddingJob>> {
+        validate_embedding_worker_id(worker_id)?;
+        let mut connection = self.open_connection()?;
+        initialize_schema(&connection, &self.database)?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|error| sqlite_error(&self.database, "begin staging job claim", error))?;
+        let now = now_millis();
+        let lease_cutoff = now.saturating_sub(EMBEDDING_JOB_LEASE_MILLIS);
+        transaction
+            .execute(
+                "UPDATE knowledge_staging_embedding_jobs
+                 SET status = 'failed', worker_id = NULL,
+                     last_error = 'staging embedding worker lease expired after retry budget exhausted',
+                     next_attempt_at_millis = ?1, updated_at_millis = ?2
+                 WHERE status = 'running' AND attempts >= ?3 AND updated_at_millis <= ?4",
+                params![i64::MAX, now, MAX_EMBEDDING_JOB_ATTEMPTS, lease_cutoff],
+            )
+            .map_err(|error| sqlite_error(&self.database, "finalize exhausted staging leases", error))?;
+        transaction
+            .execute(
+                "UPDATE knowledge_staging_embedding_jobs
+                 SET status = 'pending', worker_id = NULL,
+                     last_error = 'staging embedding worker lease expired',
+                     next_attempt_at_millis = ?1, updated_at_millis = ?1
+                 WHERE status = 'running' AND attempts < ?2 AND updated_at_millis <= ?3",
+                params![now, MAX_EMBEDDING_JOB_ATTEMPTS, lease_cutoff],
+            )
+            .map_err(|error| {
+                sqlite_error(&self.database, "reclaim staging embedding jobs", error)
+            })?;
+        transaction
+            .execute(
+                "UPDATE knowledge_staging_embedding_jobs
+                 SET status = 'pending', worker_id = NULL,
+                     next_attempt_at_millis = ?1, updated_at_millis = ?1
+                 WHERE status = 'failed' AND attempts < ?2
+                   AND next_attempt_at_millis <= ?1",
+                params![now, MAX_EMBEDDING_JOB_ATTEMPTS],
+            )
+            .map_err(|error| {
+                sqlite_error(&self.database, "promote staging embedding retries", error)
+            })?;
+        let job_id = transaction
+            .query_row(
+                "SELECT job_id FROM knowledge_staging_embedding_jobs
+                 WHERE status = 'pending' AND next_attempt_at_millis <= ?1
+                 ORDER BY created_at_millis ASC, job_id ASC LIMIT 1",
+                params![now],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()
+            .map_err(|error| {
+                sqlite_error(&self.database, "find pending staging embedding job", error)
+            })?;
+        let Some(job_id) = job_id else {
+            transaction.commit().map_err(|error| {
+                sqlite_error(&self.database, "commit empty staging job claim", error)
+            })?;
+            return Ok(None);
+        };
+        let updated = transaction
+            .execute(
+                "UPDATE knowledge_staging_embedding_jobs
+                 SET status = 'running', attempts = attempts + 1,
+                     worker_id = ?1, updated_at_millis = ?2
+                 WHERE job_id = ?3 AND status = 'pending'",
+                params![worker_id, now, job_id],
+            )
+            .map_err(|error| sqlite_error(&self.database, "claim staging embedding job", error))?;
+        if updated != 1 {
+            return Err(storage_error(
+                "staging embedding job claim lost its pending state",
+            ));
+        }
+        let job = read_staging_embedding_job(&transaction, &self.database, job_id)?;
+        transaction
+            .commit()
+            .map_err(|error| sqlite_error(&self.database, "commit staging job claim", error))?;
+        Ok(Some(job))
+    }
+
+    pub fn complete_staging_embedding_job(
+        &self,
+        job_id: i64,
+        worker_id: &str,
+    ) -> AgentResult<KnowledgeStagingEmbeddingJob> {
+        self.finish_staging_embedding_job(
+            job_id,
+            worker_id,
+            KnowledgeEmbeddingJobStatus::Completed,
+            None,
+            false,
+        )
+    }
+
+    pub fn fail_staging_embedding_job(
+        &self,
+        job_id: i64,
+        worker_id: &str,
+        error_message: &str,
+    ) -> AgentResult<KnowledgeStagingEmbeddingJob> {
+        if error_message.trim().is_empty() || error_message.chars().count() > 4096 {
+            return Err(storage_error(
+                "staging embedding job failure message is invalid",
+            ));
+        }
+        self.finish_staging_embedding_job(
+            job_id,
+            worker_id,
+            KnowledgeEmbeddingJobStatus::Failed,
+            Some(error_message),
+            false,
+        )
+    }
+
+    pub fn retry_staging_embedding_job(
+        &self,
+        job_id: i64,
+    ) -> AgentResult<KnowledgeStagingEmbeddingJob> {
+        if job_id <= 0 {
+            return Err(storage_error("staging embedding job id is invalid"));
+        }
+        let mut connection = self.open_connection()?;
+        initialize_schema(&connection, &self.database)?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|error| {
+                sqlite_error(&self.database, "begin staging embedding retry", error)
+            })?;
+        let updated = transaction
+            .execute(
+                "UPDATE knowledge_staging_embedding_jobs
+                 SET status = 'pending', worker_id = NULL,
+                     next_attempt_at_millis = ?1, updated_at_millis = ?1
+                 WHERE job_id = ?2 AND status = 'failed' AND attempts < ?3",
+                params![now_millis(), job_id, MAX_EMBEDDING_JOB_ATTEMPTS],
+            )
+            .map_err(|error| sqlite_error(&self.database, "retry staging embedding job", error))?;
+        if updated != 1 {
+            return Err(storage_error(
+                "staging embedding job is not failed or has exhausted its retry budget",
+            ));
+        }
+        let job = read_staging_embedding_job(&transaction, &self.database, job_id)?;
+        transaction.commit().map_err(|error| {
+            sqlite_error(&self.database, "commit staging embedding retry", error)
+        })?;
+        Ok(job)
+    }
+
+    /// Claim and process one staging job. Only staging documents and vectors
+    /// are read or written by this worker; active tables are never touched.
+    pub fn process_next_staging_embedding_job<P: MemoryEmbeddingProvider>(
+        &self,
+        worker_id: &str,
+        provider: &P,
+    ) -> AgentResult<Option<KnowledgeStagingEmbeddingWorkerResult>> {
+        let Some(job) = self.claim_staging_embedding_job(worker_id)? else {
+            return Ok(None);
+        };
+        let outcome = match self.read_staging_document_generation(
+            &job.space_id,
+            &job.document_id,
+            job.generation,
+        ) {
+            Err(error) => (false, Err(storage_error(error.to_string()))),
+            Ok(None) => (
+                false,
+                Err(storage_error(
+                    "staging embedding job document no longer exists",
+                )),
+            ),
+            Ok(Some(_)) if job.embedding_model != provider.model_id() => (
+                false,
+                Err(storage_error(format!(
+                    "embedding provider model {} does not match queued staging model {}",
+                    provider.model_id(),
+                    job.embedding_model
+                ))),
+            ),
+            Ok(Some(_)) => (
+                true,
+                self.index_staging_document_with_embeddings_scoped(
+                    Some(&job.space_id),
+                    &job.document_id,
+                    job.generation,
+                    provider,
+                )
+                .map(|summary| summary.chunks_indexed),
+            ),
+        };
+        match outcome {
+            (_, Ok(chunks_indexed)) => {
+                let completed = self.complete_staging_embedding_job(job.job_id, worker_id)?;
+                Ok(Some(KnowledgeStagingEmbeddingWorkerResult {
+                    job: completed,
+                    chunks_indexed,
+                }))
+            }
+            (retryable, Err(error)) => {
+                let message = error.to_string();
+                let message = if message.chars().count() > 4096 {
+                    message.chars().take(4096).collect::<String>()
+                } else {
+                    message
+                };
+                let failed = self.finish_staging_embedding_job(
+                    job.job_id,
+                    worker_id,
+                    KnowledgeEmbeddingJobStatus::Failed,
+                    Some(&message),
+                    retryable,
+                )?;
+                Ok(Some(KnowledgeStagingEmbeddingWorkerResult {
+                    job: failed,
+                    chunks_indexed: 0,
+                }))
+            }
+        }
+    }
+
+    fn read_staging_document_generation(
+        &self,
+        space_id: &str,
+        document_id: &str,
+        generation: i64,
+    ) -> AgentResult<Option<i64>> {
+        let connection = self.open_connection()?;
+        initialize_schema(&connection, &self.database)?;
+        connection
+            .query_row(
+                "SELECT generation FROM knowledge_staging_documents
+                 WHERE space_id = ?1 AND document_id = ?2 AND generation = ?3",
+                params![space_id, document_id, generation],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()
+            .map_err(|error| {
+                sqlite_error(&self.database, "read staging document generation", error)
+            })
+    }
+
+    fn finish_staging_embedding_job(
+        &self,
+        job_id: i64,
+        worker_id: &str,
+        status: KnowledgeEmbeddingJobStatus,
+        error_message: Option<&str>,
+        retryable: bool,
+    ) -> AgentResult<KnowledgeStagingEmbeddingJob> {
+        if job_id <= 0 {
+            return Err(storage_error("staging embedding job id is invalid"));
+        }
+        validate_embedding_worker_id(worker_id)?;
+        let mut connection = self.open_connection()?;
+        initialize_schema(&connection, &self.database)?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|error| {
+                sqlite_error(&self.database, "begin staging embedding transition", error)
+            })?;
+        let attempts = transaction
+            .query_row(
+                "SELECT attempts FROM knowledge_staging_embedding_jobs
+                 WHERE job_id = ?1 AND status = 'running' AND worker_id = ?2",
+                params![job_id, worker_id],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()
+            .map_err(|error| sqlite_error(&self.database, "read staging job attempts", error))?
+            .ok_or_else(|| {
+                storage_error("staging embedding job is not running under the requested worker")
+            })?;
+        let now = now_millis();
+        let next_attempt_at_millis = if status == KnowledgeEmbeddingJobStatus::Failed
+            && retryable
+            && attempts < MAX_EMBEDDING_JOB_ATTEMPTS
+        {
+            now.saturating_add(embedding_retry_delay_millis(attempts))
+        } else if status == KnowledgeEmbeddingJobStatus::Failed {
+            i64::MAX
+        } else {
+            now
+        };
+        let updated = transaction
+            .execute(
+                "UPDATE knowledge_staging_embedding_jobs
+                 SET status = ?1, last_error = ?2, next_attempt_at_millis = ?3,
+                     updated_at_millis = ?4
+                 WHERE job_id = ?5 AND status = 'running' AND worker_id = ?6",
+                params![
+                    status.as_str(),
+                    error_message,
+                    next_attempt_at_millis,
+                    now,
+                    job_id,
+                    worker_id
+                ],
+            )
+            .map_err(|error| {
+                sqlite_error(&self.database, "transition staging embedding job", error)
+            })?;
+        if updated != 1 {
+            return Err(storage_error(
+                "staging embedding job is not running under the requested worker",
+            ));
+        }
+        let job = read_staging_embedding_job(&transaction, &self.database, job_id)?;
+        transaction.commit().map_err(|error| {
+            sqlite_error(&self.database, "commit staging embedding transition", error)
+        })?;
+        Ok(job)
+    }
+
     fn read_document_generation(&self, document_id: &str) -> AgentResult<Option<i64>> {
         let connection = self.open_connection()?;
         initialize_schema(&connection, &self.database)?;
@@ -795,8 +1216,9 @@ impl SqliteKnowledgeStore {
 
     /// Start a new space-local generation without changing the active scope.
     ///
-    /// The returned generation is only a manifest. Documents and vectors are
-    /// still written through the active-table APIs until staging storage lands.
+    /// The returned generation is only a manifest. Candidate documents,
+    /// chunks, vectors and jobs must use the generation-scoped staging APIs;
+    /// this method never changes the active scope.
     pub fn begin_generation_build(
         &self,
         space_id: &str,
@@ -1188,18 +1610,26 @@ impl SqliteKnowledgeStore {
         }
 
         let mut job_counts = [0_usize; 3];
-        let mut jobs = connection
-            .prepare(
-                "SELECT j.status, COUNT(*) FROM knowledge_embedding_jobs j
-                 JOIN knowledge_documents d ON d.document_id = j.document_id
-                 WHERE d.space_id = ?1 AND d.generation = ?2
-                   AND d.owner = ?3 AND d.visibility = ?4
-                   AND j.generation = ?2 AND j.embedding_model = ?5
-                 GROUP BY j.status",
-            )
-            .map_err(|error| {
-                sqlite_error(&self.database, "prepare generation job counts", error)
-            })?;
+        let job_count_query = if staging {
+            "SELECT j.status, COUNT(*) FROM knowledge_staging_embedding_jobs j
+             JOIN knowledge_staging_documents d
+               ON d.space_id = j.space_id AND d.generation = j.generation
+              AND d.document_id = j.document_id
+             WHERE j.space_id = ?1 AND j.generation = ?2
+               AND d.owner = ?3 AND d.visibility = ?4
+               AND j.embedding_model = ?5
+             GROUP BY j.status"
+        } else {
+            "SELECT j.status, COUNT(*) FROM knowledge_embedding_jobs j
+             JOIN knowledge_documents d ON d.document_id = j.document_id
+             WHERE d.space_id = ?1 AND d.generation = ?2
+               AND d.owner = ?3 AND d.visibility = ?4
+               AND j.generation = ?2 AND j.embedding_model = ?5
+             GROUP BY j.status"
+        };
+        let mut jobs = connection.prepare(job_count_query).map_err(|error| {
+            sqlite_error(&self.database, "prepare generation job counts", error)
+        })?;
         let rows = jobs
             .query_map(
                 params![
@@ -1406,12 +1836,40 @@ impl SqliteKnowledgeStore {
 
     /// Embed every chunk in a building generation without touching active data.
     ///
-    /// This is intentionally a synchronous storage boundary for the first
-    /// staging-vector slice. A durable staging job worker is added separately;
-    /// this method is useful for tests and controlled rebuilds while keeping
-    /// candidate vectors isolated from `knowledge_vectors`.
+    /// This remains a synchronous storage boundary for controlled rebuilds;
+    /// the durable staging queue delegates to the same isolated operation.
     pub fn index_staging_document_with_embeddings<P: MemoryEmbeddingProvider>(
         &self,
+        document_id: &str,
+        generation: i64,
+        provider: &P,
+    ) -> AgentResult<KnowledgeEmbeddingSummary> {
+        self.index_staging_document_with_embeddings_scoped(None, document_id, generation, provider)
+    }
+
+    /// Scope staging embedding by space when a document id may exist in more
+    /// than one candidate generation/space.
+    pub fn index_staging_document_with_embeddings_in_scope<P: MemoryEmbeddingProvider>(
+        &self,
+        space_id: &str,
+        document_id: &str,
+        generation: i64,
+        provider: &P,
+    ) -> AgentResult<KnowledgeEmbeddingSummary> {
+        if space_id.trim().is_empty() {
+            return Err(storage_error("staging embedding space id is invalid"));
+        }
+        self.index_staging_document_with_embeddings_scoped(
+            Some(space_id),
+            document_id,
+            generation,
+            provider,
+        )
+    }
+
+    fn index_staging_document_with_embeddings_scoped<P: MemoryEmbeddingProvider>(
+        &self,
+        space_id: Option<&str>,
         document_id: &str,
         generation: i64,
         provider: &P,
@@ -1423,18 +1881,24 @@ impl SqliteKnowledgeStore {
         }
         let connection = self.open_connection()?;
         initialize_schema(&connection, &self.database)?;
-        let document = connection
-            .query_row(
+        let document = if let Some(space_id) = space_id {
+            connection.query_row(
                 "SELECT space_id, generation FROM knowledge_staging_documents
-                 WHERE document_id = ?1 AND generation = ?2",
+                     WHERE space_id = ?1 AND document_id = ?2 AND generation = ?3",
+                params![space_id, document_id, generation],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
+            )
+        } else {
+            connection.query_row(
+                "SELECT space_id, generation FROM knowledge_staging_documents
+                     WHERE document_id = ?1 AND generation = ?2",
                 params![document_id, generation],
                 |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
             )
-            .optional()
-            .map_err(|error| {
-                sqlite_error(&self.database, "read staging embedding document", error)
-            })?
-            .ok_or_else(|| storage_error("staging embedding references an unknown document"))?;
+        }
+        .optional()
+        .map_err(|error| sqlite_error(&self.database, "read staging embedding document", error))?
+        .ok_or_else(|| storage_error("staging embedding references an unknown document"))?;
         let manifest_state = connection
             .query_row(
                 "SELECT state FROM knowledge_generation_manifests
@@ -2671,6 +3135,52 @@ fn read_embedding_job(
     })
 }
 
+fn read_staging_embedding_job(
+    transaction: &Transaction<'_>,
+    path: &Path,
+    job_id: i64,
+) -> AgentResult<KnowledgeStagingEmbeddingJob> {
+    let row = transaction
+        .query_row(
+            "SELECT job_id, space_id, document_id, embedding_model, generation, status,
+                    attempts, worker_id, last_error, next_attempt_at_millis,
+                    created_at_millis, updated_at_millis
+             FROM knowledge_staging_embedding_jobs WHERE job_id = ?1",
+            params![job_id],
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, i64>(4)?,
+                    row.get::<_, String>(5)?,
+                    row.get::<_, i64>(6)?,
+                    row.get::<_, Option<String>>(7)?,
+                    row.get::<_, Option<String>>(8)?,
+                    row.get::<_, i64>(9)?,
+                    row.get::<_, i64>(10)?,
+                    row.get::<_, i64>(11)?,
+                ))
+            },
+        )
+        .map_err(|error| sqlite_error(path, "read staging embedding job", error))?;
+    Ok(KnowledgeStagingEmbeddingJob {
+        job_id: row.0,
+        space_id: row.1,
+        document_id: row.2,
+        embedding_model: row.3,
+        generation: row.4,
+        status: KnowledgeEmbeddingJobStatus::parse(&row.5).map_err(storage_error)?,
+        attempts: row.6,
+        worker_id: row.7,
+        last_error: row.8,
+        next_attempt_at_millis: row.9,
+        created_at_millis: row.10,
+        updated_at_millis: row.11,
+    })
+}
+
 fn knowledge_generation_from_row(
     row: (
         String,
@@ -2786,7 +3296,7 @@ fn initialize_schema(connection: &Connection, path: &Path) -> AgentResult<()> {
              );
              INSERT INTO knowledge_schema(schema_version)
                 SELECT 1 WHERE NOT EXISTS (SELECT 1 FROM knowledge_schema);
-             UPDATE knowledge_schema SET schema_version = 6 WHERE schema_version < 6;
+             UPDATE knowledge_schema SET schema_version = 7 WHERE schema_version < 7;
              CREATE TABLE IF NOT EXISTS knowledge_spaces (
                 space_id TEXT PRIMARY KEY,
                 kind TEXT NOT NULL CHECK(kind IN ('system', 'project', 'private')),
@@ -2866,6 +3376,26 @@ fn initialize_schema(connection: &Connection, path: &Path) -> AgentResult<()> {
              );
              CREATE INDEX IF NOT EXISTS idx_knowledge_staging_vectors_scope
                 ON knowledge_staging_vectors(space_id, generation, embedding_model);
+             CREATE TABLE IF NOT EXISTS knowledge_staging_embedding_jobs (
+                job_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                space_id TEXT NOT NULL,
+                generation INTEGER NOT NULL CHECK(generation >= 0),
+                document_id TEXT NOT NULL,
+                embedding_model TEXT NOT NULL,
+                status TEXT NOT NULL CHECK(status IN ('pending', 'running', 'completed', 'failed')),
+                attempts INTEGER NOT NULL CHECK(attempts >= 0),
+                worker_id TEXT,
+                last_error TEXT,
+                next_attempt_at_millis INTEGER NOT NULL DEFAULT 0,
+                created_at_millis INTEGER NOT NULL,
+                updated_at_millis INTEGER NOT NULL,
+                UNIQUE(space_id, generation, document_id, embedding_model),
+                FOREIGN KEY(space_id, generation, document_id)
+                    REFERENCES knowledge_staging_documents(space_id, generation, document_id)
+             );
+             CREATE INDEX IF NOT EXISTS idx_knowledge_staging_embedding_jobs_pending
+                ON knowledge_staging_embedding_jobs(status, next_attempt_at_millis,
+                                                     created_at_millis, job_id);
              CREATE TABLE IF NOT EXISTS knowledge_documents (
                 document_id TEXT PRIMARY KEY,
                 space_id TEXT NOT NULL REFERENCES knowledge_spaces(space_id),
@@ -2971,7 +3501,7 @@ fn initialize_schema(connection: &Connection, path: &Path) -> AgentResult<()> {
     }
     connection
         .execute(
-            "UPDATE knowledge_schema SET schema_version = 6 WHERE schema_version < 6",
+            "UPDATE knowledge_schema SET schema_version = 7 WHERE schema_version < 7",
             [],
         )
         .map_err(|error| sqlite_error(path, "update knowledge schema version", error))?;

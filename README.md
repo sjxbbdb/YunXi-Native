@@ -96,8 +96,10 @@ embedding 模型/维度与文档完整性计数，并在校验完成后标记为
 当前已可将文档文本写入 generation-scoped staging 表：同一个 `document_id` 可以在
 active 主表和候选 generation 中同时存在，staging 事务只替换候选代际自己的 chunks，
 不会触碰 FTS、主向量或 active 文档。当前 storage 层也支持在候选代际内生成独立的
-staging 向量，并让 readiness 读取候选文档/chunk/vector 覆盖；staging 任务队列、完整性
-校验后的激活和旧代际保留仍未开放为用户命令。
+staging 向量，并让 readiness 读取候选文档/chunk/vector 覆盖。候选代际现在还有独立的
+`knowledge_staging_embedding_jobs` 队列与有界 worker：它只处理 staging 文档和向量，
+拥有与 active 队列相同的 lease、退避、重试和失败诊断语义，不会写 active 表或修改
+`knowledge_spaces.generation`。完整性校验后的激活和旧代际保留仍未开放为用户命令。
 
 队列闭环现在也可显式验证：先用
 `yunxi-linux knowledge-enqueue <document-id> --cwd .` 为文档当前 generation 入队，

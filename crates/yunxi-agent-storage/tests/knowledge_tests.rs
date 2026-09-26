@@ -316,7 +316,7 @@ fn knowledge_schema_migrates_retry_schedule_and_generation_manifest_idempotently
             row.get::<_, i64>(0)
         })
         .expect("schema version");
-    assert_eq!(version, 6);
+    assert_eq!(version, 7);
     let has_retry_schedule = connection
         .prepare("PRAGMA table_info(knowledge_embedding_jobs)")
         .expect("job table info")
@@ -354,6 +354,15 @@ fn knowledge_schema_migrates_retry_schedule_and_generation_manifest_idempotently
         )
         .expect("staging vector table");
     assert_eq!(staging_vector_table_count, 1);
+    let staging_job_table_count = connection
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master
+             WHERE type = 'table' AND name = 'knowledge_staging_embedding_jobs'",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .expect("staging job table");
+    assert_eq!(staging_job_table_count, 1);
 }
 
 #[test]
@@ -477,6 +486,103 @@ fn staging_document_can_shadow_active_identity_without_touching_active_tables() 
         )
         .expect("refreshed staged vector count");
     assert_eq!(refreshed_vector_count, 0);
+}
+
+#[test]
+fn staging_embedding_worker_round_trip_keeps_active_queue_and_vectors_untouched() {
+    let (dir, store, active_document) = queue_fixture();
+    let building = store
+        .begin_generation_build(
+            "system-linux",
+            "system",
+            KnowledgeVisibility::Public,
+            Some("fixture-v1"),
+            Some(1),
+        )
+        .expect("begin staging generation");
+    let mut staging_document = active_document.clone();
+    staging_document.generation = building.generation;
+    store
+        .stage_text_document(
+            &staging_document,
+            "systemctl status is the staged service state",
+            &KnowledgeChunkingOptions::default(),
+        )
+        .expect("stage document");
+    let provider = LocalChargramEmbedding::default();
+    let queued = store
+        .enqueue_staging_embedding_job(
+            "system-linux",
+            &staging_document.document_id,
+            provider.model_id(),
+            building.generation,
+        )
+        .expect("enqueue staging job");
+    assert_eq!(queued.status, KnowledgeEmbeddingJobStatus::Pending);
+    assert_eq!(
+        store
+            .enqueue_staging_embedding_job(
+                "system-linux",
+                &staging_document.document_id,
+                provider.model_id(),
+                building.generation,
+            )
+            .expect("idempotent enqueue"),
+        queued
+    );
+
+    let result = store
+        .process_next_staging_embedding_job("staging-worker", &provider)
+        .expect("staging worker")
+        .expect("staging job");
+    assert_eq!(result.job.job_id, queued.job_id);
+    assert_eq!(result.job.status, KnowledgeEmbeddingJobStatus::Completed);
+    assert_eq!(result.chunks_indexed, 1);
+
+    let connection = Connection::open(dir.path().join("knowledge.sqlite3")).expect("database");
+    let staged_vectors = connection
+        .query_row(
+            "SELECT COUNT(*) FROM knowledge_staging_vectors
+             WHERE space_id = 'system-linux' AND generation = ?1 AND document_id = ?2",
+            rusqlite::params![building.generation, staging_document.document_id],
+            |row| row.get::<_, i64>(0),
+        )
+        .expect("staging vectors");
+    let active_vectors = connection
+        .query_row("SELECT COUNT(*) FROM knowledge_vectors", [], |row| {
+            row.get::<_, i64>(0)
+        })
+        .expect("active vectors");
+    let active_jobs = connection
+        .query_row("SELECT COUNT(*) FROM knowledge_embedding_jobs", [], |row| {
+            row.get::<_, i64>(0)
+        })
+        .expect("active jobs");
+    assert_eq!(staged_vectors, 1);
+    assert_eq!(active_vectors, 0);
+    assert_eq!(active_jobs, 0);
+
+    let readiness = store
+        .inspect_generation_readiness(
+            &KnowledgeSearchScope {
+                space_id: "system-linux".to_string(),
+                owner: "system".to_string(),
+                generation: building.generation,
+                visibility: KnowledgeVisibility::Public,
+            },
+            provider.model_id(),
+            provider.dimensions(),
+        )
+        .expect("staging readiness");
+    assert_eq!(readiness.pending_jobs, 0);
+    assert_eq!(readiness.running_jobs, 0);
+    assert_eq!(readiness.failed_jobs, 0);
+    assert!(
+        readiness
+            .reasons
+            .iter()
+            .all(|reason| !reason.contains("incomplete embedding jobs"))
+    );
 }
 
 #[test]

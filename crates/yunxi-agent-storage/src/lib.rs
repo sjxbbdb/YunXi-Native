@@ -37,8 +37,9 @@ pub use knowledge::{
     KnowledgeChunk, KnowledgeDocument, KnowledgeEmbeddingJob, KnowledgeEmbeddingJobStatus,
     KnowledgeEmbeddingSummary, KnowledgeEmbeddingWorkerResult, KnowledgeGeneration,
     KnowledgeGenerationReadiness, KnowledgeGenerationState, KnowledgeSearchResult,
-    KnowledgeSearchScope, KnowledgeSpaceKind, KnowledgeSpaceSpec, KnowledgeVector,
-    KnowledgeVectorMatch, KnowledgeVisibility, MAX_EMBEDDING_JOB_ATTEMPTS, SqliteKnowledgeStore,
+    KnowledgeSearchScope, KnowledgeSpaceKind, KnowledgeSpaceSpec, KnowledgeStagingEmbeddingJob,
+    KnowledgeStagingEmbeddingWorkerResult, KnowledgeVector, KnowledgeVectorMatch,
+    KnowledgeVisibility, MAX_EMBEDDING_JOB_ATTEMPTS, SqliteKnowledgeStore,
 };
 pub use knowledge_ingest::{
     KnowledgeChunkDraft, KnowledgeChunkingOptions, KnowledgeIngestSummary, chunk_knowledge_text,
