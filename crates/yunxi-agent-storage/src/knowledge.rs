@@ -1275,6 +1275,12 @@ impl SqliteKnowledgeStore {
             })?;
         transaction
             .execute(
+                "DELETE FROM knowledge_embedding_jobs WHERE document_id = ?1",
+                params![document.document_id],
+            )
+            .map_err(|error| sqlite_error(&self.database, "remove stale embedding jobs", error))?;
+        transaction
+            .execute(
                 "DELETE FROM knowledge_chunks WHERE document_id = ?1",
                 params![document.document_id],
             )

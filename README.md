@@ -92,6 +92,9 @@ Linux 知识库已经有独立的 `SqliteKnowledgeStore` 基础：数据库文�
 领取中的任务带五分钟 lease；worker 崩溃后，下一次领取会回收过期 lease，旧 worker
 的迟到提交会被拒绝。失败任务可用 `yunxi-linux knowledge-retry <job-id> --cwd .`
 显式恢复，最多三次尝试且保留 `last_error`；不会在 provider 故障时形成无界自动循环。
+成功的 `knowledge-man`/`knowledge-help` 采集会在写入文档后自动创建当前 provider 的
+pending job，并在 JSON 中返回 job 元数据；随后可用 `knowledge-worker` 有界处理。
+如果文档正文变化，旧向量与旧 job 会在同一 ingest 事务中失效，下一次采集会重新入队。
 
 Linux 版现在提供只读 P0 `man` 采集入口：
 `yunxi-linux knowledge-man fish --section 1 --source-version ubuntu-24.04 --cwd .`。

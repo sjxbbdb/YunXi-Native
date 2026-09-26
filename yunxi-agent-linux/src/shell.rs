@@ -542,6 +542,7 @@ async fn run_knowledge_help(command: String, source_version: String, cwd: PathBu
     result["content_hash"] = serde_json::Value::String(summary.content_hash);
     result["chunks_written"] = serde_json::json!(summary.chunks_written);
     result["chunks_removed"] = serde_json::json!(summary.chunks_removed);
+    result["embedding_job"] = enqueue_collected_embedding(&store, &collected.document.document_id)?;
     println!("{}", serde_json::to_string_pretty(&result)?);
     Ok(())
 }
@@ -589,8 +590,26 @@ async fn run_knowledge_man(
     result["content_hash"] = serde_json::Value::String(summary.content_hash);
     result["chunks_written"] = serde_json::json!(summary.chunks_written);
     result["chunks_removed"] = serde_json::json!(summary.chunks_removed);
+    result["embedding_job"] = enqueue_collected_embedding(&store, &collected.document.document_id)?;
     println!("{}", serde_json::to_string_pretty(&result)?);
     Ok(())
+}
+
+fn enqueue_collected_embedding(
+    store: &yunxi_agent_storage::SqliteKnowledgeStore,
+    document_id: &str,
+) -> Result<serde_json::Value> {
+    let job = store.enqueue_current_document_embedding_job(
+        document_id,
+        yunxi_agent_persona::LOCAL_MEMORY_EMBEDDING_MODEL,
+    )?;
+    Ok(serde_json::json!({
+        "status": job.status.as_str(),
+        "job_id": job.job_id,
+        "embedding_model": job.embedding_model,
+        "generation": job.generation,
+        "attempts": job.attempts,
+    }))
 }
 
 fn resolve_source_version(requested: &str) -> String {

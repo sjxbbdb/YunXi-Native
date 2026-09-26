@@ -284,6 +284,32 @@ fn failed_embedding_jobs_require_explicit_bounded_retry() {
 }
 
 #[test]
+fn changed_ingest_invalidates_completed_embedding_job_before_reenqueue() {
+    let (_dir, store, document) = queue_fixture();
+    let options = KnowledgeChunkingOptions::default();
+    store
+        .ingest_text(&document, "systemctl status shows the service", &options)
+        .expect("initial ingest");
+    let provider = LocalChargramEmbedding::default();
+    let job = store
+        .enqueue_current_document_embedding_job(&document.document_id, provider.model_id())
+        .expect("enqueue");
+    store
+        .process_next_embedding_job("worker-a", &provider)
+        .expect("worker")
+        .expect("completed job");
+
+    store
+        .ingest_text(&document, "systemctl restart updates the service", &options)
+        .expect("changed ingest");
+    let replacement = store
+        .enqueue_current_document_embedding_job(&document.document_id, provider.model_id())
+        .expect("reenqueue");
+    assert_ne!(replacement.job_id, job.job_id);
+    assert_eq!(replacement.status, KnowledgeEmbeddingJobStatus::Pending);
+}
+
+#[test]
 fn concurrent_embedding_claims_assign_a_job_to_only_one_worker() {
     let (_dir, store, document) = queue_fixture();
     store
