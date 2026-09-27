@@ -146,23 +146,31 @@ Linux 知识库现在支持由用户显式创建的 `project` 与 `private` 空�
 的 owner、visibility、source 和 version 是访问与 provenance 边界，重复初始化必须完全
 匹配，否则命令会拒绝静默覆盖。
 
+用户空间的 owner 绑定当前 Linux OS 主体，不能靠修改命令行里的 `--owner` 冒充其他用户。
+先用下面的只读命令查看当前主体，再把返回的 `principal` 用在后续命令中；system public
+空间仍由内部 `system` principal 读取。
+
+```bash
+PRINCIPAL="$(./target/release/yunxi-linux knowledge-principal | python3 -c 'import json,sys; print(json.load(sys.stdin)["principal"])')"
+```
+
 ```bash
 ./target/release/yunxi-linux knowledge-space-init \
   --space-id project-demo --kind project --visibility owner \
-  --owner local-user --source project-notes --version v1 --cwd .
+  --owner "$PRINCIPAL" --source project-notes --version v1 --cwd .
 
 printf '%s\n' '项目约定：先 dry-run，再申请审批。' | \
   ./target/release/yunxi-linux knowledge-import-stdin \
   --space-id project-demo --document-id project-guide --title 'Project Guide' \
-  --source project-notes --version v1 --owner local-user --visibility owner --cwd .
+  --source project-notes --version v1 --owner "$PRINCIPAL" --visibility owner --cwd .
 
 # 单个 UTF-8 文本/Markdown 文件；相对 --cwd 解析，不递归扫描目录
 ./target/release/yunxi-linux knowledge-import-file docs/project-guide.md \
   --space-id project-demo --document-id project-guide-file --title 'Project Guide (file)' \
-  --source project-notes --version v1 --owner local-user --visibility owner --cwd .
+  --source project-notes --version v1 --owner "$PRINCIPAL" --visibility owner --cwd .
 
 ./target/release/yunxi-linux knowledge-search 'dry-run' \
-  --space-id project-demo --owner local-user --visibility owner --cwd .
+  --space-id project-demo --owner "$PRINCIPAL" --visibility owner --cwd .
 ./target/release/yunxi-linux knowledge-space-list --cwd .
 ./target/release/yunxi-linux knowledge-worker --max-jobs 10 --cwd .
 ./target/release/yunxi-linux knowledge-worker --watch --interval-secs 5 --max-jobs 10 --cwd .
@@ -176,10 +184,10 @@ printf '%s\n' '项目约定：先 dry-run，再申请审批。' | \
 ./target/release/yunxi-linux knowledge-worker --watch --interval-secs 5 --max-jobs 4 \
   --workspace ~/src/project-a --workspace ~/src/project-b
 ./target/release/yunxi-linux knowledge-vector-search '审批' \
-  --space-id project-demo --owner local-user --visibility owner --cwd .
+  --space-id project-demo --owner "$PRINCIPAL" --visibility owner --cwd .
 
 ./target/release/yunxi-linux knowledge-retract project-guide \
-  --space-id project-demo --owner local-user --visibility owner --cwd .
+  --space-id project-demo --owner "$PRINCIPAL" --visibility owner --cwd .
 ```
 
 daemon 内知识 worker fleet 的黑盒验收：
@@ -280,8 +288,10 @@ bash yunxi-agent-linux/tests/knowledge_catalog_smoke.sh ./target/release/yunxi-l
 不传 `--topic` 时使用固定 P1 主题目录；缺少 man/page 只返回
 `unavailable`/`failed`，不会伪造文档或中止同批其他主题。
 
-`knowledge-space-list` 只列出空间元数据，不读取文档正文、chunk 或向量；它用于确认
-当前 workspace 的 system/project/private 边界，输出按 `space_id` 稳定排序。
+`knowledge-space-list` 只列出当前 OS 主体可访问的空间元数据，不读取文档正文、chunk 或向量；
+它用于确认当前 workspace 的 system/project/private 边界，输出按 `space_id` 稳定排序，不泄露
+其他用户的 private/project 空间。`knowledge-principal` 只读取当前进程的 UID/用户名并输出稳定
+principal，不创建目录、不打开记忆库或知识库。
 `knowledge-search` 与 `knowledge-vector-search` 的 JSON 顶层还会返回本次读取的
 `active_generation`，无命中时也能确认查询所处的代际。
 

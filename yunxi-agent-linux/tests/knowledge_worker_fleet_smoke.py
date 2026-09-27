@@ -19,7 +19,7 @@ from typing import Any
 
 
 TIMEOUT_SECONDS = 20
-OWNER = "fleet-smoke-owner"
+OWNER = ""
 SOURCE = "fleet-smoke"
 VERSION = "v1"
 SUBPROCESS_ENV: dict[str, str] | None = None
@@ -205,6 +205,8 @@ def main() -> None:
     binary = os.path.abspath(sys.argv[1])
     if not os.access(binary, os.X_OK):
         raise SystemExit(f"release binary is not executable: {binary}")
+    global OWNER
+    OWNER = str(run_ok(binary, "knowledge-principal")["principal"])
 
     with tempfile.TemporaryDirectory(prefix="yunxi-knowledge-fleet-") as root_text:
         root = pathlib.Path(root_text)

@@ -15,6 +15,8 @@ use clap::{ArgAction, Subcommand};
 use serde::{Deserialize, Serialize};
 #[cfg(unix)]
 use std::collections::{HashMap, VecDeque};
+#[cfg(unix)]
+use std::ffi::CStr;
 use std::fs;
 #[cfg(unix)]
 use std::io::Write;
@@ -299,6 +301,8 @@ pub(crate) enum LinuxShellCommand {
         #[arg(long, default_value = ".")]
         cwd: PathBuf,
     },
+    /// Print the OS-bound knowledge access principal used by user-owned spaces.
+    KnowledgePrincipal,
     /// Import one explicitly selected document from stdin into a project/private space.
     KnowledgeImportStdin {
         /// Existing project/private space id.
@@ -634,6 +638,7 @@ pub(crate) async fn run_command(command: LinuxShellCommand) -> Result<()> {
             cwd,
         } => run_knowledge_space_init(space_id, kind, visibility, owner, source, version, cwd),
         LinuxShellCommand::KnowledgeSpaceList { cwd } => run_knowledge_space_list(cwd),
+        LinuxShellCommand::KnowledgePrincipal => run_knowledge_principal(),
         LinuxShellCommand::KnowledgeImportStdin {
             space_id,
             document_id,
@@ -756,9 +761,14 @@ fn run_knowledge_search(
         .with_context(|| format!("无法访问知识工作区: {}", cwd.display()))?;
     let store = yunxi_agent_storage::SqliteKnowledgeStore::for_workspace(&cwd);
     let visibility = parse_knowledge_visibility(&visibility)?;
-    let Some(scope) = active_knowledge_scope(&store, &space_id, &owner, visibility)? else {
+    let access = knowledge_access_context()?;
+    authorize_cli_read_owner(&access, &owner, visibility)?;
+    let Some(scope) = store.accessible_space_scope(&space_id, &access)? else {
         bail!("知识空间尚未初始化: {space_id}");
     };
+    if scope.visibility != visibility {
+        bail!("请求的知识空间 visibility 与存储 metadata 不一致");
+    }
     let matches = store.search_versioned(&query, &scope, source_version, limit.min(50))?;
     let results = matches
         .into_iter()
@@ -1261,6 +1271,59 @@ fn canonical_knowledge_cwd(cwd: PathBuf) -> Result<PathBuf> {
     std::fs::canonicalize(&cwd).with_context(|| format!("无法访问知识工作区: {}", cwd.display()))
 }
 
+fn knowledge_access_context() -> Result<yunxi_agent_storage::KnowledgeAccessContext> {
+    let (principal, _, _) = current_knowledge_principal()?;
+    yunxi_agent_storage::KnowledgeAccessContext::new(principal)
+        .map_err(|error| anyhow::anyhow!("生成知识访问主体失败: {error}"))
+}
+
+fn current_knowledge_principal() -> Result<(String, u64, String)> {
+    #[cfg(unix)]
+    let (uid, username) = {
+        let uid = unsafe { libc::geteuid() } as u64;
+        let username = unsafe {
+            libc::getpwuid(uid as libc::uid_t)
+                .as_ref()
+                .and_then(|entry| {
+                    if entry.pw_name.is_null() {
+                        None
+                    } else {
+                        CStr::from_ptr(entry.pw_name)
+                            .to_str()
+                            .ok()
+                            .map(str::to_owned)
+                    }
+                })
+        }
+        .or_else(|| std::env::var("USER").ok())
+        .unwrap_or_else(|| "unknown".to_string());
+        (uid, username)
+    };
+    #[cfg(not(unix))]
+    let (uid, username) = {
+        let username = std::env::var("USERNAME")
+            .or_else(|_| std::env::var("USER"))
+            .unwrap_or_else(|_| "unknown".to_string());
+        (0, username)
+    };
+    let username = username
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || "._-".contains(character) {
+                character
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>();
+    let username = if username.is_empty() {
+        "unknown".to_string()
+    } else {
+        username
+    };
+    Ok((format!("uid:{uid}:user:{username}"), uid, username))
+}
+
 fn parse_knowledge_space_kind(value: &str) -> Result<yunxi_agent_storage::KnowledgeSpaceKind> {
     yunxi_agent_storage::KnowledgeSpaceKind::parse(value)
         .map_err(|error| anyhow::anyhow!("知识空间 kind 无效: {error}"))
@@ -1290,6 +1353,39 @@ fn validate_knowledge_metadata(name: &str, value: &str) -> Result<()> {
     Ok(())
 }
 
+fn authorize_cli_mutation_owner(
+    access: &yunxi_agent_storage::KnowledgeAccessContext,
+    requested_owner: &str,
+) -> Result<()> {
+    if requested_owner != access.principal() {
+        bail!(
+            "owner 必须匹配当前 OS 主体 {}；不能通过修改 --owner 冒充其他主体",
+            access.principal()
+        )
+    }
+    Ok(())
+}
+
+fn authorize_cli_read_owner(
+    access: &yunxi_agent_storage::KnowledgeAccessContext,
+    requested_owner: &str,
+    visibility: yunxi_agent_storage::KnowledgeVisibility,
+) -> Result<()> {
+    // The system collector's public space is intentionally addressed by its
+    // reserved internal principal.  User-owned reads must use the OS-derived
+    // principal even when the caller can otherwise read a public space.
+    if requested_owner == access.principal()
+        || (requested_owner == "system"
+            && visibility == yunxi_agent_storage::KnowledgeVisibility::Public)
+    {
+        return Ok(());
+    }
+    bail!(
+        "owner 必须匹配当前 OS 主体 {}；不能通过修改 --owner 冒充其他主体",
+        access.principal()
+    )
+}
+
 fn run_knowledge_space_init(
     space_id: String,
     kind: String,
@@ -1305,6 +1401,8 @@ fn run_knowledge_space_init(
     validate_knowledge_metadata("version", &version)?;
     let kind = parse_knowledge_space_kind(&kind)?;
     let visibility = parse_knowledge_visibility(&visibility)?;
+    let access = knowledge_access_context()?;
+    authorize_cli_mutation_owner(&access, &owner)?;
     if kind == yunxi_agent_storage::KnowledgeSpaceKind::System {
         bail!("knowledge-space-init 只允许创建 project 或 private 空间")
     }
@@ -1329,6 +1427,9 @@ fn run_knowledge_space_init(
         version,
         generation: 1,
     };
+    access
+        .authorize_mutation(&spec)
+        .map_err(|error| anyhow::anyhow!("知识空间访问主体校验失败: {error}"))?;
     let status = match store.read_space(&spec.space_id)? {
         Some(existing) if existing == spec => "existing",
         Some(_) => bail!("知识空间已存在但 metadata 不一致；拒绝静默覆盖"),
@@ -1358,8 +1459,9 @@ fn run_knowledge_space_init(
 fn run_knowledge_space_list(cwd: PathBuf) -> Result<()> {
     let cwd = canonical_knowledge_cwd(cwd)?;
     let store = yunxi_agent_storage::SqliteKnowledgeStore::for_workspace(&cwd);
+    let access = knowledge_access_context()?;
     let spaces = store
-        .list_spaces()?
+        .list_accessible_spaces(&access)?
         .into_iter()
         .map(|space| {
             serde_json::json!({
@@ -1379,6 +1481,20 @@ fn run_knowledge_space_list(cwd: PathBuf) -> Result<()> {
             "schema_version": 1,
             "spaces": spaces,
             "database": cwd.join(".yunxi/knowledge/knowledge.sqlite3"),
+        }))?
+    );
+    Ok(())
+}
+
+fn run_knowledge_principal() -> Result<()> {
+    let (principal, uid, username) = current_knowledge_principal()?;
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&serde_json::json!({
+            "schema_version": 1,
+            "principal": principal,
+            "uid": uid,
+            "username": username,
         }))?
     );
     Ok(())
@@ -1481,11 +1597,16 @@ fn run_knowledge_import_text(
     validate_knowledge_metadata("version", &version)?;
     validate_knowledge_metadata("owner", &owner)?;
     let visibility = parse_knowledge_visibility(&visibility)?;
+    let access = knowledge_access_context()?;
+    authorize_cli_mutation_owner(&access, &owner)?;
     let cwd = canonical_knowledge_cwd(cwd)?;
     let store = yunxi_agent_storage::SqliteKnowledgeStore::for_workspace(&cwd);
     let existing = store
         .read_space(&space_id)?
         .with_context(|| format!("知识空间不存在: {space_id}；请先运行 knowledge-space-init"))?;
+    access
+        .authorize_mutation(&existing)
+        .map_err(|error| anyhow::anyhow!("知识空间访问主体校验失败: {error}"))?;
     if existing.kind == yunxi_agent_storage::KnowledgeSpaceKind::System {
         bail!("知识导入不允许写入 system 空间")
     }
@@ -1799,9 +1920,14 @@ fn run_knowledge_vector_search(
         .map_err(|error| anyhow::anyhow!("知识查询 embedding 失败: {error}"))?;
     let embedding_latency_us = embedding_started.elapsed().as_micros() as u64;
     let visibility = parse_knowledge_visibility(&visibility)?;
-    let Some(scope) = active_knowledge_scope(&store, &space_id, &owner, visibility)? else {
+    let access = knowledge_access_context()?;
+    authorize_cli_read_owner(&access, &owner, visibility)?;
+    let Some(scope) = store.accessible_space_scope(&space_id, &access)? else {
         bail!("知识空间尚未初始化: {space_id}");
     };
+    if scope.visibility != visibility {
+        bail!("请求的知识空间 visibility 与存储 metadata 不一致");
+    }
     let retrieval_started = Instant::now();
     let matches = store.search_vectors_versioned(
         &embedding.values,
@@ -1862,12 +1988,29 @@ fn run_knowledge_retract(
     validate_knowledge_identifier("space_id", &space_id)?;
     validate_knowledge_metadata("owner", &owner)?;
     let visibility = parse_knowledge_visibility(&visibility)?;
+    let access = knowledge_access_context()?;
     let cwd = std::fs::canonicalize(&cwd)
         .with_context(|| format!("无法访问知识工作区: {}", cwd.display()))?;
     let store = yunxi_agent_storage::SqliteKnowledgeStore::for_workspace(&cwd);
-    let Some(scope) = active_knowledge_scope(&store, &space_id, &owner, visibility)? else {
+    let existing = store
+        .read_space(&space_id)?
+        .with_context(|| format!("知识空间尚未初始化: {space_id}"))?;
+    let internal_system_retract = owner == "system"
+        && visibility == yunxi_agent_storage::KnowledgeVisibility::Public
+        && existing.kind == yunxi_agent_storage::KnowledgeSpaceKind::System
+        && existing.owner == "system";
+    if !internal_system_retract {
+        authorize_cli_mutation_owner(&access, &owner)?;
+        access
+            .authorize_mutation(&existing)
+            .map_err(|error| anyhow::anyhow!("知识空间访问主体校验失败: {error}"))?;
+    }
+    let Some(scope) = store.accessible_space_scope(&space_id, &access)? else {
         bail!("知识空间尚未初始化: {space_id}");
     };
+    if scope.visibility != visibility {
+        bail!("请求的知识空间 visibility 与存储 metadata 不一致");
+    }
     let retracted = store.retract_document(&document_id, &scope)?;
     println!(
         "{}",

@@ -6,9 +6,9 @@ use yunxi_agent_persona::{
     LocalChargramEmbedding, MemoryEmbedding, MemoryEmbeddingError, MemoryEmbeddingProvider,
 };
 use yunxi_agent_storage::{
-    KnowledgeChunk, KnowledgeChunkingOptions, KnowledgeDocument, KnowledgeEmbeddingJobStatus,
-    KnowledgeSearchScope, KnowledgeSpaceKind, KnowledgeSpaceSpec, KnowledgeVector,
-    KnowledgeVisibility, MAX_EMBEDDING_JOB_ATTEMPTS, SqliteKnowledgeStore,
+    KnowledgeAccessContext, KnowledgeChunk, KnowledgeChunkingOptions, KnowledgeDocument,
+    KnowledgeEmbeddingJobStatus, KnowledgeSearchScope, KnowledgeSpaceKind, KnowledgeSpaceSpec,
+    KnowledgeVector, KnowledgeVisibility, MAX_EMBEDDING_JOB_ATTEMPTS, SqliteKnowledgeStore,
 };
 
 fn space(
@@ -2134,4 +2134,63 @@ fn embedding_index_rejects_chunks_changed_during_embedding() {
         )
         .expect("vector search");
     assert!(matches.is_empty());
+}
+
+#[test]
+fn access_context_isolates_two_principals_with_same_ids() {
+    let root = tempdir().expect("tempdir");
+    let store = SqliteKnowledgeStore::new(root.path().join("shared/knowledge.sqlite3"));
+    let alice = KnowledgeAccessContext::new("uid:1001:user:alice").expect("alice context");
+    let bob = KnowledgeAccessContext::new("uid:1002:user:bob").expect("bob context");
+    let alice_space = space(
+        "alice-space",
+        KnowledgeSpaceKind::Private,
+        alice.principal(),
+        KnowledgeVisibility::Private,
+        1,
+    );
+    let bob_space = space(
+        "bob-space",
+        KnowledgeSpaceKind::Private,
+        bob.principal(),
+        KnowledgeVisibility::Private,
+        1,
+    );
+    store.upsert_space(&alice_space).expect("alice space");
+    store.upsert_space(&bob_space).expect("bob space");
+    let alice_document = document(
+        "alice-space",
+        alice.principal(),
+        KnowledgeVisibility::Private,
+    );
+    let bob_document = document("bob-space", bob.principal(), KnowledgeVisibility::Private);
+    store
+        .ingest_text(
+            &alice_document,
+            "alice-only deployment note",
+            &KnowledgeChunkingOptions::default(),
+        )
+        .expect("alice document");
+    store
+        .ingest_text(
+            &bob_document,
+            "bob-only deployment note",
+            &KnowledgeChunkingOptions::default(),
+        )
+        .expect("bob document");
+
+    assert_eq!(
+        store.list_accessible_spaces(&alice).unwrap(),
+        vec![alice_space.clone()]
+    );
+    assert_eq!(
+        store.list_accessible_spaces(&bob).unwrap(),
+        vec![bob_space.clone()]
+    );
+    assert!(store.accessible_space_scope("bob-space", &alice).is_err());
+    assert!(store.accessible_space_scope("alice-space", &bob).is_err());
+    assert!(store.accessible_space_scope("alice-space", &alice).is_ok());
+    assert!(store.accessible_space_scope("bob-space", &bob).is_ok());
+    assert!(alice.authorize_mutation(&alice_space).is_ok());
+    assert!(alice.authorize_mutation(&bob_space).is_err());
 }

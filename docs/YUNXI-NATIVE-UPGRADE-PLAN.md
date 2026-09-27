@@ -356,6 +356,15 @@ project 首版仅允许 owner visibility，private 允许 owner/private；source
 空间隔离、显式撤回和长期记忆数据库未被触碰。`knowledge-retract` 现在也接受显式
 space/owner/visibility，并在同一存储边界内清理文档、FTS、向量和 embedding job。
 
+本增量进一步把“owner 字符串”绑定为真实访问主体：Linux CLI 通过当前进程的有效 UID
+和用户名生成稳定的 `uid:<uid>:user:<name>` principal，并提供只读的
+`knowledge-principal` 供脚本与用户确认。project/private 的空间初始化、stdin/文件导入、
+FTS/向量查询、撤回以及 `knowledge-space-list` 均经过 `KnowledgeAccessContext`；修改
+`--owner` 不能冒充另一个主体，空间列表只返回当前主体拥有的空间与可读 public 空间，
+system public 空间继续使用内部 `system` principal。长期记忆 JSONL/向量库未被访问或
+修改。存储层仍保留显式 context API，后续可在此基础上增加更细的 Read/Write/Retract
+能力与撤回 tombstone；本增量不改变 Planner 对 project/private 的自动召回边界。
+
 当前已经提供同步的单文档 `knowledge-index` 原语和 `knowledge-vector-search` CLI，
 使用本地字符 n-gram provider 建立独立向量并支持增量跳过、快照一致性校验和原子
 替换；generation 的 staging 文档、独立向量/任务队列和原子切换已经落地，system 空间

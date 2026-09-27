@@ -79,6 +79,7 @@
 | 沙盒 | Linux Landlock 等宿主能力 | WorkspaceWrite、sandbox policy、exec runner | 可吸收 Miyu 的 Landlock 宿主层，但不改变 YunXi 策略语义 |
 | daemon 权限 | 当前用户 daemon、Unix socket；同时可由 Web 宿主打开 HTTP 端口 | 当前用户 daemon、socket 0600 | Arch TUI 版不使用 root、不开放 TCP；若未来有 Web 必须另行评审 |
 | 数据库 | SQLite 集中状态，支持导出/导入 | 会话、记忆、信箱等分层存储 | 继续采用 YunXi 分层，daemon 负责串行化访问 |
+| 知识访问主体 | 用户级 daemon 与空间边界 | `KnowledgeAccessContext` 绑定当前 UID/用户名 | 已接入；用户空间查询/导入/撤回与空间列表按 OS principal 授权，system public 保留内部 principal |
 | 路径 | `~/.miyu` 体系 | XDG data/state/cache + workspace `.yunxi` | 使用 XDG 标准，不迁移成 Miyu 路径 |
 | 隐私 | 导出时明确提示密钥风险 | 本地优先、脱敏诊断、密钥不写日志 | 保留 YunXi 隐私边界 |
 | 故障策略 | daemon/插件独立化 | fail-soft、离线 Provider 回退 | 两者结合，模块失败不阻断基础对话 |
@@ -119,6 +120,7 @@
 - 知识导入：project/private 支持 stdin 与显式单文件（UTF-8 文本/Markdown）导入；文件入口限定工作区边界、拒绝 `.yunxi` 状态目录和超大文件，不做目录扫描。
 - 知识队列诊断：已有只读 `knowledge-worker-status`，同一快照观察 active/staging 队列，区分就绪、退避、失败、耗尽和过期 lease；不会创建/迁移数据库或触发 worker。
 - 知识风险 provenance：`man/help` 文档同时记录采集风险 `risk_level` 与被描述命令的 `risk_class`，并由 Planner 诊断透传；它只做提示，不能绕过 Approval/Sandbox。
+- 知识访问主体：`knowledge-principal` 从当前 UID/用户名生成稳定 principal；project/private 的初始化、导入、查询、向量查询、撤回和空间列表均绑定当前主体，不能仅修改 `--owner` 越权；system public 空间使用内部 `system` principal。
 - Unix socket daemon：已补齐协议版本、frame 上限、单例锁、Ping、attached Cancel、完成回合有界 Follow、detached output-only active Follow，以及独立连接的 run 级 detached Cancel。
 - 持久化 run 和跨重启续跑：待实现。
 - Miyu Linux 专用 Skills：待评估，不在核心 Runtime 中硬编码。

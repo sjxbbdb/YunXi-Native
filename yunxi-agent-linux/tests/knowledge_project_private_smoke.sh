@@ -11,6 +11,7 @@ test -x "$BINARY" || {
   echo "release binary not found: $BINARY" >&2
   exit 77
 }
+OWNER="$("$BINARY" knowledge-principal | python3 -c 'import json,sys; print(json.load(sys.stdin)["principal"])')"
 
 TMP_ROOT="$(mktemp -d)"
 WORKSPACE="$TMP_ROOT/workspace"
@@ -33,7 +34,7 @@ run_json knowledge-space-init \
   --space-id project-demo \
   --kind project \
   --visibility owner \
-  --owner local-user \
+  --owner "$OWNER" \
   --source project-notes \
   --version v1 \
   --cwd "$WORKSPACE" >"$TMP_ROOT/project-init.json"
@@ -41,7 +42,7 @@ run_json knowledge-space-init \
   --space-id private-demo \
   --kind private \
   --visibility private \
-  --owner local-user \
+  --owner "$OWNER" \
   --source private-notes \
   --version v1 \
   --cwd "$WORKSPACE" >"$TMP_ROOT/private-init.json"
@@ -49,7 +50,7 @@ run_json knowledge-space-init \
   --space-id project-demo \
   --kind project \
   --visibility owner \
-  --owner local-user \
+  --owner "$OWNER" \
   --source project-notes \
   --version v1 \
   --cwd "$WORKSPACE" >"$TMP_ROOT/project-existing.json"
@@ -81,7 +82,7 @@ run_json knowledge-space-init \
   --space-id project-demo \
   --kind project \
   --visibility owner \
-  --owner local-user \
+  --owner "$OWNER" \
   --source changed \
   --version v2 \
   --cwd "$WORKSPACE" >"$TMP_ROOT/conflict.out" 2>&1
@@ -100,7 +101,7 @@ printf '%s\n' '项目知识：systemctl restart 会重启服务，但可能中�
     --title 'Project Guide' \
     --source project-notes \
     --version v1 \
-    --owner local-user \
+    --owner "$OWNER" \
     --visibility owner \
     --cwd "$WORKSPACE" >"$TMP_ROOT/project-import.json"
 printf '%s\n' '私有知识：我的部署约定是先执行 dry-run，再申请审批。' | \
@@ -110,7 +111,7 @@ printf '%s\n' '私有知识：我的部署约定是先执行 dry-run，再申请
     --title 'Private Guide' \
     --source private-notes \
     --version v1 \
-    --owner local-user \
+    --owner "$OWNER" \
     --visibility private \
     --cwd "$WORKSPACE" >"$TMP_ROOT/private-import.json"
 printf '%s\n' '# File knowledge' '' '私有文档导入也必须经过显式路径和 workspace 边界。' > \
@@ -121,7 +122,7 @@ run_json knowledge-import-file private-notes.md \
   --title 'Private File' \
   --source private-notes \
   --version v1 \
-  --owner local-user \
+  --owner "$OWNER" \
   --visibility private \
   --cwd "$WORKSPACE" >"$TMP_ROOT/private-file-import.json"
 
@@ -145,7 +146,7 @@ printf '%s\n' 'outside workspace must be rejected' >"$TMP_ROOT/outside.md"
 set +e
 run_json knowledge-import-file "$TMP_ROOT/outside.md" \
   --space-id private-demo --document-id outside-file --title Outside \
-  --source private-notes --version v1 --owner local-user --visibility private \
+  --source private-notes --version v1 --owner "$OWNER" --visibility private \
   --cwd "$WORKSPACE" >"$TMP_ROOT/outside.out" 2>&1
 OUTSIDE_STATUS=$?
 set -e
@@ -158,7 +159,7 @@ grep -q "必须位于工作区内" "$TMP_ROOT/outside.out" || {
 set +e
 run_json knowledge-import-file "$WORKSPACE/.yunxi/knowledge/knowledge.sqlite3" \
   --space-id private-demo --document-id internal-file --title Internal \
-  --source private-notes --version v1 --owner local-user --visibility private \
+  --source private-notes --version v1 --owner "$OWNER" --visibility private \
   --cwd "$WORKSPACE" >"$TMP_ROOT/internal.out" 2>&1
 INTERNAL_STATUS=$?
 set -e
@@ -183,13 +184,13 @@ assert "database" not in value, value
 PY
 
 run_json knowledge-search 'systemctl restart' \
-  --space-id project-demo --owner local-user --visibility owner \
+  --space-id project-demo --owner "$OWNER" --visibility owner \
   --cwd "$WORKSPACE" >"$TMP_ROOT/project-search.json"
 run_json knowledge-search 'dry-run' \
-  --space-id private-demo --owner local-user --visibility private \
+  --space-id private-demo --owner "$OWNER" --visibility private \
   --cwd "$WORKSPACE" >"$TMP_ROOT/private-search.json"
 run_json knowledge-search 'workspace' \
-  --space-id private-demo --owner local-user --visibility private \
+  --space-id private-demo --owner "$OWNER" --visibility private \
   --cwd "$WORKSPACE" >"$TMP_ROOT/private-file-search.json"
 
 python3 - "$TMP_ROOT/project-search.json" "$TMP_ROOT/private-search.json" "$TMP_ROOT/private-file-search.json" <<'PY'
@@ -260,7 +261,7 @@ assert value["active"]["completed"] == 3, value
 assert value["active"]["failed"] == 0, value
 PY
 run_json knowledge-vector-search 'dry-run' \
-  --space-id private-demo --owner local-user --visibility private \
+  --space-id private-demo --owner "$OWNER" --visibility private \
   --cwd "$WORKSPACE" >"$TMP_ROOT/private-vector.json"
 python3 - "$TMP_ROOT/private-vector.json" <<'PY'
 import json
@@ -272,10 +273,10 @@ assert all(item["space_id"] == "private-demo" for item in value["results"]), val
 PY
 
 run_json knowledge-retract private-guide \
-  --space-id private-demo --owner local-user --visibility private \
+  --space-id private-demo --owner "$OWNER" --visibility private \
   --cwd "$WORKSPACE" >"$TMP_ROOT/private-retract.json"
 run_json knowledge-vector-search 'dry-run' \
-  --space-id private-demo --owner local-user --visibility private \
+  --space-id private-demo --owner "$OWNER" --visibility private \
   --cwd "$WORKSPACE" >"$TMP_ROOT/private-vector-after-retract.json"
 python3 - "$TMP_ROOT/private-retract.json" "$TMP_ROOT/private-vector-after-retract.json" <<'PY'
 import json
@@ -294,7 +295,7 @@ printf '%s\n' '项目知识更新：systemctl restart 需要审批。' | \
     --title 'Project Guide' \
     --source project-notes \
     --version v1 \
-    --owner local-user \
+    --owner "$OWNER" \
     --visibility owner \
     --cwd "$WORKSPACE" >"$TMP_ROOT/project-reimport.json"
 run_json knowledge-worker --max-jobs 10 --cwd "$WORKSPACE" >"$TMP_ROOT/worker-reimport.json"

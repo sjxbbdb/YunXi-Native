@@ -98,6 +98,64 @@ pub struct KnowledgeSpaceSpec {
     pub generation: i64,
 }
 
+/// Caller identity used at the knowledge-space boundary.
+///
+/// The low-level store intentionally keeps its historical owner/visibility
+/// APIs for compatibility.  Callers that serve a user-facing boundary should
+/// construct this context and use the access helpers below instead of trusting
+/// an owner string supplied by the caller.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct KnowledgeAccessContext {
+    principal: String,
+}
+
+impl KnowledgeAccessContext {
+    pub fn new(principal: impl Into<String>) -> AgentResult<Self> {
+        let principal = principal.into();
+        if principal.trim().is_empty() || principal.chars().count() > 512 {
+            return Err(storage_error("knowledge access principal is invalid"));
+        }
+        Ok(Self { principal })
+    }
+
+    pub fn principal(&self) -> &str {
+        &self.principal
+    }
+
+    /// Public spaces are readable by every principal; owner/private spaces
+    /// are readable only by their recorded owner.
+    pub fn can_read(&self, space: &KnowledgeSpaceSpec) -> bool {
+        space.visibility == KnowledgeVisibility::Public || space.owner == self.principal
+    }
+
+    /// User principals may mutate only their own non-system spaces.  The
+    /// internal system principal is deliberately not granted a generic write
+    /// path; collectors use their dedicated system ingestion path.
+    pub fn can_mutate(&self, space: &KnowledgeSpaceSpec) -> bool {
+        space.kind != KnowledgeSpaceKind::System && space.owner == self.principal
+    }
+
+    pub fn authorize_read(&self, space: &KnowledgeSpaceSpec) -> AgentResult<()> {
+        if self.can_read(space) {
+            Ok(())
+        } else {
+            Err(storage_error(
+                "knowledge space is not readable by this principal",
+            ))
+        }
+    }
+
+    pub fn authorize_mutation(&self, space: &KnowledgeSpaceSpec) -> AgentResult<()> {
+        if self.can_mutate(space) {
+            Ok(())
+        } else {
+            Err(storage_error(
+                "knowledge space is not mutable by this principal",
+            ))
+        }
+    }
+}
+
 /// A document is a source-level unit; its searchable content lives in chunks.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct KnowledgeDocument {
@@ -1362,6 +1420,35 @@ impl SqliteKnowledgeStore {
             });
         }
         Ok(spaces)
+    }
+
+    /// List only spaces visible to a caller.  The existing `list_spaces` API
+    /// remains an unfiltered storage primitive for internal maintenance and
+    /// migration code.
+    pub fn list_accessible_spaces(
+        &self,
+        access: &KnowledgeAccessContext,
+    ) -> AgentResult<Vec<KnowledgeSpaceSpec>> {
+        Ok(self
+            .list_spaces()?
+            .into_iter()
+            .filter(|space| access.can_read(space))
+            .collect())
+    }
+
+    /// Resolve the stored active scope only after applying the caller's read
+    /// policy.  This prevents a public CLI from manufacturing a scope by
+    /// changing `owner` or `visibility` arguments.
+    pub fn accessible_space_scope(
+        &self,
+        space_id: &str,
+        access: &KnowledgeAccessContext,
+    ) -> AgentResult<Option<KnowledgeSearchScope>> {
+        let Some(space) = self.read_space(space_id)? else {
+            return Ok(None);
+        };
+        access.authorize_read(&space)?;
+        self.active_space_scope(&space.space_id, &space.owner, space.visibility)
     }
 
     /// Read the active search scope for a space without changing its state.

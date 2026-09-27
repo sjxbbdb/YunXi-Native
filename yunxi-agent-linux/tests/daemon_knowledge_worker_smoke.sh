@@ -5,6 +5,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 BINARY="${1:-${ROOT_DIR}/target/release/yunxi-linux}"
 command -v python3 >/dev/null || { echo "python3 is required" >&2; exit 77; }
 test -x "$BINARY" || { echo "release binary not found: $BINARY" >&2; exit 77; }
+OWNER="$("$BINARY" knowledge-principal | python3 -c 'import json,sys; print(json.load(sys.stdin)["principal"])')"
 
 TMP_ROOT="$(mktemp -d)"
 RUNTIME_DIR="$TMP_ROOT/runtime"
@@ -59,20 +60,20 @@ set -e
 grep -Eq -- 'knowledge-workspace.*32' "$TMP_ROOT/too-many.out"
 
 "$BINARY" knowledge-space-init --space-id daemon-smoke --kind private \
-  --visibility private --owner daemon-smoke-owner --source daemon-smoke \
+  --visibility private --owner "$OWNER" --source daemon-smoke \
   --version v1 --cwd "$WORKSPACE" >/dev/null
 printf '%s\n' 'daemon-owned knowledge worker should embed this document' |
   "$BINARY" knowledge-import-stdin --space-id daemon-smoke \
   --document-id daemon-document --title daemon-document --source daemon-smoke \
-  --version v1 --owner daemon-smoke-owner --visibility private \
+  --version v1 --owner "$OWNER" --visibility private \
   --cwd "$WORKSPACE" >/dev/null
 "$BINARY" knowledge-space-init --space-id daemon-smoke-b --kind private \
-  --visibility private --owner daemon-smoke-owner --source daemon-smoke \
+  --visibility private --owner "$OWNER" --source daemon-smoke \
   --version v1 --cwd "$WORKSPACE_B" >/dev/null
 printf '%s\n' 'second explicit workspace must also be embedded' |
   "$BINARY" knowledge-import-stdin --space-id daemon-smoke-b \
   --document-id daemon-document-b --title daemon-document-b --source daemon-smoke \
-  --version v1 --owner daemon-smoke-owner --visibility private \
+  --version v1 --owner "$OWNER" --visibility private \
   --cwd "$WORKSPACE_B" >/dev/null
 
 "$BINARY" daemon --knowledge-workspace "$WORKSPACE" \
@@ -135,10 +136,10 @@ for path in sys.argv[1:]:
 PY
 
 "$BINARY" knowledge-vector-search 'daemon-owned knowledge' --space-id daemon-smoke \
-  --owner daemon-smoke-owner --visibility private --cwd "$WORKSPACE" |
+  --owner "$OWNER" --visibility private --cwd "$WORKSPACE" |
   python3 -c 'import json,sys; value=json.load(sys.stdin); assert value["results"], value'
 "$BINARY" knowledge-vector-search 'second explicit workspace' --space-id daemon-smoke-b \
-  --owner daemon-smoke-owner --visibility private --cwd "$WORKSPACE_B" |
+  --owner "$OWNER" --visibility private --cwd "$WORKSPACE_B" |
   python3 -c 'import json,sys; value=json.load(sys.stdin); assert value["results"], value'
 
 set +e
