@@ -210,6 +210,10 @@ pub enum ProviderToolCall {
         id: Option<String>,
         arguments_json: String,
     },
+    LinuxNetwork {
+        id: Option<String>,
+        arguments_json: String,
+    },
     LinuxPackage {
         id: Option<String>,
         arguments_json: String,
@@ -268,6 +272,9 @@ impl From<ProviderToolCall> for ToolCall {
             }
             ProviderToolCall::LinuxSystemd { id, arguments_json } => {
                 Self::LinuxSystemd { id, arguments_json }
+            }
+            ProviderToolCall::LinuxNetwork { id, arguments_json } => {
+                Self::LinuxNetwork { id, arguments_json }
             }
             ProviderToolCall::LinuxPackage { id, arguments_json } => {
                 Self::LinuxPackage { id, arguments_json }
@@ -2322,6 +2329,9 @@ fn provider_tool_call_request_json(tool_call: &ProviderToolCall, index: usize) -
         ProviderToolCall::LinuxSystemd { id, arguments_json } => {
             (id.as_deref(), "linux_systemd", arguments_json.clone())
         }
+        ProviderToolCall::LinuxNetwork { id, arguments_json } => {
+            (id.as_deref(), "linux_network", arguments_json.clone())
+        }
         ProviderToolCall::LinuxPackage { id, arguments_json } => {
             (id.as_deref(), "linux_package", arguments_json.clone())
         }
@@ -2988,6 +2998,10 @@ fn parse_openai_tool_call(
             arguments_json: arguments.to_string(),
         }),
         "linux_systemd" => Ok(ProviderToolCall::LinuxSystemd {
+            id,
+            arguments_json: arguments.to_string(),
+        }),
+        "linux_network" => Ok(ProviderToolCall::LinuxNetwork {
             id,
             arguments_json: arguments.to_string(),
         }),

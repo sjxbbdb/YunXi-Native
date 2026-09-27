@@ -400,6 +400,10 @@ pub enum ToolCall {
         id: Option<String>,
         arguments_json: String,
     },
+    LinuxNetwork {
+        id: Option<String>,
+        arguments_json: String,
+    },
     LinuxPackage {
         id: Option<String>,
         arguments_json: String,
@@ -425,6 +429,7 @@ impl ToolCall {
             Self::LinuxPreview { id, .. } => id.as_deref(),
             Self::LinuxApply { id, .. } => id.as_deref(),
             Self::LinuxSystemd { id, .. } => id.as_deref(),
+            Self::LinuxNetwork { id, .. } => id.as_deref(),
             Self::LinuxPackage { id, .. } => id.as_deref(),
             Self::LinuxReadOnly { id, .. } => id.as_deref(),
         }
@@ -782,6 +787,17 @@ mod tests {
         let call = ToolCall::LinuxSystemd {
             id: Some("call-systemd".to_string()),
             arguments_json: r#"{"action":"restart","unit":"demo.service"}"#.to_string(),
+        };
+        let encoded = serde_json::to_string(&call).expect("encode");
+        let decoded: ToolCall = serde_json::from_str(&encoded).expect("decode");
+        assert_eq!(decoded, call);
+    }
+
+    #[test]
+    fn linux_network_tool_call_round_trips_json() {
+        let call = ToolCall::LinuxNetwork {
+            id: Some("call-network".to_string()),
+            arguments_json: r#"{"operation":"link_up","interface":"eth0"}"#.to_string(),
         };
         let encoded = serde_json::to_string(&call).expect("encode");
         let decoded: ToolCall = serde_json::from_str(&encoded).expect("decode");

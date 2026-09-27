@@ -154,6 +154,15 @@ Runtime 还注册了独立的 `linux_systemd` ToolSpec，用于经过审批的�
 退出或取消会返回结构化失败及 `mutation: true` 审计事件，不会误报成功。Linux smoke
 使用 PATH 下临时 fake `systemctl` 断言 argv，不触碰真实 systemd。
 
+### 类型化网络变更
+
+`linux_network` ToolSpec 提供经过审批的六类固定 `ip` mutation：`link_up`/`link_down`、
+`addr_add`/`addr_del`、`route_add`/`route_del`。接口、地址、前缀、网关和路由目标均经过
+token 校验；执行始终是明确的 `ip link|addr|route ...` argv，不接受额外参数、shell 或
+`sudo`。工具保留当前用户权限边界，缺少权限时返回结构化失败；输出有界、支持取消，并
+记录 `mutation: true` 网络审计事件。Linux smoke 用 PATH 下临时 fake `ip` 断言 argv，
+不会修改宿主网络配置。
+
 ### Arch/pacman 包变更
 
 Runtime 还注册了 `linux_package` ToolSpec。它只接受一个经过 token 校验的包名和

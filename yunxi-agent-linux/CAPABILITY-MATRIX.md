@@ -69,6 +69,7 @@
 | Linux 操作预览 | 插件可先生成计划再执行 | `linux_preview::plan` 纯函数，typed intent + 显式风险评估 | 已实现不 spawn/不写入的预览边界 |
 | Linux 工作区文件变更 | 类型化写入、删除、移动与撤销 | `linux_apply` 仅处理 regular file，经过 Approval/Sandbox，`.yunxi/undo` journal + `undo()` | 已接入模型 ToolSpec/Provider/Runtime；不执行 shell、systemd、package 或 network |
 | Linux 用户级 systemd 变更 | 启停、重载、启用/禁用用户服务 | `linux_systemd` 固定 `systemctl --user` argv，审批、取消、有界输出和 mutation 审计事件 | 已接入模型 ToolSpec/Provider/Runtime；仅允许 token-safe unit 与六种 action，fake-systemctl smoke 覆盖 |
+| Linux 网络变更 | 链路、地址、路由的常用增删改 | `linux_network` 固定 `ip` argv，审批、当前用户权限、不使用 sudo、取消、有界输出和 mutation 审计 | 已接入模型 ToolSpec/Provider/Runtime；六种 typed action，fake-ip smoke 覆盖 |
 | Arch/pacman 包变更 | 安装、删除、升级及包搜索/信息查询 | `linux_package` 固定 pacman argv；search/info 低风险，install/remove/upgrade 默认审批；显式 root 边界、有界输出、取消和 package 审计事件 | 已接入模型 ToolSpec/Provider/Protocol/Runtime；拒绝 shell/额外参数/sudo，fake-pacman smoke 覆盖 |
 | 知识撤回防复活 | 由插件生命周期负责 | active/staging 分代索引 + durable tombstone | 已接入；撤回同事务清理索引并阻止旧 worker/候选 generation 再激活同一文档 |
 | 网络搜索/网页读取 | 内置或可选搜索服务 | 由 MCP/工具能力承载 | 先保持 YunXi Provider/工具边界 |

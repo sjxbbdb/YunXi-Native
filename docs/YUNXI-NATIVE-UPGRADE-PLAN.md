@@ -348,6 +348,11 @@ stdout/stderr 有界，结果统一包含 `exit_code`、`status`、`truncated`�
 Registry、OpenAI schema 和 Runtime 均已接入；`linux_package_smoke.sh` 使用 fake pacman
 验证 argv、审批拒绝、缺少 pacman、失败和取消路径，不触碰真实包数据库。
 
+同一阶段新增 `linux_network`：以 typed `ip` link/addr/route 六动作承载常用网络变更，
+固定 argv、严格 schema、审批/取消/有界输出和 `mutation: true` 审计事件均沿用同一运行时
+边界；不注入 sudo，也不突破当前用户权限。`linux_network_smoke.sh` 通过临时 PATH fake
+`ip` 校验 argv，缺少 `ip`、非零返回与取消均以结构化失败报告，不修改宿主网络。
+
 **门槛**：每个工具有 schema、权限矩阵、错误恢复、单元测试和至少一个真实 Linux 验收脚本。
 
 ### Phase 4：通用知识平台与 Linux 首发 RAG

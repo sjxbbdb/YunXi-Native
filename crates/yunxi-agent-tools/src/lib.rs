@@ -29,6 +29,7 @@ use yunxi_agent_skills::{
 };
 
 pub mod linux_apply;
+pub mod linux_network;
 pub mod linux_package;
 pub mod linux_preview;
 mod linux_readonly;
@@ -100,6 +101,18 @@ impl ToolRequest {
         }
     }
 
+    pub fn linux_network(cwd: impl Into<PathBuf>, input: linux_network::LinuxNetworkInput) -> Self {
+        let mut policy = ToolPolicy::trusted();
+        policy.approval = ApprovalDecision::Required;
+        policy.execution_policy.approval = ApprovalRequirement::AskBeforeRunning;
+        Self {
+            id: None,
+            cwd: cwd.into(),
+            kind: ToolRequestKind::LinuxNetwork { input },
+            policy,
+        }
+    }
+
     pub fn linux_package(cwd: impl Into<PathBuf>, input: linux_package::LinuxPackageInput) -> Self {
         let mut policy = ToolPolicy::trusted();
         if input.action.mutates() {
@@ -161,6 +174,9 @@ pub enum ToolRequestKind {
     LinuxSystemd {
         input: linux_systemd::LinuxSystemdInput,
     },
+    LinuxNetwork {
+        input: linux_network::LinuxNetworkInput,
+    },
     LinuxPackage {
         input: linux_package::LinuxPackageInput,
     },
@@ -184,6 +200,7 @@ impl ToolRequestKind {
             Self::LinuxPreview { .. } => ToolName::LinuxPreview,
             Self::LinuxApply { .. } => ToolName::LinuxApply,
             Self::LinuxSystemd { .. } => ToolName::LinuxSystemd,
+            Self::LinuxNetwork { .. } => ToolName::LinuxNetwork,
             Self::LinuxPackage { .. } => ToolName::LinuxPackage,
             Self::LinuxReadOnly { .. } => ToolName::LinuxReadOnly,
         }
@@ -212,6 +229,10 @@ impl ToolRequestKind {
                 input.action.as_str(),
                 input.unit
             )),
+            Self::LinuxNetwork { input } => Some(format!(
+                "linux_network {}",
+                serde_json::to_string(input).unwrap_or_else(|_| "{}".to_string())
+            )),
             Self::LinuxPackage { input } => Some(format!(
                 "pacman {} {}",
                 input.action.as_str(),
@@ -239,6 +260,7 @@ pub enum ToolName {
     LinuxPreview,
     LinuxApply,
     LinuxSystemd,
+    LinuxNetwork,
     LinuxPackage,
     LinuxReadOnly,
 }
@@ -257,6 +279,7 @@ impl ToolName {
             Self::LinuxPreview => "linux_preview",
             Self::LinuxApply => "linux_apply",
             Self::LinuxSystemd => "linux_systemd",
+            Self::LinuxNetwork => "linux_network",
             Self::LinuxPackage => "linux_package",
             Self::LinuxReadOnly => "linux_readonly",
         }
@@ -433,6 +456,8 @@ pub fn default_tool_registry() -> ToolRegistry {
         linux_apply_tool_spec(),
         #[cfg(target_os = "linux")]
         linux_systemd_tool_spec(),
+        #[cfg(target_os = "linux")]
+        linux_network_tool_spec(),
         #[cfg(target_os = "linux")]
         linux_package_tool_spec(),
         #[cfg(target_os = "linux")]
@@ -751,6 +776,16 @@ fn linux_systemd_tool_spec() -> ToolSpec {
 }
 
 #[cfg(target_os = "linux")]
+fn linux_network_tool_spec() -> ToolSpec {
+    ToolSpec::new(
+        ToolName::LinuxNetwork,
+        "Apply an approved typed Linux network mutation through fixed ip argv. Supports link up/down, address add/del, and route add/del; never invokes sudo or a shell.",
+        linux_network::parameters_schema(),
+        true,
+    )
+}
+
+#[cfg(target_os = "linux")]
 fn linux_package_tool_spec() -> ToolSpec {
     ToolSpec::new(
         ToolName::LinuxPackage,
@@ -1037,6 +1072,14 @@ pub enum ToolRuntimeEvent {
         truncated: bool,
         mutation: bool,
     },
+    LinuxNetwork {
+        operation: String,
+        status: String,
+        command: String,
+        exit_code: Option<i32>,
+        truncated: bool,
+        mutation: bool,
+    },
     LinuxPackage {
         action: String,
         package: String,
@@ -1136,6 +1179,11 @@ impl ToolPolicy {
                 &request.cwd,
                 request.kind.policy_command().as_deref(),
                 CommandRisk::ProcessControl,
+            ),
+            ToolRequestKind::LinuxNetwork { .. } => policy.evaluate_with_risk(
+                &request.cwd,
+                request.kind.policy_command().as_deref(),
+                CommandRisk::Network,
             ),
             ToolRequestKind::LinuxPackage { input } if input.action.mutates() => policy
                 .evaluate_with_risk(
@@ -1310,6 +1358,7 @@ impl ToolRuntime for ShellToolRuntime {
             | ToolRequestKind::LinuxPreview { .. }
             | ToolRequestKind::LinuxApply { .. }
             | ToolRequestKind::LinuxSystemd { .. }
+            | ToolRequestKind::LinuxNetwork { .. }
             | ToolRequestKind::LinuxPackage { .. }
             | ToolRequestKind::LinuxReadOnly { .. } => Ok(ToolResponse::declined(
                 request.id,
@@ -1529,6 +1578,17 @@ impl ToolRuntime for CompositeToolRuntime {
             }
             ToolRequestKind::LinuxSystemd { input } => {
                 return linux_systemd::execute(
+                    request.id,
+                    &request.cwd,
+                    input,
+                    request.policy.execution_policy,
+                    control.cancellation_token(),
+                )
+                .await
+                .map(|response| response.with_runtime_events(runtime_events));
+            }
+            ToolRequestKind::LinuxNetwork { input } => {
+                return linux_network::execute(
                     request.id,
                     &request.cwd,
                     input,

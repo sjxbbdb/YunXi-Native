@@ -95,6 +95,25 @@ pub async fn execute(
     policy: ExecutionPolicy,
     cancellation: AgentCancellationToken,
 ) -> AgentResult<ToolResponse> {
+    execute_with_env(
+        id,
+        cwd,
+        input,
+        policy,
+        cancellation,
+        std::collections::BTreeMap::new(),
+    )
+    .await
+}
+
+pub async fn execute_with_env(
+    id: Option<String>,
+    cwd: &Path,
+    input: LinuxPackageInput,
+    policy: ExecutionPolicy,
+    cancellation: AgentCancellationToken,
+    env: std::collections::BTreeMap<String, String>,
+) -> AgentResult<ToolResponse> {
     let argv = match fixed_argv(&input) {
         Ok(argv) => argv,
         Err(message) => return Ok(ToolResponse::declined(id, message)),
@@ -106,7 +125,7 @@ pub async fn execute(
         command: command.clone(),
         argv: argv.clone(),
         stdin: None,
-        env: std::collections::BTreeMap::new(),
+        env,
         timeout_millis: Some(120_000),
         policy,
     };

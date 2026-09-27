@@ -11,6 +11,8 @@ use yunxi_agent_mcp::{
 #[cfg(target_os = "linux")]
 use yunxi_agent_tools::linux_apply::LinuxApplyInput;
 #[cfg(target_os = "linux")]
+use yunxi_agent_tools::linux_network::LinuxNetworkInput;
+#[cfg(target_os = "linux")]
 use yunxi_agent_tools::linux_package::{LinuxPackageInput, PackageAction};
 #[cfg(target_os = "linux")]
 use yunxi_agent_tools::linux_preview::{
@@ -24,9 +26,6 @@ use yunxi_agent_tools::{
     ToolRouter, ToolRuntime, ToolRuntimeEvent, ToolStatus, default_tool_registry,
     workspace_tool_registry,
 };
-
-#[cfg(all(target_os = "linux", unix))]
-static PROCESS_ENV_LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
 
 #[cfg(windows)]
 fn create_dir_symlink(src: &Path, dst: &Path) -> std::io::Result<()> {
@@ -64,6 +63,7 @@ fn default_tool_registry_exposes_model_visible_specs() {
             ToolName::LinuxPreview,
             ToolName::LinuxApply,
             ToolName::LinuxSystemd,
+            ToolName::LinuxNetwork,
             ToolName::LinuxPackage,
             ToolName::LinuxReadOnly,
         ])
@@ -107,10 +107,6 @@ async fn linux_systemd_requires_approval_before_execution() {
 #[tokio::test]
 async fn linux_systemd_fake_runner_records_mutation_audit() {
     use std::os::unix::fs::PermissionsExt;
-    let _path_guard = PROCESS_ENV_LOCK
-        .get_or_init(|| std::sync::Mutex::new(()))
-        .lock()
-        .expect("path lock");
     let cwd = tempfile::tempdir().expect("tempdir");
     let script = cwd.path().join("systemctl");
     let marker = cwd.path().join("argv");
@@ -123,45 +119,151 @@ async fn linux_systemd_fake_runner_records_mutation_audit() {
     )
     .expect("script");
     std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).expect("chmod");
-    let old_path = std::env::var_os("PATH");
-    unsafe {
-        std::env::set_var(
-            "PATH",
-            format!(
-                "{}:{}",
-                cwd.path().display(),
-                old_path.as_deref().unwrap_or_default().to_string_lossy()
-            ),
-        );
-    }
-    let response = CompositeToolRuntime::default()
-        .execute(
-            ToolRequest::linux_systemd(
-                cwd.path(),
-                LinuxSystemdInput {
-                    action: SystemdAction::Restart,
-                    unit: "demo.service".into(),
-                },
-            )
-            .with_policy(ToolPolicy::trusted()),
-        )
-        .await
-        .expect("response");
-    if let Some(path) = old_path {
-        unsafe {
-            std::env::set_var("PATH", path);
-        }
-    } else {
-        unsafe {
-            std::env::remove_var("PATH");
-        }
-    }
+    let response = yunxi_agent_tools::linux_systemd::execute_with_env(
+        Some("fake-systemd".into()),
+        cwd.path(),
+        LinuxSystemdInput {
+            action: SystemdAction::Restart,
+            unit: "demo.service".into(),
+        },
+        ToolPolicy::trusted().execution_policy,
+        AgentCancellationToken::new(),
+        [("PATH".to_string(), cwd.path().display().to_string())]
+            .into_iter()
+            .collect(),
+    )
+    .await
+    .expect("response");
     assert_eq!(response.status, ToolStatus::Completed);
     assert_eq!(
         std::fs::read_to_string(marker).unwrap(),
         "--user\nrestart\ndemo.service\n"
     );
     assert!(response.runtime_events.iter().any(|event| matches!(event, ToolRuntimeEvent::LinuxSystemd { mutation: true, status, .. } if status == "ok")));
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn linux_network_requires_approval_before_execution() {
+    let cwd = tempfile::tempdir().expect("tempdir");
+    let mut config = AgentConfig::new(cwd.path());
+    config.approval_mode = ApprovalMode::OnRequest;
+    config.sandbox_mode = SandboxMode::DangerFullAccess;
+    let response = CompositeToolRuntime::default()
+        .execute(
+            ToolRequest::linux_network(
+                cwd.path(),
+                LinuxNetworkInput::LinkUp {
+                    interface: "eth0".into(),
+                },
+            )
+            .with_policy(ToolPolicy::from_config(&config)),
+        )
+        .await
+        .expect("response");
+    assert_eq!(response.status, ToolStatus::Declined);
+    assert!(response.lifecycle_events.is_empty());
+}
+
+#[cfg(all(target_os = "linux", unix))]
+#[tokio::test]
+async fn linux_network_fake_ip_records_fixed_argv_and_audit() {
+    use std::os::unix::fs::PermissionsExt;
+    let cwd = tempfile::tempdir().expect("tempdir");
+    let script = cwd.path().join("ip");
+    let marker = cwd.path().join("argv");
+    std::fs::write(
+        &script,
+        format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$@\" > '{}'\n",
+            marker.display()
+        ),
+    )
+    .expect("script");
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    let response = yunxi_agent_tools::linux_network::execute_with_env(
+        Some("fake-network".into()),
+        cwd.path(),
+        LinuxNetworkInput::AddrAdd {
+            interface: "eth0".into(),
+            address: "10.0.0.2".into(),
+            prefix: 24,
+        },
+        ToolPolicy::trusted().execution_policy,
+        AgentCancellationToken::new(),
+        [("PATH".to_string(), cwd.path().display().to_string())]
+            .into_iter()
+            .collect(),
+    )
+    .await
+    .expect("response");
+    assert_eq!(response.status, ToolStatus::Completed);
+    assert_eq!(
+        std::fs::read_to_string(marker).unwrap(),
+        "addr\nadd\n10.0.0.2/24\ndev\neth0\n"
+    );
+    assert!(response.runtime_events.iter().any(|event| matches!(event, ToolRuntimeEvent::LinuxNetwork { mutation: true, status, .. } if status == "ok")));
+    let report: serde_json::Value = serde_json::from_str(&response.output.unwrap()).unwrap();
+    assert_eq!(report["requires_root"], true);
+}
+
+#[cfg(all(target_os = "linux", unix))]
+#[tokio::test]
+async fn linux_network_missing_ip_is_structured_unavailable() {
+    let cwd = tempfile::tempdir().expect("tempdir");
+    let response = yunxi_agent_tools::linux_network::execute_with_env(
+        Some("missing-network".into()),
+        cwd.path(),
+        LinuxNetworkInput::LinkDown {
+            interface: "eth0".into(),
+        },
+        ToolPolicy::trusted().execution_policy,
+        AgentCancellationToken::new(),
+        [("PATH".to_string(), cwd.path().display().to_string())]
+            .into_iter()
+            .collect(),
+    )
+    .await
+    .expect("response");
+    let report: serde_json::Value = serde_json::from_str(&response.output.unwrap()).unwrap();
+    assert_eq!(report["status"], "unavailable");
+    assert_eq!(
+        report["argv"],
+        serde_json::json!(["ip", "link", "set", "dev", "eth0", "down"])
+    );
+}
+
+#[cfg(all(target_os = "linux", unix))]
+#[tokio::test]
+async fn linux_network_cancellation_is_structured() {
+    use std::os::unix::fs::PermissionsExt;
+    let cwd = tempfile::tempdir().expect("tempdir");
+    let script = cwd.path().join("ip");
+    std::fs::write(&script, "#!/bin/sh\n/bin/sleep 5\n").expect("script");
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    let token = AgentCancellationToken::new();
+    let cancel = token.clone();
+    let task = tokio::spawn(async move {
+        yunxi_agent_tools::linux_network::execute_with_env(
+            Some("cancel-network".into()),
+            cwd.path(),
+            LinuxNetworkInput::LinkUp {
+                interface: "eth0".into(),
+            },
+            ToolPolicy::trusted().execution_policy,
+            token,
+            [("PATH".to_string(), cwd.path().display().to_string())]
+                .into_iter()
+                .collect(),
+        )
+        .await
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    cancel.cancel();
+    let response = task.await.expect("join").expect("response");
+    let report: serde_json::Value = serde_json::from_str(&response.output.unwrap()).unwrap();
+    assert_eq!(report["status"], "cancelled");
+    assert_eq!(report["cancelled"], true);
 }
 
 #[cfg(target_os = "linux")]
@@ -192,10 +294,6 @@ async fn linux_package_mutation_requires_approval() {
 #[tokio::test]
 async fn linux_package_fake_runner_records_fixed_argv_and_audit() {
     use std::os::unix::fs::PermissionsExt;
-    let _path_guard = PROCESS_ENV_LOCK
-        .get_or_init(|| std::sync::Mutex::new(()))
-        .lock()
-        .expect("path lock");
     let cwd = tempfile::tempdir().expect("tempdir");
     let script = cwd.path().join("pacman");
     let marker = cwd.path().join("argv");
@@ -208,39 +306,21 @@ async fn linux_package_fake_runner_records_fixed_argv_and_audit() {
     )
     .expect("script");
     std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).expect("chmod");
-    let old_path = std::env::var_os("PATH");
-    unsafe {
-        std::env::set_var(
-            "PATH",
-            format!(
-                "{}:{}",
-                cwd.path().display(),
-                old_path.as_deref().unwrap_or_default().to_string_lossy()
-            ),
-        );
-    }
-    let response = CompositeToolRuntime::default()
-        .execute(
-            ToolRequest::linux_package(
-                cwd.path(),
-                LinuxPackageInput {
-                    action: PackageAction::Install,
-                    package: "ripgrep".into(),
-                },
-            )
-            .with_policy(ToolPolicy::trusted()),
-        )
-        .await
-        .expect("response");
-    if let Some(path) = old_path {
-        unsafe {
-            std::env::set_var("PATH", path);
-        }
-    } else {
-        unsafe {
-            std::env::remove_var("PATH");
-        }
-    }
+    let response = yunxi_agent_tools::linux_package::execute_with_env(
+        Some("fake-package".into()),
+        cwd.path(),
+        LinuxPackageInput {
+            action: PackageAction::Install,
+            package: "ripgrep".into(),
+        },
+        ToolPolicy::trusted().execution_policy,
+        AgentCancellationToken::new(),
+        [("PATH".to_string(), cwd.path().display().to_string())]
+            .into_iter()
+            .collect(),
+    )
+    .await
+    .expect("response");
     assert_eq!(response.status, ToolStatus::Completed);
     assert_eq!(
         std::fs::read_to_string(marker).unwrap(),
@@ -258,37 +338,22 @@ async fn linux_package_fake_runner_records_fixed_argv_and_audit() {
 #[cfg(all(target_os = "linux", unix))]
 #[tokio::test]
 async fn linux_package_missing_pacman_returns_structured_unavailable() {
-    let _path_guard = PROCESS_ENV_LOCK
-        .get_or_init(|| std::sync::Mutex::new(()))
-        .lock()
-        .expect("path lock");
     let cwd = tempfile::tempdir().expect("tempdir");
-    let old_path = std::env::var_os("PATH");
-    unsafe {
-        std::env::set_var("PATH", cwd.path());
-    }
-    let response = CompositeToolRuntime::default()
-        .execute(
-            ToolRequest::linux_package(
-                cwd.path(),
-                LinuxPackageInput {
-                    action: PackageAction::Info,
-                    package: "ripgrep".into(),
-                },
-            )
-            .with_policy(ToolPolicy::trusted()),
-        )
-        .await
-        .expect("response");
-    if let Some(path) = old_path {
-        unsafe {
-            std::env::set_var("PATH", path);
-        }
-    } else {
-        unsafe {
-            std::env::remove_var("PATH");
-        }
-    }
+    let response = yunxi_agent_tools::linux_package::execute_with_env(
+        Some("missing-package".into()),
+        cwd.path(),
+        LinuxPackageInput {
+            action: PackageAction::Info,
+            package: "ripgrep".into(),
+        },
+        ToolPolicy::trusted().execution_policy,
+        AgentCancellationToken::new(),
+        [("PATH".to_string(), cwd.path().display().to_string())]
+            .into_iter()
+            .collect(),
+    )
+    .await
+    .expect("response");
     let report: serde_json::Value = serde_json::from_str(&response.output.unwrap()).unwrap();
     assert!(
         report["status"] == "unavailable" || report["status"] == "failed",
@@ -305,25 +370,17 @@ async fn linux_package_missing_pacman_returns_structured_unavailable() {
 #[tokio::test]
 async fn linux_package_cancellation_returns_structured_cancelled() {
     use std::os::unix::fs::PermissionsExt;
-    let _path_guard = PROCESS_ENV_LOCK
-        .get_or_init(|| std::sync::Mutex::new(()))
-        .lock()
-        .expect("path lock");
     let cwd = tempfile::tempdir().expect("tempdir");
     let script = cwd.path().join("pacman");
     std::fs::write(&script, "#!/bin/sh\nsleep 2\n").expect("script");
     std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).expect("chmod");
-    let old_path = std::env::var_os("PATH");
-    unsafe {
-        std::env::set_var("PATH", format!("{}:/usr/bin:/bin", cwd.path().display()));
-    }
     let token = AgentCancellationToken::new();
     let cancel = token.clone();
     let cancel_task = tokio::spawn(async move {
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         cancel.cancel();
     });
-    let response = yunxi_agent_tools::linux_package::execute(
+    let response = yunxi_agent_tools::linux_package::execute_with_env(
         Some("cancel-package".into()),
         cwd.path(),
         LinuxPackageInput {
@@ -332,19 +389,16 @@ async fn linux_package_cancellation_returns_structured_cancelled() {
         },
         ToolPolicy::trusted().execution_policy,
         token,
+        [(
+            "PATH".to_string(),
+            format!("{}:/usr/bin:/bin", cwd.path().display()),
+        )]
+        .into_iter()
+        .collect(),
     )
     .await
     .expect("response");
     cancel_task.await.expect("cancel task");
-    if let Some(path) = old_path {
-        unsafe {
-            std::env::set_var("PATH", path);
-        }
-    } else {
-        unsafe {
-            std::env::remove_var("PATH");
-        }
-    }
     let report: serde_json::Value = serde_json::from_str(&response.output.unwrap()).unwrap();
     assert_eq!(report["status"], "cancelled", "report={report}");
     assert_eq!(report["cancelled"], true, "report={report}");
@@ -380,6 +434,7 @@ fn default_tool_registry_exports_openai_function_schema() {
             "linux_preview",
             "linux_apply",
             "linux_systemd",
+            "linux_network",
             "linux_package",
             "linux_readonly",
         ])
