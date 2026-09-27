@@ -7,6 +7,8 @@ use yunxi_agent_mcp::{
     McpTransport,
 };
 #[cfg(target_os = "linux")]
+use yunxi_agent_tools::linux_apply::LinuxApplyInput;
+#[cfg(target_os = "linux")]
 use yunxi_agent_tools::linux_preview::{
     LinuxMutationIntent, LinuxPreviewInput, LinuxPreviewStatus,
 };
@@ -49,7 +51,11 @@ fn default_tool_registry_exposes_model_visible_specs() {
     #[cfg(target_os = "linux")]
     let expected = expected
         .into_iter()
-        .chain([ToolName::LinuxPreview, ToolName::LinuxReadOnly])
+        .chain([
+            ToolName::LinuxPreview,
+            ToolName::LinuxApply,
+            ToolName::LinuxReadOnly,
+        ])
         .collect::<Vec<_>>();
     assert_eq!(names, expected);
     assert_eq!(
@@ -88,7 +94,7 @@ fn default_tool_registry_exports_openai_function_schema() {
     #[cfg(target_os = "linux")]
     let expected = expected
         .into_iter()
-        .chain(["linux_preview", "linux_readonly"])
+        .chain(["linux_preview", "linux_apply", "linux_readonly"])
         .collect::<Vec<_>>();
     assert_eq!(names, expected);
     assert_eq!(tools[0]["type"], "function");
@@ -172,6 +178,60 @@ async fn linux_preview_preserves_approval_boundary_in_structured_plan() {
         serde_json::from_value::<LinuxPreviewStatus>(plan["status"].clone()).unwrap(),
         LinuxPreviewStatus::ApprovalRequired
     );
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn linux_apply_requires_approval_and_writes_undoable_workspace_files() {
+    let cwd = tempfile::tempdir().expect("tempdir");
+    let mut config = AgentConfig::new(cwd.path());
+    config.approval_mode = ApprovalMode::OnRequest;
+    config.sandbox_mode = SandboxMode::WorkspaceWrite;
+    let declined = CompositeToolRuntime::default()
+        .execute(
+            ToolRequest::linux_apply(
+                cwd.path(),
+                LinuxApplyInput::WriteFile {
+                    path: "note.txt".into(),
+                    content: "blocked".into(),
+                },
+            )
+            .with_policy(ToolPolicy::from_config(&config)),
+        )
+        .await
+        .expect("declined response");
+    assert_eq!(declined.status, ToolStatus::Declined);
+    assert!(!cwd.path().join("note.txt").exists());
+
+    config.approval_mode = ApprovalMode::Never;
+    let response = CompositeToolRuntime::default()
+        .execute(
+            ToolRequest::linux_apply(
+                cwd.path(),
+                LinuxApplyInput::WriteFile {
+                    path: "note.txt".into(),
+                    content: "applied".into(),
+                },
+            )
+            .with_policy(ToolPolicy::from_config(&config)),
+        )
+        .await
+        .expect("apply response");
+    assert_eq!(response.status, ToolStatus::Completed);
+    assert_eq!(response.changed_files[0].kind, ToolFileChangeKind::Added);
+    assert_eq!(
+        std::fs::read_to_string(cwd.path().join("note.txt")).unwrap(),
+        "applied"
+    );
+    let report: serde_json::Value =
+        serde_json::from_str(&response.output.expect("report")).expect("report json");
+    assert!(
+        report["journal_path"]
+            .as_str()
+            .unwrap()
+            .ends_with("journal.json")
+    );
+    assert!(report["journal_path"].as_str().unwrap().contains(".yunxi"));
 }
 
 #[cfg(unix)]

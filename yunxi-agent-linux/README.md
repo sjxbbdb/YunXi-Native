@@ -142,7 +142,16 @@ bash yunxi-agent-linux/tests/linux_tool_smoke.sh ./target/release/yunxi-linux
 Linux Runtime 还注册了模型可见的 `linux_preview` ToolSpec。它接受固定只读 argv 或
 typed mutation intent，只返回风险、审批、沙盒、目标和 side-effects 计划；不会创建
 `ExecCommand`、启动进程或写入文件。即使当前策略要求审批/升级，预览也会把该结论放在
-结构化计划中，而不是提前变成无上下文的拒绝。正式写入工具仍需另行设计可回滚边界。
+结构化计划中，而不是提前变成无上下文的拒绝。
+
+### 类型化工作区文件变更
+
+Linux Runtime 同时注册 `linux_apply` ToolSpec。它只接受 `write_file`、`delete_path`、
+`move_path` 三类 regular-file 操作，不接受 shell 字符串，也不执行 systemd、package 或
+network 动作。请求仍先经过 YunXi 的 Approval/Sandbox 链路；`ReadOnly` 会拒绝，
+`WorkspaceWrite` 只允许配置工作区内的路径，符号链接、路径穿越和 `.yunxi` 状态目录会被拒绝。
+成功变更会写入 `.yunxi/undo/linux-apply-*/journal.json` 与必要的备份，提供
+`yunxi_agent_tools::linux_apply::undo()` 恢复接口；执行或 journal 提交失败会回滚已发生的变更。
 
 ## 显式 project/private 知识空间
 

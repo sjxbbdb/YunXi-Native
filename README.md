@@ -77,6 +77,11 @@ Linux Host 负责终端接入、daemon 生命周期、IPC、事件回放和 Linu
 
 Linux 版已经开始把系统能力接入为固定的 `linux_readonly` ToolSpec：`systemd_status`、`man_page`、`process_list`、`network_snapshot`、`filesystem_summary`、`filesystem_list`、`disk_usage` 和 `pacman_query`。它们只读本机状态，使用严格的 JSON schema、参数白名单和固定 argv 直接进程执行，不经过 `sh -c`，并沿用 YunXi 既有的 ToolRouter、ToolPolicy、审批、沙盒诊断和审计事件。缺少发行版工具时返回结构化 `unavailable`，不会自动改用任意 shell 命令。
 
+在只读观察之后，Linux Runtime 还提供 `linux_preview`（只规划、不执行）和
+`linux_apply`（类型化的 regular-file 写入、删除、移动）。`linux_apply` 仍走审批与
+Sandbox，工作区变更会写入 `.yunxi/undo` journal，并可用 `undo()` 恢复；它不接受任意
+shell 文本，也不会把 systemd、package 或 network 的高风险操作偷偷变成执行。
+
 ### 知识库边界（Phase 4 基础切片）
 
 Linux 知识库已经有独立的 `SqliteKnowledgeStore` 基础：数据库文件为 `knowledge.sqlite3`，与长期记忆的 `long-term-vectors.sqlite3` 物理分离。知识空间、文档、chunk、generation、owner 和 visibility 会在检索前校验，当前支持 FTS5 和按模型隔离的有界向量检索。采集前会经过确定性的文本规范化和分块，不读取任意路径；`ingest_text` 在单事务内替换文档 chunk 并清理旧向量，文档 hash 与分块参数未变化时会跳过重建，避免索引与向量残留；`replace_document_vectors` 可为 embedding worker 原子替换一个文档的模型向量集合。Runtime 通过只读 Planner 证据边界消费它，知识文本不会被当作 shell 命令直接运行。

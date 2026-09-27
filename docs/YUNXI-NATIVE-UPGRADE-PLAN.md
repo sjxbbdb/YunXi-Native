@@ -324,7 +324,12 @@ daemon 还对 `Hello` 与握手后的首个请求设置 5 秒超时，防止半�
 并以 `runner=none` 与三项 `side_effects=false` 作为可测试契约。现在它已通过独立的
 `linux_preview` ToolSpec/ToolRequest 接入正式 ToolRegistry 与 Composite Runtime，模型
 可以请求预览并得到结构化风险/审批/沙盒计划；执行器仍不会被调用，审批或升级结论不会
-被吞掉。它不替代后续可回滚写入设计。
+被吞掉。
+
+随后接入 `linux_apply`：以 typed write/delete/move 承载工作区 regular-file 变更，复用
+Approval/Sandbox，不接受任意 shell；在 `.yunxi/undo` 写入 journal/备份并提供 `undo()`，
+执行或 journal 提交失败会回滚。systemd、package、network 等高风险 mutation 仍只做预览，
+不因文件变更工具而扩大执行边界。
 
 **门槛**：每个工具有 schema、权限矩阵、错误恢复、单元测试和至少一个真实 Linux 验收脚本。
 

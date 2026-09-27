@@ -143,6 +143,13 @@ fn approval_command_and_paths(request: &ToolRequest) -> (Option<String>, Vec<Pat
             )),
             Vec::new(),
         ),
+        ToolRequestKind::LinuxApply { input } => (
+            Some(format!(
+                "linux_apply {}",
+                serde_json::to_string(input).unwrap_or_else(|_| "{}".to_string())
+            )),
+            Vec::new(),
+        ),
         ToolRequestKind::LinuxReadOnly {
             operation,
             arguments,

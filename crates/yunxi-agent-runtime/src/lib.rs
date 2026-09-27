@@ -4983,6 +4983,13 @@ fn tool_call_started_event(call: yunxi_agent_protocol::ToolCall) -> AgentEvent {
                 arguments_json: Some(arguments_json),
             }
         }
+        yunxi_agent_protocol::ToolCall::LinuxApply { id, arguments_json } => {
+            AgentEvent::ToolCallStarted {
+                id,
+                name: "linux_apply".to_string(),
+                arguments_json: Some(arguments_json),
+            }
+        }
         yunxi_agent_protocol::ToolCall::LinuxReadOnly {
             id,
             operation,
@@ -5035,6 +5042,9 @@ fn provider_tool_call_from_protocol(call: ToolCall) -> AgentResult<ProviderToolC
         ToolCall::ViewImage { id, path } => Ok(ProviderToolCall::ViewImage { id, path }),
         ToolCall::LinuxPreview { id, arguments_json } => {
             Ok(ProviderToolCall::LinuxPreview { id, arguments_json })
+        }
+        ToolCall::LinuxApply { id, arguments_json } => {
+            Ok(ProviderToolCall::LinuxApply { id, arguments_json })
         }
         ToolCall::LinuxReadOnly {
             id,
@@ -5143,6 +5153,7 @@ fn provider_tool_call_id(call: &ProviderToolCall) -> Option<&str> {
         | ProviderToolCall::RequestUserInput { id, .. }
         | ProviderToolCall::ViewImage { id, .. } => id.as_deref(),
         ProviderToolCall::LinuxPreview { id, .. } => id.as_deref(),
+        ProviderToolCall::LinuxApply { id, .. } => id.as_deref(),
         ProviderToolCall::LinuxReadOnly { id, .. } => id.as_deref(),
     }
 }
@@ -5158,6 +5169,7 @@ fn ensure_provider_tool_call_id(call: &mut ProviderToolCall, fallback: String) -
         | ProviderToolCall::RequestUserInput { id, .. }
         | ProviderToolCall::ViewImage { id, .. } => id,
         ProviderToolCall::LinuxPreview { id, .. } => id,
+        ProviderToolCall::LinuxApply { id, .. } => id,
         ProviderToolCall::LinuxReadOnly { id, .. } => id,
     };
     id.get_or_insert(fallback).clone()
@@ -5515,6 +5527,20 @@ fn map_tool_call(
                 policy,
             }
         }
+        ProviderToolCall::LinuxApply { id, arguments_json } => {
+            let input = serde_json::from_str(&arguments_json).unwrap_or_else(|_| {
+                yunxi_agent_tools::linux_apply::LinuxApplyInput::WriteFile {
+                    path: String::new(),
+                    content: String::new(),
+                }
+            });
+            ToolRequest {
+                id,
+                cwd,
+                kind: ToolRequestKind::LinuxApply { input },
+                policy,
+            }
+        }
         ProviderToolCall::LinuxReadOnly {
             id,
             operation,
@@ -5569,6 +5595,10 @@ fn tool_request_command(request: &ToolRequest) -> Option<String> {
         ToolRequestKind::ViewImage { path } => Some(format!("view_image {path}")),
         ToolRequestKind::LinuxPreview { input } => Some(format!(
             "linux_preview {}",
+            serde_json::to_string(input).unwrap_or_else(|_| "{}".to_string())
+        )),
+        ToolRequestKind::LinuxApply { input } => Some(format!(
+            "linux_apply {}",
             serde_json::to_string(input).unwrap_or_else(|_| "{}".to_string())
         )),
         ToolRequestKind::LinuxReadOnly {
@@ -6064,6 +6094,14 @@ where
             })
             .await
         }
+        ToolRequestKind::LinuxApply { input } => {
+            sink.emit(AgentEvent::ToolCallStarted {
+                id: request.id.clone(),
+                name: "linux_apply".to_string(),
+                arguments_json: serde_json::to_string(input).ok(),
+            })
+            .await
+        }
         ToolRequestKind::LinuxReadOnly {
             operation,
             arguments,
@@ -6180,6 +6218,15 @@ where
             sink.emit(AgentEvent::ToolCallCompleted {
                 id: response.id.clone(),
                 name: "linux_preview".to_string(),
+                output: render_tool_response(response),
+                status: map_tool_response_status(response),
+            })
+            .await
+        }
+        ToolRequestKind::LinuxApply { .. } => {
+            sink.emit(AgentEvent::ToolCallCompleted {
+                id: response.id.clone(),
+                name: "linux_apply".to_string(),
                 output: render_tool_response(response),
                 status: map_tool_response_status(response),
             })

@@ -28,6 +28,7 @@ use yunxi_agent_skills::{
     load_skill_injection, workspace_dynamic_tools,
 };
 
+pub mod linux_apply;
 pub mod linux_preview;
 mod linux_readonly;
 
@@ -74,6 +75,17 @@ impl ToolRequest {
         }
     }
 
+    /// Construct a typed Linux workspace mutation request. The request still
+    /// flows through the normal approval and sandbox policy gate.
+    pub fn linux_apply(cwd: impl Into<PathBuf>, input: linux_apply::LinuxApplyInput) -> Self {
+        Self {
+            id: None,
+            cwd: cwd.into(),
+            kind: ToolRequestKind::LinuxApply { input },
+            policy: ToolPolicy::trusted(),
+        }
+    }
+
     pub fn with_policy(mut self, policy: ToolPolicy) -> Self {
         self.policy = policy;
         self
@@ -115,6 +127,9 @@ pub enum ToolRequestKind {
     LinuxPreview {
         input: linux_preview::LinuxPreviewInput,
     },
+    LinuxApply {
+        input: linux_apply::LinuxApplyInput,
+    },
     LinuxReadOnly {
         operation: String,
         arguments: Value,
@@ -133,6 +148,7 @@ impl ToolRequestKind {
             Self::RequestUserInput { .. } => ToolName::RequestUserInput,
             Self::ViewImage { .. } => ToolName::ViewImage,
             Self::LinuxPreview { .. } => ToolName::LinuxPreview,
+            Self::LinuxApply { .. } => ToolName::LinuxApply,
             Self::LinuxReadOnly { .. } => ToolName::LinuxReadOnly,
         }
     }
@@ -149,6 +165,10 @@ impl ToolRequestKind {
             Self::ViewImage { path } => Some(format!("view_image {path}")),
             Self::LinuxPreview { input } => Some(format!(
                 "linux_preview {}",
+                serde_json::to_string(input).unwrap_or_else(|_| "{}".to_string())
+            )),
+            Self::LinuxApply { input } => Some(format!(
+                "linux_apply {}",
                 serde_json::to_string(input).unwrap_or_else(|_| "{}".to_string())
             )),
             Self::LinuxReadOnly {
@@ -171,6 +191,7 @@ pub enum ToolName {
     RequestUserInput,
     ViewImage,
     LinuxPreview,
+    LinuxApply,
     LinuxReadOnly,
 }
 
@@ -186,6 +207,7 @@ impl ToolName {
             Self::RequestUserInput => "request_user_input",
             Self::ViewImage => "view_image",
             Self::LinuxPreview => "linux_preview",
+            Self::LinuxApply => "linux_apply",
             Self::LinuxReadOnly => "linux_readonly",
         }
     }
@@ -357,6 +379,8 @@ pub fn default_tool_registry() -> ToolRegistry {
         view_image_tool_spec(),
         #[cfg(target_os = "linux")]
         linux_preview_tool_spec(),
+        #[cfg(target_os = "linux")]
+        linux_apply_tool_spec(),
         #[cfg(target_os = "linux")]
         linux_readonly_tool_spec(),
     ])
@@ -632,6 +656,30 @@ fn linux_preview_tool_spec() -> ToolSpec {
                 }
             },
             "required": ["mode"],
+            "additionalProperties": false
+        }),
+        true,
+    )
+}
+
+#[cfg(target_os = "linux")]
+fn linux_apply_tool_spec() -> ToolSpec {
+    ToolSpec::new(
+        ToolName::LinuxApply,
+        "Apply one typed regular-file write, delete, or move inside the YunXi workspace. Requires the normal approval and WorkspaceWrite/DangerFullAccess sandbox policy; never executes shell text and records an undo journal.",
+        json!({
+            "type": "object",
+            "properties": {
+                "operation": {
+                    "type": "string",
+                    "enum": ["write_file", "delete_path", "move_path"]
+                },
+                "path": {"type": "string"},
+                "content": {"type": "string"},
+                "from": {"type": "string"},
+                "to": {"type": "string"}
+            },
+            "required": ["operation"],
             "additionalProperties": false
         }),
         true,
@@ -1155,6 +1203,7 @@ impl ToolRuntime for ShellToolRuntime {
             | ToolRequestKind::Skill { .. }
             | ToolRequestKind::MultiAgent { .. }
             | ToolRequestKind::LinuxPreview { .. }
+            | ToolRequestKind::LinuxApply { .. }
             | ToolRequestKind::LinuxReadOnly { .. } => Ok(ToolResponse::declined(
                 request.id,
                 "YunXi has registered this tool but the specialized runtime is not attached",
@@ -1362,6 +1411,15 @@ impl ToolRuntime for CompositeToolRuntime {
                     runtime_events,
                 );
             }
+            ToolRequestKind::LinuxApply { input } => {
+                return run_linux_apply(
+                    request.id,
+                    request.cwd,
+                    input,
+                    request.policy.execution_policy,
+                    runtime_events,
+                );
+            }
             _ => return self.shell.execute_with_control(request, control).await,
         }?;
         Ok(response.with_runtime_events(runtime_events))
@@ -1400,6 +1458,42 @@ fn run_linux_preview(
         ToolResponse::completed(id, output, Some(0), Vec::new())
             .with_runtime_events(runtime_events),
     )
+}
+
+fn run_linux_apply(
+    id: Option<String>,
+    cwd: PathBuf,
+    input: linux_apply::LinuxApplyInput,
+    policy: ExecutionPolicy,
+    runtime_events: Vec<ToolRuntimeEvent>,
+) -> AgentResult<ToolResponse> {
+    let report = match linux_apply::apply(&cwd, input, &policy) {
+        Ok(report) => report,
+        Err(error) => {
+            return Ok(
+                ToolResponse::failed(id, error.to_string(), None, Vec::new())
+                    .with_runtime_events(runtime_events),
+            );
+        }
+    };
+    let changed_files = report
+        .changed_paths
+        .iter()
+        .map(|path| ToolFileChange {
+            path: PathBuf::from(path),
+            kind: match report.change_kind {
+                linux_apply::LinuxApplyChangeKind::Added => ToolFileChangeKind::Added,
+                linux_apply::LinuxApplyChangeKind::Updated => ToolFileChangeKind::Updated,
+                linux_apply::LinuxApplyChangeKind::Deleted => ToolFileChangeKind::Deleted,
+                linux_apply::LinuxApplyChangeKind::Moved => ToolFileChangeKind::Moved,
+            },
+        })
+        .collect();
+    let output = serde_json::to_string(&report).map_err(|error| AgentError::Execution {
+        message: format!("serialize linux apply report: {error}"),
+    })?;
+    Ok(ToolResponse::completed(id, output, Some(0), changed_files)
+        .with_runtime_events(runtime_events))
 }
 
 async fn run_shell(
