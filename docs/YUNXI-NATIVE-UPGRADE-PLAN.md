@@ -600,6 +600,12 @@ document/chunk/source/risk 等元数据、不携带正文；同时检查 `knowle
 `crates/yunxi-agent-runtime/tests/runtime_tests.rs`，仅在 Linux 目标启用，不改变
 Windows Runtime 路径。
 
+本增量在既有 `context_assembled` 观测面增加有界的 `recall_trace`：分别记录
+Memory 与 Knowledge retrieval 的 `elapsed_ms`、选择/丢弃或证据数量、Knowledge
+状态与 generation，以及受限失败标签。trace 只包含诊断元数据，不包含记忆正文或
+知识 chunk 正文；它不引入共享缓存、跨域 deadline、数据库、迁移或写入路径，也不
+改变两类召回的权限、敏感度、排序和独立 generation 语义。
+
 **门槛**：个人信息不自动进入知识库，知识文本不改写个人记忆，跨 workspace/用户/知识空间不可串线。
 
 ### Phase 6：发行与长期运行

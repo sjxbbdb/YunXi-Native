@@ -1152,6 +1152,7 @@ impl YunXiRuntimeBackend {
                             })
                             .unwrap_or_else(|| "[]".to_string()),
                     ),
+                    ("recall_trace", initial_messages.recall_trace.to_json()),
                     (
                         "memory_boot_selected",
                         memory_diagnostic.boot_selected.to_string(),
@@ -2083,6 +2084,38 @@ struct InitialMessages {
     context_state: ContextManagerState,
     persona: PersonaTurnContext,
     knowledge_diagnostic: Option<KnowledgeRecallDiagnostic>,
+    recall_trace: ContextRecallTrace,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize)]
+struct ContextRecallTrace {
+    version: u8,
+    memory: MemoryRecallTrace,
+    knowledge: KnowledgeRecallTrace,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize)]
+struct MemoryRecallTrace {
+    elapsed_ms: u64,
+    selected: usize,
+    dropped: usize,
+    warning_count: usize,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize)]
+struct KnowledgeRecallTrace {
+    elapsed_ms: u64,
+    status: String,
+    generation: Option<i64>,
+    keyword_evidence: usize,
+    vector_evidence: usize,
+    failures: Vec<String>,
+}
+
+impl ContextRecallTrace {
+    fn to_json(&self) -> String {
+        serde_json::to_string(self).unwrap_or_else(|_| "{}".to_string())
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -2737,7 +2770,9 @@ impl YunXiRuntimeBackend {
 
         let restored_history = self.restore_parent_history(config).await?;
         let recall_query = memory_recall_query(prompt, restored_history.as_ref());
+        let memory_started = Instant::now();
         let persona = build_persona_turn_context(config, &recall_query, restored_history.is_none());
+        let memory_recall_elapsed_millis = memory_started.elapsed().as_millis() as u64;
         if let Some(compiled_context) = &persona.compiled_context {
             messages.push(ProviderMessage::system(compiled_context.content.clone()));
         }
@@ -2745,7 +2780,9 @@ impl YunXiRuntimeBackend {
             messages.push(ProviderMessage::system(instructions));
         }
 
+        let knowledge_started = Instant::now();
         let knowledge_context = load_linux_knowledge_context_with_diagnostic(config, prompt);
+        let knowledge_recall_elapsed_millis = knowledge_started.elapsed().as_millis() as u64;
         if let Some(knowledge_context) = &knowledge_context {
             if let Some(content) = &knowledge_context.content {
                 messages.push(ProviderMessage::system(content.clone()));
@@ -2804,12 +2841,42 @@ impl YunXiRuntimeBackend {
                     .map(|message| message.content.clone());
             }
         }
+        let memory_diagnostic = memory_recall_diagnostic(&persona);
+        let knowledge_diagnostic = knowledge_context
+            .as_ref()
+            .map(|context| &context.diagnostic);
+        let recall_trace = ContextRecallTrace {
+            version: 1,
+            memory: MemoryRecallTrace {
+                elapsed_ms: memory_recall_elapsed_millis,
+                selected: memory_diagnostic.boot_selected + memory_diagnostic.dynamic_selected,
+                dropped: memory_diagnostic.dropped_by_route.values().sum(),
+                warning_count: persona.memory_warnings.len(),
+            },
+            knowledge: KnowledgeRecallTrace {
+                elapsed_ms: knowledge_recall_elapsed_millis,
+                status: knowledge_diagnostic
+                    .map(|diagnostic| diagnostic.status.label().to_string())
+                    .unwrap_or_else(|| "not_run".to_string()),
+                generation: knowledge_diagnostic.and_then(|diagnostic| diagnostic.generation),
+                keyword_evidence: knowledge_diagnostic
+                    .map(|diagnostic| diagnostic.keyword_evidence)
+                    .unwrap_or_default(),
+                vector_evidence: knowledge_diagnostic
+                    .map(|diagnostic| diagnostic.vector_evidence)
+                    .unwrap_or_default(),
+                failures: knowledge_diagnostic
+                    .map(|diagnostic| diagnostic.failures.iter().take(4).cloned().collect())
+                    .unwrap_or_default(),
+            },
+        };
         Ok(InitialMessages {
             messages,
             restored_history,
             context_state,
             persona,
             knowledge_diagnostic: knowledge_context.map(|context| context.diagnostic),
+            recall_trace,
         })
     }
 

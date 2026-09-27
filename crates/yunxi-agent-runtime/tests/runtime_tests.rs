@@ -592,6 +592,34 @@ async fn runtime_keeps_memory_and_knowledge_recall_separate_in_one_context_assem
     assert!(!provenance.contains(KNOWLEDGE_ONLY_MARKER));
     assert!(!provenance.contains(MEMORY_ONLY_MARKER));
 
+    let recall_trace_json = context_metadata
+        .data
+        .get("recall_trace")
+        .expect("dual-domain recall trace");
+    let recall_trace: serde_json::Value =
+        serde_json::from_str(recall_trace_json).expect("valid recall trace JSON");
+    assert_eq!(recall_trace["version"], 1);
+    assert!(recall_trace["memory"]["elapsed_ms"].is_u64());
+    assert_eq!(
+        recall_trace["memory"]["selected"].as_u64(),
+        Some((memory_boot_selected + memory_dynamic_selected) as u64)
+    );
+    assert!(recall_trace["memory"]["dropped"].is_u64());
+    assert!(recall_trace["memory"]["warning_count"].is_u64());
+    assert_eq!(recall_trace["knowledge"]["status"], "evidence");
+    assert_eq!(recall_trace["knowledge"]["generation"], 1);
+    assert!(recall_trace["knowledge"]["elapsed_ms"].is_u64());
+    let keyword_evidence = recall_trace["knowledge"]["keyword_evidence"]
+        .as_u64()
+        .unwrap_or_default();
+    let vector_evidence = recall_trace["knowledge"]["vector_evidence"]
+        .as_u64()
+        .unwrap_or_default();
+    assert!(keyword_evidence + vector_evidence >= 1);
+    assert!(recall_trace["knowledge"]["failures"].is_array());
+    assert!(!recall_trace_json.contains(MEMORY_ONLY_MARKER));
+    assert!(!recall_trace_json.contains(KNOWLEDGE_ONLY_MARKER));
+
     let knowledge_db = workspace.path().join(".yunxi/knowledge/knowledge.sqlite3");
     let memory_db = workspace
         .path()
