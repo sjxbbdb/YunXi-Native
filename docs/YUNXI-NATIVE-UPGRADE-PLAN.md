@@ -269,7 +269,9 @@ XDG 目录启动 release daemon，验证版本握手、Ping、未知回合 Follo
 Provider 配置失败与超限 `Turn` 请求的结构化 `Error` 帧，以及 SIGTERM 后 socket 清理；
 超限请求在 `run_accepted` 之前被拒绝，随后仍能 Ping，说明语义限额不会破坏 daemon 生命周期。
 它不需要模型凭据，也不执行真实系统工具。该 smoke 与单元测试互补，前者覆盖真实
-进程/套接字生命周期，后者继续覆盖锁、回放、协议和字段边界细节。
+进程/套接字生命周期，后者继续覆盖锁、回放、协议和字段边界细节。smoke 还会对真实
+daemon 发送 `SIGKILL`，并发启动多个候选进程，验证陈旧 socket/lock 的回收、单例 owner
+收敛和 owner 的 Ping/退出清理。
 
 当前 `Turn` 语义边界为：`prompt` ≤ 64 KiB、`cwd` ≤ 4 KiB、`request_id`/`session_id` ≤
 512 字节、`provider`/`model` ≤ 256 字节。它们独立于 24 MiB frame 传输上限，目的是在

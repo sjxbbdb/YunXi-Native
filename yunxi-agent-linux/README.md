@@ -322,7 +322,8 @@ bash yunxi-agent-linux/tests/daemon_ipc_smoke.sh ./target/release/yunxi-linux
 `Turn` 的结构化 `Error` 帧（超限请求不会产生 `run_accepted`）、错误后 daemon 仍可 Ping，
 空闲握手连接的超时关闭，以及 SIGTERM 后 socket 清理。脚本使用临时 XDG 目录，结束后会
 自动删除测试状态；同时会发送超大 frame 和截断 JSON，确认坏连接只被丢弃而不会拖垮
-daemon 或影响后续 Ping。
+daemon 或影响后续 Ping。脚本还会真实 `SIGKILL` 一个 daemon，再并发启动多个候选进程，
+确认陈旧 socket/lock 可回收、最终只有一个 daemon 持有 lock 并响应 Ping，随后能正常清理。
 
 project/private 知识空间的 stdin 导入、owner/visibility 隔离、重复导入和向量闭环可用：
 

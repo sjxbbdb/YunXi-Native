@@ -308,6 +308,119 @@ fi
   exit 1
 }
 
+# A hard crash cannot run Drop, so both the socket and lock are expected to be
+# left behind.  The next start must prove that the production stale-owner
+# path can recover them, and that a concurrent start race still yields one
+# actual daemon owner.
+CRASH_LOG="$TMP_ROOT/crash-daemon.log"
+"$BINARY" daemon >"$CRASH_LOG" 2>&1 &
+CRASH_PID=$!
+for _ in $(seq 1 40); do
+  [[ -S "$SOCKET" ]] && break
+  sleep 0.05
+done
+[[ -S "$SOCKET" && -f "$LOCK" ]] || {
+  echo "crash daemon did not establish socket/lock" >&2
+  cat "$CRASH_LOG" >&2
+  kill -KILL "$CRASH_PID" 2>/dev/null || true
+  wait "$CRASH_PID" 2>/dev/null || true
+  exit 1
+}
+kill -KILL "$CRASH_PID" 2>/dev/null || true
+wait "$CRASH_PID" 2>/dev/null || true
+[[ -e "$SOCKET" && -e "$LOCK" ]] || {
+  echo "SIGKILL unexpectedly removed crash socket/lock; stale-owner path was not exercised" >&2
+  exit 1
+}
+
+CONCURRENT_PIDS=()
+for index in 1 2 3 4; do
+  "$BINARY" daemon >"$TMP_ROOT/concurrent-$index.log" 2>&1 &
+  CONCURRENT_PIDS+=("$!")
+done
+
+# Reap exited contenders before counting live processes; unreaped children
+# otherwise remain zombies and make kill -0 look like a second daemon.
+pid_is_running() {
+  local state
+  state="$(ps -o stat= -p "$1" 2>/dev/null | tr -d '[:space:]' || true)"
+  [[ -n "$state" && "$state" != Z* ]]
+}
+
+OWNER_PID=""
+for _ in $(seq 1 60); do
+  running=()
+  for pid in "${CONCURRENT_PIDS[@]}"; do
+    if pid_is_running "$pid"; then
+      running+=("$pid")
+    else
+      wait "$pid" 2>/dev/null || true
+    fi
+  done
+  if [[ -S "$SOCKET" && "${#running[@]}" -eq 1 ]]; then
+    OWNER_PID="${running[0]}"
+    break
+  fi
+  sleep 0.05
+done
+[[ -n "$OWNER_PID" ]] || {
+  echo "concurrent daemon start did not converge to exactly one owner" >&2
+  for index in 1 2 3 4; do cat "$TMP_ROOT/concurrent-$index.log" >&2 || true; done
+  for pid in "${CONCURRENT_PIDS[@]}"; do kill -KILL "$pid" 2>/dev/null || true; done
+  exit 1
+}
+
+LOCK_OWNER_PID="$(python3 - "$LOCK" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as handle:
+    print(json.load(handle)["pid"])
+PY
+)"
+[[ "$LOCK_OWNER_PID" == "$OWNER_PID" ]] || {
+  echo "lock owner pid does not match the sole live daemon: lock=$LOCK_OWNER_PID live=$OWNER_PID" >&2
+  exit 1
+}
+
+python3 - "$SOCKET" <<'PY'
+import socket
+import sys
+
+path = sys.argv[1]
+with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
+    sock.settimeout(5)
+    sock.connect(path)
+    import json, struct
+    def send(frame):
+        data = json.dumps(frame, separators=(",", ":")).encode()
+        sock.sendall(struct.pack(">I", len(data)) + data)
+    def recv():
+        size = struct.unpack(">I", sock.recv(4))[0]
+        data = bytearray()
+        while len(data) < size:
+            data.extend(sock.recv(size - len(data)))
+        return json.loads(data)
+    send({"kind": "hello", "protocol_version": 2, "client": "yunxi-concurrent-smoke", "capabilities": ["ping"]})
+    assert recv()["kind"] == "hello_ack"
+    send({"kind": "ping", "request_id": "concurrent-owner"})
+    assert recv() == {"kind": "pong", "request_id": "concurrent-owner"}
+PY
+
+kill -TERM "$OWNER_PID" 2>/dev/null || true
+for _ in $(seq 1 40); do
+  pid_is_running "$OWNER_PID" || break
+  sleep 0.05
+done
+wait "$OWNER_PID" 2>/dev/null || true
+for pid in "${CONCURRENT_PIDS[@]}"; do
+  [[ "$pid" == "$OWNER_PID" ]] || wait "$pid" 2>/dev/null || true
+done
+[[ ! -e "$SOCKET" && ! -e "$LOCK" ]] || {
+  echo "concurrent daemon owner did not clean up socket/lock" >&2
+  exit 1
+}
+
 # A dead owner must not strand the next daemon.  This uses an impossible PID
 # rather than touching any real process and verifies recovery through the same
 # production lock path used after a crash.
