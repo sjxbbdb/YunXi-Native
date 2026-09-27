@@ -353,6 +353,12 @@ Registry、OpenAI schema 和 Runtime 均已接入；`linux_package_smoke.sh` 使
 边界；不注入 sudo，也不突破当前用户权限。`linux_network_smoke.sh` 通过临时 PATH fake
 `ip` 校验 argv，缺少 `ip`、非零返回与取消均以结构化失败报告，不修改宿主网络。
 
+另新增 `linux_process`：以 typed signal/renice 承载六种信号和 `-20..19` priority，固定
+`kill`/`renice` argv，默认审批、不使用 sudo、保留当前用户权限，并返回 `requires_root`、
+有界 stdout/stderr、取消和 mutation 审计结果。`linux_process_smoke.sh` 用 fake kill/
+renice 校验 argv，不触碰真实进程；PID、signal、priority 注入及越界均在 schema/typed
+边界拒绝。
+
 **门槛**：每个工具有 schema、权限矩阵、错误恢复、单元测试和至少一个真实 Linux 验收脚本。
 
 ### Phase 4：通用知识平台与 Linux 首发 RAG

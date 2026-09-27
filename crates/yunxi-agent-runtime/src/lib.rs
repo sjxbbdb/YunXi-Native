@@ -5011,6 +5011,13 @@ fn tool_call_started_event(call: yunxi_agent_protocol::ToolCall) -> AgentEvent {
                 arguments_json: Some(arguments_json),
             }
         }
+        yunxi_agent_protocol::ToolCall::LinuxProcess { id, arguments_json } => {
+            AgentEvent::ToolCallStarted {
+                id,
+                name: "linux_process".to_string(),
+                arguments_json: Some(arguments_json),
+            }
+        }
         yunxi_agent_protocol::ToolCall::LinuxReadOnly {
             id,
             operation,
@@ -5075,6 +5082,9 @@ fn provider_tool_call_from_protocol(call: ToolCall) -> AgentResult<ProviderToolC
         }
         ToolCall::LinuxPackage { id, arguments_json } => {
             Ok(ProviderToolCall::LinuxPackage { id, arguments_json })
+        }
+        ToolCall::LinuxProcess { id, arguments_json } => {
+            Ok(ProviderToolCall::LinuxProcess { id, arguments_json })
         }
         ToolCall::LinuxReadOnly {
             id,
@@ -5159,6 +5169,10 @@ fn provider_tool_call_from_function(
             id,
             arguments_json: arguments.to_string(),
         }),
+        "linux_process" => Ok(ProviderToolCall::LinuxProcess {
+            id,
+            arguments_json: arguments.to_string(),
+        }),
         "linux_readonly" => Ok(ProviderToolCall::LinuxReadOnly {
             id,
             operation: required_json_string(&args, "operation")?,
@@ -5203,6 +5217,7 @@ fn provider_tool_call_id(call: &ProviderToolCall) -> Option<&str> {
         ProviderToolCall::LinuxSystemd { id, .. } => id.as_deref(),
         ProviderToolCall::LinuxNetwork { id, .. } => id.as_deref(),
         ProviderToolCall::LinuxPackage { id, .. } => id.as_deref(),
+        ProviderToolCall::LinuxProcess { id, .. } => id.as_deref(),
         ProviderToolCall::LinuxReadOnly { id, .. } => id.as_deref(),
     }
 }
@@ -5222,6 +5237,7 @@ fn ensure_provider_tool_call_id(call: &mut ProviderToolCall, fallback: String) -
         ProviderToolCall::LinuxSystemd { id, .. } => id,
         ProviderToolCall::LinuxNetwork { id, .. } => id,
         ProviderToolCall::LinuxPackage { id, .. } => id,
+        ProviderToolCall::LinuxProcess { id, .. } => id,
         ProviderToolCall::LinuxReadOnly { id, .. } => id,
     };
     id.get_or_insert(fallback).clone()
@@ -5642,6 +5658,22 @@ fn map_tool_call(
                 policy,
             }
         }
+        ProviderToolCall::LinuxProcess { id, arguments_json } => {
+            let input = serde_json::from_str(&arguments_json).unwrap_or_else(|_| {
+                yunxi_agent_tools::linux_process::LinuxProcessInput::Signal {
+                    pid: 0,
+                    signal: yunxi_agent_tools::linux_process::ProcessSignal::Term,
+                }
+            });
+            policy.approval = ApprovalDecision::Required;
+            policy.execution_policy.approval = ApprovalRequirement::AskBeforeRunning;
+            ToolRequest {
+                id,
+                cwd,
+                kind: ToolRequestKind::LinuxProcess { input },
+                policy,
+            }
+        }
         ProviderToolCall::LinuxReadOnly {
             id,
             operation,
@@ -5709,6 +5741,10 @@ fn tool_request_command(request: &ToolRequest) -> Option<String> {
         )),
         ToolRequestKind::LinuxNetwork { input } => Some(format!(
             "linux_network {}",
+            serde_json::to_string(input).unwrap_or_else(|_| "{}".to_string())
+        )),
+        ToolRequestKind::LinuxProcess { input } => Some(format!(
+            "linux_process {}",
             serde_json::to_string(input).unwrap_or_else(|_| "{}".to_string())
         )),
         ToolRequestKind::LinuxPackage { input } => Some(format!(
@@ -6102,6 +6138,20 @@ where
                     exit_code.map_or_else(|| "none".to_string(), |code| code.to_string())
                 ) }).await?;
             }
+            ToolRuntimeEvent::LinuxProcess {
+                operation,
+                status,
+                command,
+                exit_code,
+                truncated,
+                requires_root,
+                mutation,
+            } => {
+                sink.emit(AgentEvent::Reasoning { content: format!(
+                    "Linux process mutation: operation={operation}, status={status}, mutation={mutation}, requires_root={requires_root}, exit_code={}, truncated={truncated}, command={command}",
+                    exit_code.map_or_else(|| "none".to_string(), |code| code.to_string())
+                ) }).await?;
+            }
             ToolRuntimeEvent::LinuxPackage {
                 action,
                 package,
@@ -6280,6 +6330,14 @@ where
             })
             .await
         }
+        ToolRequestKind::LinuxProcess { input } => {
+            sink.emit(AgentEvent::ToolCallStarted {
+                id: request.id.clone(),
+                name: "linux_process".to_string(),
+                arguments_json: serde_json::to_string(input).ok(),
+            })
+            .await
+        }
         ToolRequestKind::LinuxPackage { input } => {
             sink.emit(AgentEvent::ToolCallStarted {
                 id: request.id.clone(),
@@ -6436,6 +6494,15 @@ where
             })
             .await
         }
+        ToolRequestKind::LinuxProcess { input } => {
+            sink.emit(AgentEvent::ToolCallCompleted {
+                id: response.id.clone(),
+                name: format!("linux_process:{}", process_operation_name(input)),
+                output: render_tool_response(response),
+                status: map_tool_response_status(response),
+            })
+            .await
+        }
         ToolRequestKind::LinuxPackage { input } => {
             sink.emit(AgentEvent::ToolCallCompleted {
                 id: response.id.clone(),
@@ -6480,6 +6547,15 @@ fn network_operation_name(
         LinuxNetworkInput::AddrDel { .. } => "addr_del",
         LinuxNetworkInput::RouteAdd { .. } => "route_add",
         LinuxNetworkInput::RouteDel { .. } => "route_del",
+    }
+}
+
+fn process_operation_name(
+    input: &yunxi_agent_tools::linux_process::LinuxProcessInput,
+) -> &'static str {
+    match input {
+        yunxi_agent_tools::linux_process::LinuxProcessInput::Signal { .. } => "signal",
+        yunxi_agent_tools::linux_process::LinuxProcessInput::Renice { .. } => "renice",
     }
 }
 

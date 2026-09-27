@@ -245,6 +245,7 @@ fn openai_request_json_uses_yunxi_provider_messages() {
             "linux_apply",
             "linux_systemd",
             "linux_network",
+            "linux_process",
             "linux_package",
             "linux_readonly",
         ])

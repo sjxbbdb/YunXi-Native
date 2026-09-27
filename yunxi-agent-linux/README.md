@@ -163,6 +163,15 @@ token 校验；执行始终是明确的 `ip link|addr|route ...` argv，不接�
 记录 `mutation: true` 网络审计事件。Linux smoke 用 PATH 下临时 fake `ip` 断言 argv，
 不会修改宿主网络配置。
 
+### 类型化进程控制
+
+`linux_process` ToolSpec 仅提供 `signal` 和 `renice` 两类 mutation。signal 只允许
+`term`、`int`、`hup`、`kill`、`stop`、`cont`，renice priority 固定在 `-20..19`；执行
+分别是固定的 `kill -SIGNAL PID` 或 `renice -n PRIORITY -p PID` argv，不接受任意命令、
+参数或 `sudo`。工具默认要求审批，保留当前用户权限边界并在报告中标注 `requires_root`；
+输出有界、支持取消、非零/缺失命令返回结构化失败，并产生 mutation 审计事件。fake
+`kill`/`renice` smoke 只校验 argv，不会影响真实进程。
+
 ### Arch/pacman 包变更
 
 Runtime 还注册了 `linux_package` ToolSpec。它只接受一个经过 token 校验的包名和

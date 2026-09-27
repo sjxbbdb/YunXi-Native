@@ -165,6 +165,13 @@ fn approval_command_and_paths(request: &ToolRequest) -> (Option<String>, Vec<Pat
             )),
             Vec::new(),
         ),
+        ToolRequestKind::LinuxProcess { input } => (
+            Some(format!(
+                "linux_process {}",
+                serde_json::to_string(input).unwrap_or_else(|_| "{}".to_string())
+            )),
+            Vec::new(),
+        ),
         ToolRequestKind::LinuxPackage { input } => (
             Some(format!(
                 "pacman {} {}",

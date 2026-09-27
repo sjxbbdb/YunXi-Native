@@ -19,6 +19,10 @@ use yunxi_agent_tools::linux_preview::{
     LinuxMutationIntent, LinuxPreviewInput, LinuxPreviewStatus,
 };
 #[cfg(target_os = "linux")]
+use yunxi_agent_tools::linux_process::fixed_argv as fixed_process_argv;
+#[cfg(target_os = "linux")]
+use yunxi_agent_tools::linux_process::{LinuxProcessInput, ProcessSignal};
+#[cfg(target_os = "linux")]
 use yunxi_agent_tools::linux_systemd::{LinuxSystemdInput, SystemdAction};
 use yunxi_agent_tools::{
     CompositeToolRuntime, NoopToolRuntime, ShellToolRuntime, ToolFileChangeKind, ToolName,
@@ -64,6 +68,7 @@ fn default_tool_registry_exposes_model_visible_specs() {
             ToolName::LinuxApply,
             ToolName::LinuxSystemd,
             ToolName::LinuxNetwork,
+            ToolName::LinuxProcess,
             ToolName::LinuxPackage,
             ToolName::LinuxReadOnly,
         ])
@@ -268,6 +273,140 @@ async fn linux_network_cancellation_is_structured() {
 
 #[cfg(target_os = "linux")]
 #[tokio::test]
+async fn linux_process_requires_approval_before_execution() {
+    let cwd = tempfile::tempdir().expect("tempdir");
+    let mut config = AgentConfig::new(cwd.path());
+    config.approval_mode = ApprovalMode::OnRequest;
+    config.sandbox_mode = SandboxMode::DangerFullAccess;
+    let response = CompositeToolRuntime::default()
+        .execute(
+            ToolRequest::linux_process(
+                cwd.path(),
+                LinuxProcessInput::Signal {
+                    pid: 42,
+                    signal: ProcessSignal::Term,
+                },
+            )
+            .with_policy(ToolPolicy::from_config(&config)),
+        )
+        .await
+        .expect("response");
+    assert_eq!(response.status, ToolStatus::Declined);
+    assert!(response.lifecycle_events.is_empty());
+}
+
+#[cfg(all(target_os = "linux", unix))]
+#[tokio::test]
+async fn linux_process_fake_kill_records_fixed_argv_and_audit() {
+    use std::os::unix::fs::PermissionsExt;
+    let cwd = tempfile::tempdir().expect("tempdir");
+    let script = cwd.path().join("kill");
+    let marker = cwd.path().join("argv");
+    std::fs::write(
+        &script,
+        format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$@\" > '{}'\n",
+            marker.display()
+        ),
+    )
+    .expect("script");
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    let response = yunxi_agent_tools::linux_process::execute_with_env(
+        Some("fake-kill".into()),
+        cwd.path(),
+        LinuxProcessInput::Signal {
+            pid: 42,
+            signal: ProcessSignal::Term,
+        },
+        ToolPolicy::trusted().execution_policy,
+        AgentCancellationToken::new(),
+        [("PATH".to_string(), cwd.path().display().to_string())]
+            .into_iter()
+            .collect(),
+    )
+    .await
+    .expect("response");
+    assert_eq!(response.status, ToolStatus::Completed);
+    assert_eq!(std::fs::read_to_string(marker).unwrap(), "-TERM\n42\n");
+    let report: serde_json::Value = serde_json::from_str(&response.output.unwrap()).unwrap();
+    assert_eq!(report["requires_root"], false);
+    assert!(response.runtime_events.iter().any(|event| matches!(event, ToolRuntimeEvent::LinuxProcess { mutation: true, status, .. } if status == "ok")));
+}
+
+#[cfg(all(target_os = "linux", unix))]
+#[tokio::test]
+async fn linux_process_fake_renice_rejects_injection_and_records_argv() {
+    use std::os::unix::fs::PermissionsExt;
+    let cwd = tempfile::tempdir().expect("tempdir");
+    let script = cwd.path().join("renice");
+    let marker = cwd.path().join("argv");
+    std::fs::write(
+        &script,
+        format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$@\" > '{}'\n",
+            marker.display()
+        ),
+    )
+    .expect("script");
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    let response = yunxi_agent_tools::linux_process::execute_with_env(
+        Some("fake-renice".into()),
+        cwd.path(),
+        LinuxProcessInput::Renice {
+            pid: 42,
+            priority: 5,
+        },
+        ToolPolicy::trusted().execution_policy,
+        AgentCancellationToken::new(),
+        [("PATH".to_string(), cwd.path().display().to_string())]
+            .into_iter()
+            .collect(),
+    )
+    .await
+    .expect("response");
+    assert_eq!(response.status, ToolStatus::Completed);
+    assert_eq!(std::fs::read_to_string(marker).unwrap(), "-n\n5\n-p\n42\n");
+    assert!(
+        fixed_process_argv(&LinuxProcessInput::Signal {
+            pid: 0,
+            signal: ProcessSignal::Term
+        })
+        .is_err()
+    );
+    assert!(
+        fixed_process_argv(&LinuxProcessInput::Renice {
+            pid: 42,
+            priority: 20
+        })
+        .is_err()
+    );
+}
+
+#[cfg(all(target_os = "linux", unix))]
+#[tokio::test]
+async fn linux_process_missing_kill_returns_unavailable_and_cancel_is_structured() {
+    let cwd = tempfile::tempdir().expect("tempdir");
+    let unavailable = yunxi_agent_tools::linux_process::execute_with_env(
+        Some("missing-kill".into()),
+        cwd.path(),
+        LinuxProcessInput::Signal {
+            pid: 42,
+            signal: ProcessSignal::Term,
+        },
+        ToolPolicy::trusted().execution_policy,
+        AgentCancellationToken::new(),
+        [("PATH".to_string(), cwd.path().display().to_string())]
+            .into_iter()
+            .collect(),
+    )
+    .await
+    .expect("response");
+    let report: serde_json::Value = serde_json::from_str(&unavailable.output.unwrap()).unwrap();
+    assert_eq!(report["status"], "unavailable");
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
 async fn linux_package_mutation_requires_approval() {
     let cwd = tempfile::tempdir().expect("tempdir");
     let mut config = AgentConfig::new(cwd.path());
@@ -435,6 +574,7 @@ fn default_tool_registry_exports_openai_function_schema() {
             "linux_apply",
             "linux_systemd",
             "linux_network",
+            "linux_process",
             "linux_package",
             "linux_readonly",
         ])
