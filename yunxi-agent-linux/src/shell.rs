@@ -681,6 +681,7 @@ fn run_knowledge_search(
                 "metadata_json": item.metadata_json,
                 "source": item.source,
                 "version": item.version,
+                "generation": item.generation,
                 "rank": item.rank,
             })
         })

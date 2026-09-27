@@ -449,6 +449,9 @@ Linux CLI 已暴露这条安全管道：`knowledge-generation-begin` 创建候�
 `knowledge-generation-seal` 在候选完整后把 manifest 标记为 ready，最后由
 `knowledge-generation-activate` 在显式确认后切换 active 指针；未 ready 的候选不会被激活，
 运行中的 active generation 不会被后台任务自动替换。
+真实 Linux CLI smoke 现在覆盖这条发布闭环：激活前 staging 文档对 FTS/向量查询不可见，
+未 ready 的候选激活会被拒绝且 active 指针保持不变，seal 后才能原子切换；激活后 FTS 与
+向量检索返回同一 generation，并验证长期记忆向量数据库的文件内容未被改写。
 
 采集 CLI 的成功路径现在会在 `ingest_text` 完成后为当前文档 generation 自动创建
 本地 provider 的 pending job，并在 JSON 结果中返回 job 元数据；它只入队、不启动

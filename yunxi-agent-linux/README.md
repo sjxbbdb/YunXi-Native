@@ -201,6 +201,14 @@ python3 yunxi-agent-linux/tests/knowledge_worker_status_fleet_smoke.py \
   ./target/release/yunxi-linux
 ```
 
+候选 generation 的 staging → embedding → seal → activate 黑盒闭环也可单独验收：
+激活前 FTS/向量查询不可见，未 ready 的代际不能切换，激活后两类索引同时可见，
+并确认不会改写长期记忆向量库。
+
+```bash
+bash yunxi-agent-linux/tests/knowledge_generation_smoke.sh ./target/release/yunxi-linux
+```
+
 `knowledge-space-list` 只列出空间元数据，不读取文档正文、chunk 或向量；它用于确认
 当前 workspace 的 system/project/private 边界，输出按 `space_id` 稳定排序。
 
