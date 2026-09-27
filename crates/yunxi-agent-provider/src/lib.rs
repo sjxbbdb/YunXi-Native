@@ -2960,6 +2960,13 @@ fn parse_openai_tool_call(
     name: &str,
     arguments: &str,
 ) -> AgentResult<ProviderToolCall> {
+    if name == "patch" {
+        return Ok(ProviderToolCall::Patch {
+            id,
+            patch: parse_patch_tool_arguments(arguments)?,
+        });
+    }
+
     let args = serde_json::from_str::<Value>(arguments).map_err(|error| AgentError::Execution {
         message: format!("failed to parse provider tool arguments for {name}: {error}"),
     })?;
@@ -2967,10 +2974,6 @@ fn parse_openai_tool_call(
         "shell" => Ok(ProviderToolCall::Shell {
             id,
             command: required_string(&args, "command")?,
-        }),
-        "patch" => Ok(ProviderToolCall::Patch {
-            id,
-            patch: arguments.to_string(),
         }),
         "mcp" => Ok(ProviderToolCall::Mcp {
             id,
@@ -3050,6 +3053,26 @@ fn parse_openai_tool_call(
         other => Err(AgentError::Execution {
             message: format!("unsupported provider tool call: {other}"),
         }),
+    }
+}
+
+fn parse_patch_tool_arguments(arguments: &str) -> AgentResult<String> {
+    if arguments.trim_start().starts_with("*** Begin Patch") {
+        return Ok(arguments.to_string());
+    }
+
+    let value =
+        serde_json::from_str::<Value>(arguments).map_err(|error| AgentError::Execution {
+            message: format!("failed to parse provider tool arguments for patch: {error}"),
+        })?;
+
+    match &value {
+        Value::String(patch) => Ok(patch.clone()),
+        Value::Object(object) => match object.get("patch").and_then(Value::as_str) {
+            Some(patch) => Ok(patch.to_string()),
+            None => Ok(arguments.to_string()),
+        },
+        _ => Ok(arguments.to_string()),
     }
 }
 

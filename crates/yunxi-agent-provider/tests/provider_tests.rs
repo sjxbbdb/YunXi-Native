@@ -1402,6 +1402,117 @@ fn openai_response_json_parses_patch_tool_call() {
 }
 
 #[test]
+fn openai_response_json_parses_legacy_raw_lark_patch_tool_call() {
+    let patch = "*** Begin Patch\n*** Add File: notes.txt\n+hello\n*** End Patch";
+    let response = json!({
+        "choices": [{
+            "message": {
+                "role": "assistant",
+                "content": null,
+                "tool_calls": [{
+                    "id": "call_lark",
+                    "type": "function",
+                    "function": {
+                        "name": "patch",
+                        "arguments": patch,
+                    }
+                }]
+            }
+        }]
+    });
+
+    let response = parse_openai_response_json(&response.to_string()).expect("provider response");
+
+    assert_eq!(
+        response.tool_calls,
+        vec![ProviderToolCall::Patch {
+            id: Some("call_lark".to_string()),
+            patch: patch.to_string(),
+        }]
+    );
+}
+
+#[test]
+fn openai_response_json_unwraps_legacy_wrapped_lark_patch_tool_call() {
+    let patch = "*** Begin Patch\n*** Add File: notes.txt\n+hello\n*** End Patch";
+    let response = json!({
+        "choices": [{
+            "message": {
+                "role": "assistant",
+                "content": null,
+                "tool_calls": [{
+                    "id": "call_wrapped_lark",
+                    "type": "function",
+                    "function": {
+                        "name": "patch",
+                        "arguments": json!({"patch": patch}).to_string(),
+                    }
+                }]
+            }
+        }]
+    });
+
+    let response = parse_openai_response_json(&response.to_string()).expect("provider response");
+
+    assert_eq!(
+        response.tool_calls,
+        vec![ProviderToolCall::Patch {
+            id: Some("call_wrapped_lark".to_string()),
+            patch: patch.to_string(),
+        }]
+    );
+}
+
+#[test]
+fn openai_patch_tool_call_serialization_round_trips_legacy_lark_patch() {
+    let patch = "*** Begin Patch\n*** Add File: notes.txt\n+hello\n*** End Patch";
+    let request = ProviderRequest::with_messages(
+        AgentConfig::new(PathBuf::from(".")),
+        AgentInput::text("continue"),
+        vec![ProviderMessage::assistant_with_tool_calls(
+            "",
+            vec![ProviderToolCall::Patch {
+                id: Some("call_roundtrip".to_string()),
+                patch: patch.to_string(),
+            }],
+        )],
+    );
+
+    let request_json =
+        build_openai_request_json(&ProviderConfig::deepseek(), &request).expect("request json");
+    let arguments = request_json["messages"][0]["tool_calls"][0]["function"]["arguments"]
+        .as_str()
+        .expect("serialized patch arguments");
+    assert_eq!(json!(arguments), json!({"patch": patch}).to_string());
+
+    let response = json!({
+        "choices": [{
+            "message": {
+                "role": "assistant",
+                "content": null,
+                "tool_calls": [{
+                    "id": "call_roundtrip",
+                    "type": "function",
+                    "function": {
+                        "name": "patch",
+                        "arguments": arguments,
+                    }
+                }]
+            }
+        }]
+    });
+    let response = parse_openai_response_json(&response.to_string()).expect("provider response");
+
+    assert_eq!(
+        response.tool_calls,
+        vec![ProviderToolCall::Patch {
+            id: Some("call_roundtrip".to_string()),
+            patch: patch.to_string(),
+        }]
+    );
+}
+
+#[test]
 fn openai_response_json_parses_linux_preview_tool_call() {
     let response = parse_openai_response_json(
         r#"{

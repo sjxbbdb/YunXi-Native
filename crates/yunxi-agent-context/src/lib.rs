@@ -805,12 +805,12 @@ mod tests {
         let assets = built_in_prompt_assets();
 
         assert!(assets.iter().any(|asset| asset.name == "compact.prompt"));
-        assert!(
-            built_in_prompt_asset("tools.apply_patch.instructions")
-                .expect("patch asset")
-                .content
-                .contains("*** Begin Patch")
-        );
+        let patch_instructions = built_in_prompt_asset("tools.apply_patch.instructions")
+            .expect("patch asset")
+            .content;
+        assert!(patch_instructions.contains("constrained JSON"));
+        assert!(patch_instructions.contains("\"op\":\"write\""));
+        assert!(patch_instructions.contains("Do not emit"));
     }
 
     #[test]
