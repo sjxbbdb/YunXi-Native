@@ -2947,7 +2947,7 @@ fn filter_duplicate_linux_vector_evidence(
         .collect()
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", test))]
 fn format_linux_knowledge_context(
     matches: &[yunxi_agent_storage::KnowledgeSearchResult],
 ) -> String {
@@ -2988,7 +2988,7 @@ fn format_linux_knowledge_context(
     context
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", test))]
 fn format_linux_knowledge_vector_context(
     matches: &[yunxi_agent_storage::KnowledgeVectorMatch],
 ) -> String {

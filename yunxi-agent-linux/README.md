@@ -364,6 +364,11 @@ principal，不创建目录、不打开记忆库或知识库。
 `knowledge-search` 与 `knowledge-vector-search` 的 JSON 顶层还会返回本次读取的
 `active_generation`，无命中时也能确认查询所处的代际。
 
+Linux Planner 在构建回合上下文时会把 FTS/BM25 与本地向量召回做确定性混合排序：
+BM25 与 cosine 各自归一化后按固定权重融合，同一 chunk 只呈现一次并保留 hybrid
+provenance；相同分数按 `chunk_id` 稳定断平。该排序只影响参考证据顺序，不会放宽
+知识空间、版本、Approval、Sandbox 或工具执行边界。
+
 ## fish 全量接管（Miyu 风格）
 
 安装 fish hook：

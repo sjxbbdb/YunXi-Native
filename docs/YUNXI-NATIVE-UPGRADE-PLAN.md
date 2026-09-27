@@ -616,6 +616,11 @@ Windows Runtime 不启用该分支。
 并将其作为证据头部的可审计标签输出；原始 metadata/argv 不会直接注入 prompt。
 当同一 chunk 同时出现在 FTS 与向量结果中时，运行时保留 FTS 证据、过滤重复向量项，
 避免 prompt 预算被同一份知识重复占用。
+
+当前 prompt 证据已经进一步采用确定性的混合排序：FTS 的 BM25 相对排名与 cosine
+相似度分别归一化后按固定权重融合，同一 chunk 合并为一条 hybrid evidence，分数相同
+时按稳定的 `chunk_id` 断开平局。关键词/向量的独立计数和 provenance 仍保留，混合
+排序只改变证据呈现顺序，不改变空间、版本、权限、审批或执行边界。
 两个 CLI 查询现在也在顶层返回 `active_generation`，即使结果为空也能明确诊断本轮读取的
 代际；结果项继续保留自己的 generation，便于检查跨代污染和候选激活是否生效。
 
