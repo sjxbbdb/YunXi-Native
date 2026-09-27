@@ -419,20 +419,22 @@ PATH/`BASH_ENV` 回归这一边界。这只是采集器边界，不改变 Runtim
 同时提供了显式 `retry_embedding_job`/`knowledge-retry` 恢复边界：只有 `failed` 状态
 且尚未超过三次尝试的任务才能重新排队，原始 `last_error` 会保留用于诊断。它是
 人工强制恢复入口；daemon 的单 workspace 常驻调度已在后续增量接入，跨 workspace 告警
-聚合与统一退避策略仍留待后续设计。
+聚合现在由只读 `knowledge-worker-status` 提供有界摘要；统一退避策略仍留待后续设计。
 
 队列现在为每个任务持久化 `next_attempt_at_millis`。provider 或索引临时失败会按
 有界指数退避自动到期重试（最多三次），而文档缺失、generation 过期和 provider
 model 不匹配被视为终态失败；lease 回收仍立即恢复，不套用退避。daemon 已能在显式
-workspace 内常驻调度；跨 workspace 统一退避、告警聚合和自动发现仍不在本切片范围内。
+workspace 内常驻调度；跨 workspace 统一退避和自动发现仍不在本切片范围内，告警聚合
+仅作为只读诊断摘要输出。
 
 当前新增了显式 `knowledge-worker --watch` 轮询器作为过渡调度边界：它绑定一个明确的
 workspace，按间隔以有限 batch 领取到期任务，复用已有 lease/退避/重试契约，不扫描其他
 workspace、不自动激活 generation，并可由 systemd 或 supervisor 托管。现在也支持重复
 传入 `--workspace` 创建最多 32 个工作区的显式 fleet：路径 canonicalize 后去重，跨轮
 round-robin 游标保证共享预算下的基本公平；单个工作区的 SQLite/索引故障会被隔离，
-不会中止同轮其他工作区，且默认输出不含绝对路径。持久化游标、告警与统一跨任务策略，
-以及 daemon 级自动发现仍留待后续切片。当前游标和累计统计已写入独立的 XDG state
+不会中止同轮其他工作区，且默认输出不含绝对路径。只读 `knowledge-worker-status` 额外
+输出跨 workspace 的 `aggregate` 摘要：健康/降级状态、状态计数、pending/running/failed/
+retry 总量和最多 8 条脱敏告警；它不改变调度、权限或执行策略，也不自动发现目录。当前游标和累计统计已写入独立的 XDG state
 文件，采用临时文件加 rename 的原子更新；损坏或版本不兼容只会重置调度游标并输出
 结构化 warning，不进入记忆或知识数据库。当前 worker 已能在 Ctrl+C 或 SIGTERM 下
 优雅退出并输出 stopped 记录。
