@@ -29,6 +29,7 @@ use yunxi_agent_skills::{
 };
 
 pub mod linux_apply;
+pub mod linux_package;
 pub mod linux_preview;
 mod linux_readonly;
 pub mod linux_systemd;
@@ -99,6 +100,20 @@ impl ToolRequest {
         }
     }
 
+    pub fn linux_package(cwd: impl Into<PathBuf>, input: linux_package::LinuxPackageInput) -> Self {
+        let mut policy = ToolPolicy::trusted();
+        if input.action.mutates() {
+            policy.approval = ApprovalDecision::Required;
+            policy.execution_policy.approval = ApprovalRequirement::AskBeforeRunning;
+        }
+        Self {
+            id: None,
+            cwd: cwd.into(),
+            kind: ToolRequestKind::LinuxPackage { input },
+            policy,
+        }
+    }
+
     pub fn with_policy(mut self, policy: ToolPolicy) -> Self {
         self.policy = policy;
         self
@@ -146,6 +161,9 @@ pub enum ToolRequestKind {
     LinuxSystemd {
         input: linux_systemd::LinuxSystemdInput,
     },
+    LinuxPackage {
+        input: linux_package::LinuxPackageInput,
+    },
     LinuxReadOnly {
         operation: String,
         arguments: Value,
@@ -166,6 +184,7 @@ impl ToolRequestKind {
             Self::LinuxPreview { .. } => ToolName::LinuxPreview,
             Self::LinuxApply { .. } => ToolName::LinuxApply,
             Self::LinuxSystemd { .. } => ToolName::LinuxSystemd,
+            Self::LinuxPackage { .. } => ToolName::LinuxPackage,
             Self::LinuxReadOnly { .. } => ToolName::LinuxReadOnly,
         }
     }
@@ -193,6 +212,11 @@ impl ToolRequestKind {
                 input.action.as_str(),
                 input.unit
             )),
+            Self::LinuxPackage { input } => Some(format!(
+                "pacman {} {}",
+                input.action.as_str(),
+                input.package
+            )),
             Self::LinuxReadOnly {
                 operation,
                 arguments,
@@ -215,6 +239,7 @@ pub enum ToolName {
     LinuxPreview,
     LinuxApply,
     LinuxSystemd,
+    LinuxPackage,
     LinuxReadOnly,
 }
 
@@ -232,6 +257,7 @@ impl ToolName {
             Self::LinuxPreview => "linux_preview",
             Self::LinuxApply => "linux_apply",
             Self::LinuxSystemd => "linux_systemd",
+            Self::LinuxPackage => "linux_package",
             Self::LinuxReadOnly => "linux_readonly",
         }
     }
@@ -407,6 +433,8 @@ pub fn default_tool_registry() -> ToolRegistry {
         linux_apply_tool_spec(),
         #[cfg(target_os = "linux")]
         linux_systemd_tool_spec(),
+        #[cfg(target_os = "linux")]
+        linux_package_tool_spec(),
         #[cfg(target_os = "linux")]
         linux_readonly_tool_spec(),
     ])
@@ -722,6 +750,16 @@ fn linux_systemd_tool_spec() -> ToolSpec {
     )
 }
 
+#[cfg(target_os = "linux")]
+fn linux_package_tool_spec() -> ToolSpec {
+    ToolSpec::new(
+        ToolName::LinuxPackage,
+        "Run a typed Arch pacman package action. Search/info are read-only; install/remove/upgrade require approval and never use a shell.",
+        linux_package::parameters_schema(),
+        true,
+    )
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ToolRoute {
     pub name: ToolName,
@@ -999,6 +1037,15 @@ pub enum ToolRuntimeEvent {
         truncated: bool,
         mutation: bool,
     },
+    LinuxPackage {
+        action: String,
+        package: String,
+        status: String,
+        command: String,
+        exit_code: Option<i32>,
+        truncated: bool,
+        mutation: bool,
+    },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -1090,6 +1137,12 @@ impl ToolPolicy {
                 request.kind.policy_command().as_deref(),
                 CommandRisk::ProcessControl,
             ),
+            ToolRequestKind::LinuxPackage { input } if input.action.mutates() => policy
+                .evaluate_with_risk(
+                    &request.cwd,
+                    request.kind.policy_command().as_deref(),
+                    CommandRisk::ProcessControl,
+                ),
             _ => policy.evaluate(&request.cwd, request.kind.policy_command().as_deref()),
         }
     }
@@ -1257,6 +1310,7 @@ impl ToolRuntime for ShellToolRuntime {
             | ToolRequestKind::LinuxPreview { .. }
             | ToolRequestKind::LinuxApply { .. }
             | ToolRequestKind::LinuxSystemd { .. }
+            | ToolRequestKind::LinuxPackage { .. }
             | ToolRequestKind::LinuxReadOnly { .. } => Ok(ToolResponse::declined(
                 request.id,
                 "YunXi has registered this tool but the specialized runtime is not attached",
@@ -1475,6 +1529,17 @@ impl ToolRuntime for CompositeToolRuntime {
             }
             ToolRequestKind::LinuxSystemd { input } => {
                 return linux_systemd::execute(
+                    request.id,
+                    &request.cwd,
+                    input,
+                    request.policy.execution_policy,
+                    control.cancellation_token(),
+                )
+                .await
+                .map(|response| response.with_runtime_events(runtime_events));
+            }
+            ToolRequestKind::LinuxPackage { input } => {
+                return linux_package::execute(
                     request.id,
                     &request.cwd,
                     input,

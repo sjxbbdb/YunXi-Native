@@ -4997,6 +4997,13 @@ fn tool_call_started_event(call: yunxi_agent_protocol::ToolCall) -> AgentEvent {
                 arguments_json: Some(arguments_json),
             }
         }
+        yunxi_agent_protocol::ToolCall::LinuxPackage { id, arguments_json } => {
+            AgentEvent::ToolCallStarted {
+                id,
+                name: "linux_package".to_string(),
+                arguments_json: Some(arguments_json),
+            }
+        }
         yunxi_agent_protocol::ToolCall::LinuxReadOnly {
             id,
             operation,
@@ -5055,6 +5062,9 @@ fn provider_tool_call_from_protocol(call: ToolCall) -> AgentResult<ProviderToolC
         }
         ToolCall::LinuxSystemd { id, arguments_json } => {
             Ok(ProviderToolCall::LinuxSystemd { id, arguments_json })
+        }
+        ToolCall::LinuxPackage { id, arguments_json } => {
+            Ok(ProviderToolCall::LinuxPackage { id, arguments_json })
         }
         ToolCall::LinuxReadOnly {
             id,
@@ -5123,7 +5133,15 @@ fn provider_tool_call_from_function(
             id,
             arguments_json: arguments.to_string(),
         }),
+        "linux_apply" => Ok(ProviderToolCall::LinuxApply {
+            id,
+            arguments_json: arguments.to_string(),
+        }),
         "linux_systemd" => Ok(ProviderToolCall::LinuxSystemd {
+            id,
+            arguments_json: arguments.to_string(),
+        }),
+        "linux_package" => Ok(ProviderToolCall::LinuxPackage {
             id,
             arguments_json: arguments.to_string(),
         }),
@@ -5169,6 +5187,7 @@ fn provider_tool_call_id(call: &ProviderToolCall) -> Option<&str> {
         ProviderToolCall::LinuxPreview { id, .. } => id.as_deref(),
         ProviderToolCall::LinuxApply { id, .. } => id.as_deref(),
         ProviderToolCall::LinuxSystemd { id, .. } => id.as_deref(),
+        ProviderToolCall::LinuxPackage { id, .. } => id.as_deref(),
         ProviderToolCall::LinuxReadOnly { id, .. } => id.as_deref(),
     }
 }
@@ -5186,6 +5205,7 @@ fn ensure_provider_tool_call_id(call: &mut ProviderToolCall, fallback: String) -
         ProviderToolCall::LinuxPreview { id, .. } => id,
         ProviderToolCall::LinuxApply { id, .. } => id,
         ProviderToolCall::LinuxSystemd { id, .. } => id,
+        ProviderToolCall::LinuxPackage { id, .. } => id,
         ProviderToolCall::LinuxReadOnly { id, .. } => id,
     };
     id.get_or_insert(fallback).clone()
@@ -5573,6 +5593,24 @@ fn map_tool_call(
                 policy,
             }
         }
+        ProviderToolCall::LinuxPackage { id, arguments_json } => {
+            let input = serde_json::from_str(&arguments_json).unwrap_or_else(|_| {
+                yunxi_agent_tools::linux_package::LinuxPackageInput {
+                    action: yunxi_agent_tools::linux_package::PackageAction::Info,
+                    package: String::new(),
+                }
+            });
+            if input.action.mutates() {
+                policy.approval = ApprovalDecision::Required;
+                policy.execution_policy.approval = ApprovalRequirement::AskBeforeRunning;
+            }
+            ToolRequest {
+                id,
+                cwd,
+                kind: ToolRequestKind::LinuxPackage { input },
+                policy,
+            }
+        }
         ProviderToolCall::LinuxReadOnly {
             id,
             operation,
@@ -5637,6 +5675,11 @@ fn tool_request_command(request: &ToolRequest) -> Option<String> {
             "systemctl --user {} {}",
             input.action.as_str(),
             input.unit
+        )),
+        ToolRequestKind::LinuxPackage { input } => Some(format!(
+            "pacman {} {}",
+            input.action.as_str(),
+            input.package
         )),
         ToolRequestKind::LinuxReadOnly {
             operation,
@@ -6011,6 +6054,23 @@ where
                 })
                 .await?;
             }
+            ToolRuntimeEvent::LinuxPackage {
+                action,
+                package,
+                status,
+                command,
+                exit_code,
+                truncated,
+                mutation,
+            } => {
+                sink.emit(AgentEvent::Reasoning {
+                    content: format!(
+                        "Linux package action: action={action}, package={package}, status={status}, mutation={mutation}, exit_code={}, truncated={truncated}, command={command}",
+                        exit_code.map_or_else(|| "none".to_string(), |code| code.to_string())
+                    ),
+                })
+                .await?;
+            }
         }
     }
     Ok(())
@@ -6164,6 +6224,14 @@ where
             })
             .await
         }
+        ToolRequestKind::LinuxPackage { input } => {
+            sink.emit(AgentEvent::ToolCallStarted {
+                id: request.id.clone(),
+                name: "linux_package".to_string(),
+                arguments_json: serde_json::to_string(input).ok(),
+            })
+            .await
+        }
         ToolRequestKind::LinuxReadOnly {
             operation,
             arguments,
@@ -6298,6 +6366,15 @@ where
             sink.emit(AgentEvent::ToolCallCompleted {
                 id: response.id.clone(),
                 name: format!("linux_systemd:{}", input.action.as_str()),
+                output: render_tool_response(response),
+                status: map_tool_response_status(response),
+            })
+            .await
+        }
+        ToolRequestKind::LinuxPackage { input } => {
+            sink.emit(AgentEvent::ToolCallCompleted {
+                id: response.id.clone(),
+                name: format!("linux_package:{}", input.action.as_str()),
                 output: render_tool_response(response),
                 status: map_tool_response_status(response),
             })

@@ -339,6 +339,15 @@ cancelled 结构化结果和 `mutation: true` 审计事件。`yunxi-agent-linux/
 通过临时 PATH fake systemctl 校验 argv，不触碰真实 systemd；system scope、shell、任意
 参数和未批准执行均被拒绝。
 
+在此边界上新增 `linux_package`：面向 Arch/pacman 的 `install`、`remove`、`upgrade`、
+`search`、`info` typed action。它只构造固定非 shell argv，并拒绝注入、额外参数和
+`sudo`；`search`/`info` 低风险，三种 mutation 默认要求审批。执行不偷偷提权，直接沿用
+当前 YunXi 用户身份；报告显式包含 `requires_root`，由 pacman 自己报告缺少 root 的失败。
+stdout/stderr 有界，结果统一包含 `exit_code`、`status`、`truncated`、`cancelled`，并
+发出 package mutation/read-only audit event。Provider、Protocol、Session Driver、Tool
+Registry、OpenAI schema 和 Runtime 均已接入；`linux_package_smoke.sh` 使用 fake pacman
+验证 argv、审批拒绝、缺少 pacman、失败和取消路径，不触碰真实包数据库。
+
 **门槛**：每个工具有 schema、权限矩阵、错误恢复、单元测试和至少一个真实 Linux 验收脚本。
 
 ### Phase 4：通用知识平台与 Linux 首发 RAG

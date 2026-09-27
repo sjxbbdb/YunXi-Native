@@ -154,6 +154,18 @@ Runtime 还注册了独立的 `linux_systemd` ToolSpec，用于经过审批的�
 退出或取消会返回结构化失败及 `mutation: true` 审计事件，不会误报成功。Linux smoke
 使用 PATH 下临时 fake `systemctl` 断言 argv，不触碰真实 systemd。
 
+### Arch/pacman 包变更
+
+Runtime 还注册了 `linux_package` ToolSpec。它只接受一个经过 token 校验的包名和
+`install`、`remove`、`upgrade`、`search`、`info` 五种 typed action；执行始终是固定的
+`pacman` argv，不接受 shell 文本、额外参数或 `sudo`。`search`/`info` 是低风险只读查询，
+其余三种动作默认要求 Approval，并在结构化报告中标明 `requires_root: true`。工具不会
+偷偷提权：pacman 直接以 YunXi 进程的当前用户执行；需要 root 时由 pacman 返回失败，
+用户必须在外部明确处理权限。stdout/stderr 限制为 64 KiB，结果包含 argv、exit_code、
+status、truncated、cancelled，并记录 package runtime audit event。缺少 pacman、非零
+退出或取消都不会误报成功。可运行 `bash yunxi-agent-linux/tests/linux_package_smoke.sh`
+验证 fake pacman argv、审批边界和审计事件。
+
 ### 类型化工作区文件变更
 
 Linux Runtime 同时注册 `linux_apply` ToolSpec。它只接受 `write_file`、`delete_path`、

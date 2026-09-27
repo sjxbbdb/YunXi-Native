@@ -158,6 +158,14 @@ fn approval_command_and_paths(request: &ToolRequest) -> (Option<String>, Vec<Pat
             )),
             Vec::new(),
         ),
+        ToolRequestKind::LinuxPackage { input } => (
+            Some(format!(
+                "pacman {} {}",
+                input.action.as_str(),
+                input.package
+            )),
+            Vec::new(),
+        ),
         ToolRequestKind::LinuxReadOnly {
             operation,
             arguments,

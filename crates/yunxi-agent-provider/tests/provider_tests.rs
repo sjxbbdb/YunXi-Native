@@ -244,6 +244,7 @@ fn openai_request_json_uses_yunxi_provider_messages() {
             "linux_preview",
             "linux_apply",
             "linux_systemd",
+            "linux_package",
             "linux_readonly",
         ])
         .collect::<Vec<_>>();

@@ -1,5 +1,7 @@
 use std::path::{Path, PathBuf};
 use tempfile::TempDir;
+#[cfg(target_os = "linux")]
+use yunxi_agent_core::AgentCancellationToken;
 use yunxi_agent_core::{AgentConfig, ApprovalMode, SandboxMode};
 use yunxi_agent_exec::{ExecLifecycleEvent, ExecOutputStream};
 use yunxi_agent_mcp::{
@@ -8,6 +10,8 @@ use yunxi_agent_mcp::{
 };
 #[cfg(target_os = "linux")]
 use yunxi_agent_tools::linux_apply::LinuxApplyInput;
+#[cfg(target_os = "linux")]
+use yunxi_agent_tools::linux_package::{LinuxPackageInput, PackageAction};
 #[cfg(target_os = "linux")]
 use yunxi_agent_tools::linux_preview::{
     LinuxMutationIntent, LinuxPreviewInput, LinuxPreviewStatus,
@@ -20,6 +24,9 @@ use yunxi_agent_tools::{
     ToolRouter, ToolRuntime, ToolRuntimeEvent, ToolStatus, default_tool_registry,
     workspace_tool_registry,
 };
+
+#[cfg(all(target_os = "linux", unix))]
+static PROCESS_ENV_LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
 
 #[cfg(windows)]
 fn create_dir_symlink(src: &Path, dst: &Path) -> std::io::Result<()> {
@@ -57,6 +64,7 @@ fn default_tool_registry_exposes_model_visible_specs() {
             ToolName::LinuxPreview,
             ToolName::LinuxApply,
             ToolName::LinuxSystemd,
+            ToolName::LinuxPackage,
             ToolName::LinuxReadOnly,
         ])
         .collect::<Vec<_>>();
@@ -95,14 +103,12 @@ async fn linux_systemd_requires_approval_before_execution() {
     assert!(response.lifecycle_events.is_empty());
 }
 
-#[cfg(unix)]
+#[cfg(all(target_os = "linux", unix))]
 #[tokio::test]
 async fn linux_systemd_fake_runner_records_mutation_audit() {
     use std::os::unix::fs::PermissionsExt;
-    use std::sync::{Mutex, OnceLock};
-    static PATH_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-    let _path_guard = PATH_LOCK
-        .get_or_init(|| Mutex::new(()))
+    let _path_guard = PROCESS_ENV_LOCK
+        .get_or_init(|| std::sync::Mutex::new(()))
         .lock()
         .expect("path lock");
     let cwd = tempfile::tempdir().expect("tempdir");
@@ -158,6 +164,192 @@ async fn linux_systemd_fake_runner_records_mutation_audit() {
     assert!(response.runtime_events.iter().any(|event| matches!(event, ToolRuntimeEvent::LinuxSystemd { mutation: true, status, .. } if status == "ok")));
 }
 
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn linux_package_mutation_requires_approval() {
+    let cwd = tempfile::tempdir().expect("tempdir");
+    let mut config = AgentConfig::new(cwd.path());
+    config.approval_mode = ApprovalMode::OnRequest;
+    config.sandbox_mode = SandboxMode::DangerFullAccess;
+    let response = CompositeToolRuntime::default()
+        .execute(
+            ToolRequest::linux_package(
+                cwd.path(),
+                LinuxPackageInput {
+                    action: PackageAction::Install,
+                    package: "ripgrep".into(),
+                },
+            )
+            .with_policy(ToolPolicy::from_config(&config)),
+        )
+        .await
+        .expect("response");
+    assert_eq!(response.status, ToolStatus::Declined);
+    assert!(response.lifecycle_events.is_empty());
+}
+
+#[cfg(all(target_os = "linux", unix))]
+#[tokio::test]
+async fn linux_package_fake_runner_records_fixed_argv_and_audit() {
+    use std::os::unix::fs::PermissionsExt;
+    let _path_guard = PROCESS_ENV_LOCK
+        .get_or_init(|| std::sync::Mutex::new(()))
+        .lock()
+        .expect("path lock");
+    let cwd = tempfile::tempdir().expect("tempdir");
+    let script = cwd.path().join("pacman");
+    let marker = cwd.path().join("argv");
+    std::fs::write(
+        &script,
+        format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$@\" > '{}'\nprintf 'fake package output\\n'\n",
+            marker.display()
+        ),
+    )
+    .expect("script");
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    let old_path = std::env::var_os("PATH");
+    unsafe {
+        std::env::set_var(
+            "PATH",
+            format!(
+                "{}:{}",
+                cwd.path().display(),
+                old_path.as_deref().unwrap_or_default().to_string_lossy()
+            ),
+        );
+    }
+    let response = CompositeToolRuntime::default()
+        .execute(
+            ToolRequest::linux_package(
+                cwd.path(),
+                LinuxPackageInput {
+                    action: PackageAction::Install,
+                    package: "ripgrep".into(),
+                },
+            )
+            .with_policy(ToolPolicy::trusted()),
+        )
+        .await
+        .expect("response");
+    if let Some(path) = old_path {
+        unsafe {
+            std::env::set_var("PATH", path);
+        }
+    } else {
+        unsafe {
+            std::env::remove_var("PATH");
+        }
+    }
+    assert_eq!(response.status, ToolStatus::Completed);
+    assert_eq!(
+        std::fs::read_to_string(marker).unwrap(),
+        "--sync\n--\nripgrep\n"
+    );
+    let report: serde_json::Value = serde_json::from_str(&response.output.unwrap()).unwrap();
+    assert_eq!(
+        report["argv"],
+        serde_json::json!(["pacman", "--sync", "--", "ripgrep"])
+    );
+    assert_eq!(report["requires_root"], true);
+    assert!(response.runtime_events.iter().any(|event| matches!(event, ToolRuntimeEvent::LinuxPackage { mutation: true, status, .. } if status == "ok")));
+}
+
+#[cfg(all(target_os = "linux", unix))]
+#[tokio::test]
+async fn linux_package_missing_pacman_returns_structured_unavailable() {
+    let _path_guard = PROCESS_ENV_LOCK
+        .get_or_init(|| std::sync::Mutex::new(()))
+        .lock()
+        .expect("path lock");
+    let cwd = tempfile::tempdir().expect("tempdir");
+    let old_path = std::env::var_os("PATH");
+    unsafe {
+        std::env::set_var("PATH", cwd.path());
+    }
+    let response = CompositeToolRuntime::default()
+        .execute(
+            ToolRequest::linux_package(
+                cwd.path(),
+                LinuxPackageInput {
+                    action: PackageAction::Info,
+                    package: "ripgrep".into(),
+                },
+            )
+            .with_policy(ToolPolicy::trusted()),
+        )
+        .await
+        .expect("response");
+    if let Some(path) = old_path {
+        unsafe {
+            std::env::set_var("PATH", path);
+        }
+    } else {
+        unsafe {
+            std::env::remove_var("PATH");
+        }
+    }
+    let report: serde_json::Value = serde_json::from_str(&response.output.unwrap()).unwrap();
+    assert!(
+        report["status"] == "unavailable" || report["status"] == "failed",
+        "report={report}"
+    );
+    assert_eq!(report["requires_root"], false);
+    assert_eq!(
+        report["argv"],
+        serde_json::json!(["pacman", "--info", "--", "ripgrep"])
+    );
+}
+
+#[cfg(all(target_os = "linux", unix))]
+#[tokio::test]
+async fn linux_package_cancellation_returns_structured_cancelled() {
+    use std::os::unix::fs::PermissionsExt;
+    let _path_guard = PROCESS_ENV_LOCK
+        .get_or_init(|| std::sync::Mutex::new(()))
+        .lock()
+        .expect("path lock");
+    let cwd = tempfile::tempdir().expect("tempdir");
+    let script = cwd.path().join("pacman");
+    std::fs::write(&script, "#!/bin/sh\nsleep 2\n").expect("script");
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    let old_path = std::env::var_os("PATH");
+    unsafe {
+        std::env::set_var("PATH", format!("{}:/usr/bin:/bin", cwd.path().display()));
+    }
+    let token = AgentCancellationToken::new();
+    let cancel = token.clone();
+    let cancel_task = tokio::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        cancel.cancel();
+    });
+    let response = yunxi_agent_tools::linux_package::execute(
+        Some("cancel-package".into()),
+        cwd.path(),
+        LinuxPackageInput {
+            action: PackageAction::Info,
+            package: "ripgrep".into(),
+        },
+        ToolPolicy::trusted().execution_policy,
+        token,
+    )
+    .await
+    .expect("response");
+    cancel_task.await.expect("cancel task");
+    if let Some(path) = old_path {
+        unsafe {
+            std::env::set_var("PATH", path);
+        }
+    } else {
+        unsafe {
+            std::env::remove_var("PATH");
+        }
+    }
+    let report: serde_json::Value = serde_json::from_str(&response.output.unwrap()).unwrap();
+    assert_eq!(report["status"], "cancelled", "report={report}");
+    assert_eq!(report["cancelled"], true, "report={report}");
+}
+
 #[test]
 fn default_tool_registry_exports_openai_function_schema() {
     let registry = default_tool_registry();
@@ -188,6 +380,7 @@ fn default_tool_registry_exports_openai_function_schema() {
             "linux_preview",
             "linux_apply",
             "linux_systemd",
+            "linux_package",
             "linux_readonly",
         ])
         .collect::<Vec<_>>();

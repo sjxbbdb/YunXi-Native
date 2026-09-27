@@ -400,6 +400,10 @@ pub enum ToolCall {
         id: Option<String>,
         arguments_json: String,
     },
+    LinuxPackage {
+        id: Option<String>,
+        arguments_json: String,
+    },
     LinuxReadOnly {
         id: Option<String>,
         operation: String,
@@ -421,6 +425,7 @@ impl ToolCall {
             Self::LinuxPreview { id, .. } => id.as_deref(),
             Self::LinuxApply { id, .. } => id.as_deref(),
             Self::LinuxSystemd { id, .. } => id.as_deref(),
+            Self::LinuxPackage { id, .. } => id.as_deref(),
             Self::LinuxReadOnly { id, .. } => id.as_deref(),
         }
     }
