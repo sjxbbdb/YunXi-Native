@@ -295,16 +295,18 @@ daemon 还对 `Hello` 与握手后的首个请求设置 5 秒超时，防止半�
 ### Phase 2：fish 原生接管
 
 - 完成全量提交接管、多行、粘贴、Ctrl+J、嵌套输入和 Runtime 执行边界；
-- 已建立真实 fish PTY smoke，覆盖 shell-looking 输入、中文自然语言、Ctrl+J、多行、命令替换、重定向、管道、窗口 resize、输入态 Ctrl+C 和无本地执行路径；另有 `shell_prompt_cancel_smoke.sh` 使用真实 PTY 与协议假 daemon 验证审批等待期间的 Ctrl+C；继续扩展为完整行为矩阵；
+- 已建立真实 fish PTY smoke，覆盖 shell-looking 输入、中文自然语言、Ctrl+J、多行、命令替换、重定向、管道、窗口 resize、输入态 Ctrl+C、无本地执行路径，以及基础光标隐藏/恢复、原始输入重放、提示符重绘和多行续行缩进；另有 `shell_prompt_cancel_smoke.sh` 使用真实 PTY 与协议假 daemon 验证审批等待期间的 Ctrl+C；更广泛的终端模拟器/复杂提示符兼容性矩阵仍按后续边界扩展；
 - 记录 cwd/session/origin，保证 Shell 回显和 YunXi 结果不重叠；fish 前台回合收到
   `Ctrl+C` 时向 daemon 发送 `Cancel`，不把中断留在客户端进程层；审批和用户输入等待使用可轮询的 `/dev/tty`，取消后先回收输入任务再发送 `Cancel`，避免后台读取线程吞掉下一条 fish 输入。
 
 当前 `fish-init` 默认就是全量接管：它保留 fish 的行编辑和 prompt，但把每个非空提交
 直接交给 YunXi Runtime，不再依赖本地首词分类，也不再提供保守模式。旧脚本传入
 `--takeover` 仍可兼容，但不会改变行为。真实 `fish_pty_smoke.sh` 验证 shell-looking
-输入、中文和多行输入均进入 `shell-intercept`，且没有 `shell-classify` 调用；空提交和
+输入、中文和多行输入均进入 `shell-intercept`，且没有 `shell-classify` 调用；PTY smoke
+同时验证了提交时的光标隐藏、基础 prompt 重绘、原始输入回放和多行续行缩进；空提交和
 编辑态 Ctrl+C 仍由 fish 本地处理。接管范围明确限定为交互式 fish 的非空提交，不包括
-非交互式脚本或其他 shell；daemon/Runtime 不可用时不静默回退执行原始输入。
+非交互式脚本或其他 shell；daemon/Runtime 不可用时不静默回退执行原始输入。复杂提示符
+和更广泛终端模拟器矩阵仍是后续兼容性边界。
 
 **门槛**：所有非空提交零本地执行，Runtime 执行不重复，PTY resize/中断/退出语义一致。
 

@@ -31,11 +31,11 @@
 | 普通命令放行 | 可识别命令原样交给 fish | 由 YunXi Runtime 决定是否执行 | 不在 fish hook 内本地放行，避免交互路径分裂 |
 | 自然语言转发 | 未识别命令转 daemon | 所有非空提交统一转 daemon | 由 YunXi Runtime 处理人格、记忆、审批和工具 |
 | `fish_command_not_found` | 第二道兜底 | 不参与接管路径 | 非空输入在 Enter hook 阶段已交给 YunXi，不依赖 127 退出码 |
-| 多行输入 | 完整处理 | 已接入基础提交路径 | 继续补齐提示符重绘；不重新引入命令分类 |
+| 多行输入 | 完整处理 | 已接入；真实 PTY smoke 验证提交与续行缩进重放 | 更广泛终端模拟器/复杂提示符矩阵继续补齐；不重新引入命令分类 |
 | Ctrl+J 换行 | 已有 | 已接入 | 保持一致 |
 | 剪贴板/附件 | fish hook 内置粘贴处理 | 暂无 Linux 版附件协议 | 需要先定义 YunXi 附件模型 |
 | 历史记录 | 接管输入可写入 Miyu 历史 | Runtime 有会话历史 | 需要统一 fish 历史与 YunXi 会话记录的边界 |
-| 提示符与光标 | Miyu 处理光标隐藏、提示符重绘、AI 输入回放 | 基础输出已实现 | 可移植，但需单独做终端兼容性测试 |
+| 提示符与光标 | Miyu 处理光标隐藏、提示符重绘、AI 输入回放 | 已验证基础光标隐藏/恢复、原始输入重放、提示符重绘和多行续行缩进 | 更广泛终端模拟器与复杂提示符兼容性仍需测试 |
 | Unix socket | 已有成熟 IPC、协议版本和单例生命周期 | 已实现版本化 socket daemon、有界完成回合回放、`detached_output_only`、active Follow、Ping、attached Cancel、run 级 detached Cancel，以及用户级 durable run manifest/Status | 真正跨重启 resume 仍需显式设计；不自动伪造 provider 继续执行 |
 | 断线继续 | 可重连客户端继续；one-shot CLI/shellhook 断线取消 | 当前连接断开时生命周期不完整 | 按客户端类型分别实现，不能统一写成“断线继续” |
 | 会话续接 | 终端会话、命名会话、Normal/Dev 车道 | YunXi 父子 session 与本地存储 | 需要建立 fish origin → YunXi session 的持久映射 |
@@ -121,7 +121,7 @@
 
 - Arch TUI：已有。
 - XDG 存储目录：已有。
-- fish hook 全量接管：所有非空提交进入 YunXi，已通过真实 fish + PTY smoke；保守模式不再存在，复杂提示符重绘仍按矩阵继续补齐。
+- fish hook 全量接管：所有非空提交进入 YunXi，已通过真实 fish + PTY smoke；保守模式不再存在，基础光标隐藏/恢复、原始输入重放、提示符重绘和多行续行缩进已验证；更广泛终端模拟器/复杂提示符矩阵仍按后续边界补齐。
 - 知识 worker：已有单 workspace `--cwd` 与显式多 workspace `--workspace` fleet；fleet 只处理调用方明确列出的工作区，跨轮 round-robin、独立 XDG 游标状态、单工作区故障隔离、确定性持久化工作区退避和脱敏 JSON 已覆盖；`knowledge-worker-status` 另提供跨 workspace 的有界健康/队列/告警聚合摘要。daemon 级自动发现仍不启用。
 - 知识导入：project/private 支持 stdin 与显式单文件（UTF-8 文本/Markdown）导入；文件入口限定工作区边界、拒绝 `.yunxi` 状态目录和超大文件，不做目录扫描。
 - 知识队列诊断：已有只读 `knowledge-worker-status`，同一快照观察 active/staging 队列，区分就绪、退避、失败、耗尽和过期 lease；不会创建/迁移数据库或触发 worker。
