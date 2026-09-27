@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Explicit project/private knowledge boundary smoke.  It only imports stdin,
-# never scans a path, and uses the real release binary plus a temporary
+# Explicit project/private knowledge boundary smoke.  It imports stdin and
+# explicitly selected text/Markdown files, never scans a path, and uses the real release binary plus a temporary
 # workspace so the test cannot touch the user's knowledge or memory stores.
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -113,8 +113,20 @@ printf '%s\n' '私有知识：我的部署约定是先执行 dry-run，再申请
     --owner local-user \
     --visibility private \
     --cwd "$WORKSPACE" >"$TMP_ROOT/private-import.json"
+printf '%s\n' '# File knowledge' '' '私有文档导入也必须经过显式路径和 workspace 边界。' > \
+  "$WORKSPACE/private-notes.md"
+run_json knowledge-import-file private-notes.md \
+  --space-id private-demo \
+  --document-id private-file \
+  --title 'Private File' \
+  --source private-notes \
+  --version v1 \
+  --owner local-user \
+  --visibility private \
+  --cwd "$WORKSPACE" >"$TMP_ROOT/private-file-import.json"
 
-python3 - "$TMP_ROOT/project-import.json" "$TMP_ROOT/private-import.json" <<'PY'
+python3 - "$TMP_ROOT/project-import.json" "$TMP_ROOT/private-import.json" \
+  "$TMP_ROOT/private-file-import.json" <<'PY'
 import json
 import sys
 
@@ -124,7 +136,37 @@ for path, expected in zip(sys.argv[1:], ("project-demo", "private-demo")):
     assert value["space_id"] == expected, value
     assert value["chunks_written"] > 0, value
     assert value["embedding_job"]["status"] == "pending", value
+file_import = json.load(open(sys.argv[3], encoding="utf-8"))
+assert file_import["status"] == "imported", file_import
+assert file_import["document_id"] == "private-file", file_import
 PY
+
+printf '%s\n' 'outside workspace must be rejected' >"$TMP_ROOT/outside.md"
+set +e
+run_json knowledge-import-file "$TMP_ROOT/outside.md" \
+  --space-id private-demo --document-id outside-file --title Outside \
+  --source private-notes --version v1 --owner local-user --visibility private \
+  --cwd "$WORKSPACE" >"$TMP_ROOT/outside.out" 2>&1
+OUTSIDE_STATUS=$?
+set -e
+[[ "$OUTSIDE_STATUS" -ne 0 ]] || { echo "outside file unexpectedly imported" >&2; exit 1; }
+grep -q "必须位于工作区内" "$TMP_ROOT/outside.out" || {
+  cat "$TMP_ROOT/outside.out" >&2
+  exit 1
+}
+
+set +e
+run_json knowledge-import-file "$WORKSPACE/.yunxi/knowledge/knowledge.sqlite3" \
+  --space-id private-demo --document-id internal-file --title Internal \
+  --source private-notes --version v1 --owner local-user --visibility private \
+  --cwd "$WORKSPACE" >"$TMP_ROOT/internal.out" 2>&1
+INTERNAL_STATUS=$?
+set -e
+[[ "$INTERNAL_STATUS" -ne 0 ]] || { echo ".yunxi file unexpectedly imported" >&2; exit 1; }
+grep -q ".yunxi" "$TMP_ROOT/internal.out" || {
+  cat "$TMP_ROOT/internal.out" >&2
+  exit 1
+}
 
 run_json knowledge-search 'systemctl restart' \
   --space-id project-demo --owner local-user --visibility owner \
@@ -132,16 +174,21 @@ run_json knowledge-search 'systemctl restart' \
 run_json knowledge-search 'dry-run' \
   --space-id private-demo --owner local-user --visibility private \
   --cwd "$WORKSPACE" >"$TMP_ROOT/private-search.json"
+run_json knowledge-search 'workspace' \
+  --space-id private-demo --owner local-user --visibility private \
+  --cwd "$WORKSPACE" >"$TMP_ROOT/private-file-search.json"
 
-python3 - "$TMP_ROOT/project-search.json" "$TMP_ROOT/private-search.json" <<'PY'
+python3 - "$TMP_ROOT/project-search.json" "$TMP_ROOT/private-search.json" "$TMP_ROOT/private-file-search.json" <<'PY'
 import json
 import sys
 
-project, private = [json.load(open(path, encoding="utf-8")) for path in sys.argv[1:]]
+project, private, private_file = [json.load(open(path, encoding="utf-8")) for path in sys.argv[1:]]
 assert project["space_id"] == "project-demo" and project["results"], project
 assert all(item["space_id"] == "project-demo" for item in project["results"]), project
 assert private["space_id"] == "private-demo" and private["results"], private
 assert all(item["space_id"] == "private-demo" for item in private["results"]), private
+assert private_file["space_id"] == "private-demo" and private_file["results"], private_file
+assert any(item["document_id"] == "private-file" for item in private_file["results"]), private_file
 PY
 
 set +e
@@ -211,7 +258,8 @@ import sys
 
 retract, vector = [json.load(open(path, encoding="utf-8")) for path in sys.argv[1:]]
 assert retract["status"] == "retracted", retract
-assert vector["space_id"] == "private-demo" and vector["results"] == [], vector
+assert vector["space_id"] == "private-demo", vector
+assert all(item["document_id"] != "private-guide" for item in vector["results"]), vector
 PY
 
 printf '%s\n' '项目知识更新：systemctl restart 需要审批。' | \
@@ -234,10 +282,10 @@ db = sqlite3.connect(sys.argv[1])
 spaces = dict(db.execute("SELECT space_id, kind FROM knowledge_spaces"))
 assert spaces == {"project-demo": "project", "private-demo": "private"}, spaces
 documents = dict(db.execute("SELECT document_id, space_id FROM knowledge_documents"))
-assert documents == {"project-guide": "project-demo"}, documents
+assert documents == {"project-guide": "project-demo", "private-file": "private-demo"}, documents
 jobs = db.execute("SELECT COUNT(*) FROM knowledge_embedding_jobs").fetchone()[0]
 vectors = db.execute("SELECT COUNT(*) FROM knowledge_vectors").fetchone()[0]
-assert jobs == 1 and vectors > 0, (jobs, vectors)
+assert jobs == 2 and vectors > 0, (jobs, vectors)
 PY
 
 [[ -f "$WORKSPACE/.yunxi/knowledge/knowledge.sqlite3" ]] || exit 1

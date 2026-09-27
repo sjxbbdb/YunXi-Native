@@ -85,6 +85,10 @@ Linux 知识库已经有独立的 `SqliteKnowledgeStore` 基础：数据库文�
 当前可通过 Linux CLI 的 `knowledge-index` 为已登记文档建立本地字符 n-gram 向量，
 再用 `knowledge-vector-search` 做有界召回；采集/import 还会创建 durable embedding
 job，可由一次性 `knowledge-worker` 或显式 `knowledge-worker --watch` 轮询处理。
+project/private 空间支持两种显式导入入口：`knowledge-import-stdin` 适合管道文本，
+`knowledge-import-file <path>` 适合单个 UTF-8 文本或 Markdown 文件。文件路径会相对
+`--cwd` 解析并 canonicalize，只允许工作区内的普通文件，拒绝工作区外路径和
+`.yunxi` 状态目录，单文件上限为 8 MiB；它不会递归扫描目录，也不会自动导入用户文件。
 除了 `--cwd` 单工作区模式，还可以重复传入 `--workspace` 建立最多 32 个工作区的
 显式 fleet；路径会 canonicalize 后去重，`--max-jobs` 是整轮共享预算，跨轮游标按
 round-robin 轮转。单个工作区的 SQLite、权限或索引故障会被隔离，默认 JSON 只返回

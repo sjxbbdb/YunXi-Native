@@ -308,6 +308,35 @@ pub(crate) enum LinuxShellCommand {
         #[arg(long, default_value = ".")]
         cwd: PathBuf,
     },
+    /// Import one explicitly selected UTF-8 text/Markdown file from inside the workspace.
+    KnowledgeImportFile {
+        /// File path, resolved and canonicalized relative to --cwd when relative.
+        path: PathBuf,
+        /// Existing project/private space id.
+        #[arg(long)]
+        space_id: String,
+        /// Stable document id; use letters, digits, '.', '_' or '-'.
+        #[arg(long)]
+        document_id: String,
+        /// Human-readable document title.
+        #[arg(long)]
+        title: String,
+        /// Provenance label for this document.
+        #[arg(long)]
+        source: String,
+        /// User-controlled source version/revision.
+        #[arg(long)]
+        version: String,
+        /// Owner id; must match the existing space.
+        #[arg(long)]
+        owner: String,
+        /// Visibility; must match the existing space.
+        #[arg(long)]
+        visibility: String,
+        /// Workspace whose knowledge database receives the document.
+        #[arg(long, default_value = ".")]
+        cwd: PathBuf,
+    },
     /// Retract one knowledge document and its derived index rows.
     KnowledgeRetract {
         /// Stable document id returned by a knowledge collector/import.
@@ -536,6 +565,27 @@ pub(crate) async fn run_command(command: LinuxShellCommand) -> Result<()> {
             visibility,
             cwd,
         } => run_knowledge_import_stdin(
+            space_id,
+            document_id,
+            title,
+            source,
+            version,
+            owner,
+            visibility,
+            cwd,
+        ),
+        LinuxShellCommand::KnowledgeImportFile {
+            path,
+            space_id,
+            document_id,
+            title,
+            source,
+            version,
+            owner,
+            visibility,
+            cwd,
+        } => run_knowledge_import_file(
+            path,
             space_id,
             document_id,
             title,
@@ -1045,6 +1095,86 @@ fn run_knowledge_import_stdin(
     visibility: String,
     cwd: PathBuf,
 ) -> Result<()> {
+    let mut input = String::new();
+    io::stdin()
+        .read_to_string(&mut input)
+        .context("读取知识导入 stdin 失败")?;
+    run_knowledge_import_text(
+        space_id,
+        document_id,
+        title,
+        source,
+        version,
+        owner,
+        visibility,
+        cwd,
+        input,
+        "stdin",
+    )
+}
+
+fn run_knowledge_import_file(
+    path: PathBuf,
+    space_id: String,
+    document_id: String,
+    title: String,
+    source: String,
+    version: String,
+    owner: String,
+    visibility: String,
+    cwd: PathBuf,
+) -> Result<()> {
+    const MAX_FILE_BYTES: u64 = 8 * 1024 * 1024;
+    let cwd = canonical_knowledge_cwd(cwd)?;
+    let path = if path.is_absolute() {
+        path
+    } else {
+        cwd.join(path)
+    };
+    let path = std::fs::canonicalize(&path)
+        .with_context(|| "无法访问知识文件；文件必须位于工作区内".to_string())?;
+    if !path.starts_with(&cwd) {
+        bail!("知识文件必须位于工作区内")
+    }
+    let internal_state = cwd.join(".yunxi");
+    if path.starts_with(&internal_state) {
+        bail!("知识文件不能位于工作区的 .yunxi 状态目录内")
+    }
+    let metadata = std::fs::metadata(&path).context("读取知识文件元数据失败")?;
+    if !metadata.is_file() {
+        bail!("知识文件必须是普通文件")
+    }
+    if metadata.len() > MAX_FILE_BYTES {
+        bail!("知识文件超过 8 MiB 大小上限")
+    }
+    let input =
+        std::fs::read_to_string(&path).context("知识文件必须是 UTF-8 文本或 Markdown 文件")?;
+    run_knowledge_import_text(
+        space_id,
+        document_id,
+        title,
+        source,
+        version,
+        owner,
+        visibility,
+        cwd,
+        input,
+        "file",
+    )
+}
+
+fn run_knowledge_import_text(
+    space_id: String,
+    document_id: String,
+    title: String,
+    source: String,
+    version: String,
+    owner: String,
+    visibility: String,
+    cwd: PathBuf,
+    input: String,
+    import_kind: &str,
+) -> Result<()> {
     validate_knowledge_identifier("space_id", &space_id)?;
     validate_knowledge_identifier("document_id", &document_id)?;
     validate_knowledge_metadata("title", &title)?;
@@ -1058,7 +1188,7 @@ fn run_knowledge_import_stdin(
         .read_space(&space_id)?
         .with_context(|| format!("知识空间不存在: {space_id}；请先运行 knowledge-space-init"))?;
     if existing.kind == yunxi_agent_storage::KnowledgeSpaceKind::System {
-        bail!("knowledge-import-stdin 不允许写入 system 空间")
+        bail!("知识导入不允许写入 system 空间")
     }
     if existing.owner != owner || existing.visibility != visibility {
         bail!("导入 metadata 与知识空间 owner/visibility 不一致")
@@ -1069,10 +1199,6 @@ fn run_knowledge_import_stdin(
     let scope = store
         .active_space_scope(&space_id, &owner, visibility)?
         .context("知识空间没有可用的 active generation")?;
-    let mut input = String::new();
-    io::stdin()
-        .read_to_string(&mut input)
-        .context("读取知识导入 stdin 失败")?;
     let normalized = yunxi_agent_storage::normalize_knowledge_text(
         &input,
         yunxi_agent_storage::KnowledgeChunkingOptions::default().max_input_chars,
@@ -1090,7 +1216,7 @@ fn run_knowledge_import_stdin(
         owner,
         visibility,
         metadata_json: serde_json::json!({
-            "import": "stdin",
+            "import": import_kind,
             "space_kind": existing.kind.as_str(),
         })
         .to_string(),

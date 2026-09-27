@@ -127,7 +127,7 @@ bash yunxi-agent-linux/tests/linux_tool_smoke.sh ./target/release/yunxi-linux
 ## 显式 project/private 知识空间
 
 Linux 知识库现在支持由用户显式创建的 `project` 与 `private` 空间。它们不会自动扫描
-用户目录，也不会默认进入 Linux Planner；只有通过 stdin 明确导入的内容才会入库。空间
+用户目录，也不会默认进入 Linux Planner；只有通过 stdin 或明确指定的单个文件导入才会入库。空间
 的 owner、visibility、source 和 version 是访问与 provenance 边界，重复初始化必须完全
 匹配，否则命令会拒绝静默覆盖。
 
@@ -139,6 +139,11 @@ Linux 知识库现在支持由用户显式创建的 `project` 与 `private` 空�
 printf '%s\n' '项目约定：先 dry-run，再申请审批。' | \
   ./target/release/yunxi-linux knowledge-import-stdin \
   --space-id project-demo --document-id project-guide --title 'Project Guide' \
+  --source project-notes --version v1 --owner local-user --visibility owner --cwd .
+
+# 单个 UTF-8 文本/Markdown 文件；相对 --cwd 解析，不递归扫描目录
+./target/release/yunxi-linux knowledge-import-file docs/project-guide.md \
+  --space-id project-demo --document-id project-guide-file --title 'Project Guide (file)' \
   --source project-notes --version v1 --owner local-user --visibility owner --cwd .
 
 ./target/release/yunxi-linux knowledge-search 'dry-run' \
@@ -159,7 +164,9 @@ printf '%s\n' '项目约定：先 dry-run，再申请审批。' | \
 ```
 
 `project` 首版只允许 `owner` visibility；`private` 允许 `owner` 或 `private`。stdin 导入
-受默认输入上限与 chunking 约束，文档必须与空间的 source/version 一致；重复 document id
+和文件导入都受默认输入上限与 chunking 约束；文件导入只接受工作区内的普通 UTF-8
+文本/Markdown 文件，拒绝工作区外路径、`.yunxi` 状态目录和超过 8 MiB 的文件。文档必须
+与空间的 source/version 一致；重复 document id
 会在事务内替换旧 chunks、向量和 embedding job，不留下孤立索引。长期记忆数据库与
 `knowledge.sqlite3` 始终保持物理分离。`knowledge-retract` 也要求显式匹配 space、owner
 和 visibility，撤回后 FTS、向量和 embedding job 一起失效。

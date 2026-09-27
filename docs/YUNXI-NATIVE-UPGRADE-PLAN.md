@@ -330,7 +330,9 @@ active generation，不再把 generation `1` 当作运行时事实；未知空�
 
 本增量已把 project/private 的受控入口落地：`knowledge-space-init` 只允许用户显式创建
 非 system 空间，重复初始化必须完全匹配 metadata；`knowledge-import-stdin` 只读 stdin，
-不扫描路径、不执行导入内容，并把文档绑定到空间当前 generation 后入队 embedding job。
+`knowledge-import-file` 只读取用户明确指定的单个 UTF-8 文本/Markdown 文件，二者都不扫描
+路径、不执行导入内容，并把文档绑定到空间当前 generation 后入队 embedding job。文件入口
+只允许工作区内的普通文件，拒绝工作区外路径和 `.yunxi` 状态目录，单文件限制为 8 MiB。
 project 首版仅允许 owner visibility，private 允许 owner/private；source/version 必须与
 空间一致。`knowledge-search` 与 `knowledge-vector-search` 支持显式 `--space-id`、
 `--owner`、`--visibility`，不匹配的访问身份会被拒绝，导入的 project/private 证据不会
