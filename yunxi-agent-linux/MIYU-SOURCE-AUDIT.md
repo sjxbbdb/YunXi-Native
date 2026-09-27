@@ -89,6 +89,11 @@ miyu (CLI/TUI entry)
 
 ### 4.1 fish 接管：可借鉴，但当前实验实现还没有行为等价
 
+> 本节记录 Miyu 源码的历史行为，供适配审计使用，不是 YunXi 当前的交互策略。YunXi
+> Native 已明确采用 all-takeover：fish 只保留编辑、历史、补全、空提交和编辑态取消，
+> 每个非空提交都直接进入 YunXi Runtime；以下首词分类和 command-not-found 分流不会
+> 被复制到 YunXi hook。
+
 Miyu fish hook 的入口和安装器在 [`miyu-base/src/shell/fish.rs`](https://github.com/SHORiN-KiWATA/miyu-agent/blob/04a23ccbfc1ee081ec8e2d82090edfa553552456/crates/miyu-base/src/shell/fish.rs#L80-L341)。已确认的语义包括：
 
 - 用 `commandline --tokens-raw` 先拿原始首词，尽量在 fish 展开 glob、命令替换之前判断；
@@ -105,7 +110,9 @@ Miyu fish hook 的入口和安装器在 [`miyu-base/src/shell/fish.rs`](https://
 3. 多行复杂语法、提示符重绘、光标恢复、hook 指纹与原子安装尚未按 PTY 行为验收。
 4. 现有测试主要检查生成字符串和分类器，不等价于真实 fish 行为测试。
 
-结论：保留 Miyu 的交互模型，重写为 YunXi hook；在真实 fish PTY 矩阵通过前不得扩展 zsh/bash。
+结论：仅保留 Miyu 在 hook 安装、提示符交互和 daemon 边界上的可验证经验，重写为
+YunXi all-takeover hook；不在 fish 内本地放行或分类非空输入。在真实 fish PTY 矩阵
+持续通过前不得扩展 zsh/bash。
 
 ### 4.2 IPC：协议细节不能省略
 
@@ -176,7 +183,7 @@ YunXi 后续若需要迁移，只允许做显式、版本化、带 digest/大小
 
 | Miyu 区域 | YunXi Linux 决策 | 方式 | 放行条件 |
 |---|---|---|---|
-| fish hook | 发展 | 重写 YunXi adapter，借鉴分类和 UX | 真实 fish PTY 矩阵、函数/alias/多行/command-not-found 全通过 |
+| fish hook | 发展 | 重写 YunXi all-takeover adapter，借鉴安装与 UX，不复制分类 | 真实 fish PTY 矩阵、非空统一转发、空提交/取消边界通过 |
 | Unix daemon/IPC | 发展 | 新建 headless host facade，吸收协议/锁/事件设计 | version/Ping、frame 限制、单例、Follow/Cancel、崩溃恢复测试 |
 | Miyu Web/平台宿主 | 排除当前 Arch 范围 | 不进入 Linux TUI 首版 | 未来若纳入需单独边界评审 |
 | Persona/Soul/Companion/Relationship/Mailbox | 保留 YunXi | 直接复用 YunXi Runtime | 回归现有人格与记忆测试 |
@@ -191,7 +198,7 @@ YunXi 后续若需要迁移，只允许做显式、版本化、带 digest/大小
 1. **协议门**：旧/新版本握手、坏长度、超大 frame、半包、EOF、Ping、能力协商。
 2. **daemon 门**：两个终端并发启动只留一个；socket 权限；锁释放；PID 复用；崩溃后 stale socket 清理。
 3. **运行门**：可重连客户端掉线继续；one-shot shellhook 掉线取消并落 interrupted；Follow 不丢尾事件；Cancel 能取消等待中的问题和工具。
-4. **fish 门**：真实 fish PTY 覆盖普通命令、function/alias/builtin、glob/命令替换、多行、Ctrl+J、unknown command、嵌套返回 127、中文输入和终端尺寸变化。
+4. **fish 门**：真实 fish PTY 覆盖 shell-looking 输入、function/alias/builtin-looking 输入、glob/命令替换、多行、Ctrl+J、中文输入、终端尺寸变化，以及无本地执行/无 `shell-classify` 路径。
 5. **数据门**：cwd/session 映射持久化且不会跨用户/跨 home 串线；YunXi memory/profile 不被 Miyu 数据覆盖。
 6. **安全门**：Approval 与工具写权限、Landlock unsupported policy、AUR review digest/人工确认、外部脚本网络和 sudo 操作。
 7. **迁移门**：所有资源、prompt、JSON schema、脚本和许可证闭包齐全；`cargo test --locked`、格式化、静态依赖门禁和 Arch runner 通过。
