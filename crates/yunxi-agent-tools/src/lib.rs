@@ -20,8 +20,8 @@ use yunxi_agent_multi_agent::{
 };
 use yunxi_agent_patch::{PatchFileChangeKind, apply_patch_detailed};
 use yunxi_agent_sandbox::{
-    ApprovalRequirement, ExecutionPolicy, NetworkPolicy, PolicyDecision, PolicyEvaluation,
-    SANDBOX_ATTEMPT_SCHEMA_VERSION, SandboxRequirement, SandboxRunner,
+    ApprovalRequirement, CommandRisk, ExecutionPolicy, NetworkPolicy, PolicyDecision,
+    PolicyEvaluation, SANDBOX_ATTEMPT_SCHEMA_VERSION, SandboxRequirement, SandboxRunner,
 };
 use yunxi_agent_skills::{
     DynamicToolKind, DynamicToolMetadata, SkillCatalog, SkillInvocation, SkillInvocationResult,
@@ -31,6 +31,7 @@ use yunxi_agent_skills::{
 pub mod linux_apply;
 pub mod linux_preview;
 mod linux_readonly;
+pub mod linux_systemd;
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ToolRequest {
@@ -86,6 +87,18 @@ impl ToolRequest {
         }
     }
 
+    pub fn linux_systemd(cwd: impl Into<PathBuf>, input: linux_systemd::LinuxSystemdInput) -> Self {
+        let mut policy = ToolPolicy::trusted();
+        policy.approval = ApprovalDecision::Required;
+        policy.execution_policy.approval = ApprovalRequirement::AskBeforeRunning;
+        Self {
+            id: None,
+            cwd: cwd.into(),
+            kind: ToolRequestKind::LinuxSystemd { input },
+            policy,
+        }
+    }
+
     pub fn with_policy(mut self, policy: ToolPolicy) -> Self {
         self.policy = policy;
         self
@@ -130,6 +143,9 @@ pub enum ToolRequestKind {
     LinuxApply {
         input: linux_apply::LinuxApplyInput,
     },
+    LinuxSystemd {
+        input: linux_systemd::LinuxSystemdInput,
+    },
     LinuxReadOnly {
         operation: String,
         arguments: Value,
@@ -149,6 +165,7 @@ impl ToolRequestKind {
             Self::ViewImage { .. } => ToolName::ViewImage,
             Self::LinuxPreview { .. } => ToolName::LinuxPreview,
             Self::LinuxApply { .. } => ToolName::LinuxApply,
+            Self::LinuxSystemd { .. } => ToolName::LinuxSystemd,
             Self::LinuxReadOnly { .. } => ToolName::LinuxReadOnly,
         }
     }
@@ -171,6 +188,11 @@ impl ToolRequestKind {
                 "linux_apply {}",
                 serde_json::to_string(input).unwrap_or_else(|_| "{}".to_string())
             )),
+            Self::LinuxSystemd { input } => Some(format!(
+                "systemctl --user {} {}",
+                input.action.as_str(),
+                input.unit
+            )),
             Self::LinuxReadOnly {
                 operation,
                 arguments,
@@ -192,6 +214,7 @@ pub enum ToolName {
     ViewImage,
     LinuxPreview,
     LinuxApply,
+    LinuxSystemd,
     LinuxReadOnly,
 }
 
@@ -208,6 +231,7 @@ impl ToolName {
             Self::ViewImage => "view_image",
             Self::LinuxPreview => "linux_preview",
             Self::LinuxApply => "linux_apply",
+            Self::LinuxSystemd => "linux_systemd",
             Self::LinuxReadOnly => "linux_readonly",
         }
     }
@@ -381,6 +405,8 @@ pub fn default_tool_registry() -> ToolRegistry {
         linux_preview_tool_spec(),
         #[cfg(target_os = "linux")]
         linux_apply_tool_spec(),
+        #[cfg(target_os = "linux")]
+        linux_systemd_tool_spec(),
         #[cfg(target_os = "linux")]
         linux_readonly_tool_spec(),
     ])
@@ -686,6 +712,16 @@ fn linux_apply_tool_spec() -> ToolSpec {
     )
 }
 
+#[cfg(target_os = "linux")]
+fn linux_systemd_tool_spec() -> ToolSpec {
+    ToolSpec::new(
+        ToolName::LinuxSystemd,
+        "Mutate a user-level systemd unit through fixed `systemctl --user` argv. Requires approval; only start, stop, restart, reload, enable, and disable are accepted.",
+        linux_systemd::parameters_schema(),
+        true,
+    )
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ToolRoute {
     pub name: ToolName,
@@ -954,6 +990,15 @@ pub enum ToolRuntimeEvent {
         exit_code: Option<i32>,
         truncated: bool,
     },
+    LinuxSystemd {
+        action: String,
+        unit: String,
+        status: String,
+        command: String,
+        exit_code: Option<i32>,
+        truncated: bool,
+        mutation: bool,
+    },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -1039,7 +1084,14 @@ impl ToolPolicy {
 
     pub fn evaluation_for(&self, request: &ToolRequest) -> PolicyEvaluation {
         let policy = self.execution_policy_for();
-        policy.evaluate(&request.cwd, request.kind.policy_command().as_deref())
+        match &request.kind {
+            ToolRequestKind::LinuxSystemd { .. } => policy.evaluate_with_risk(
+                &request.cwd,
+                request.kind.policy_command().as_deref(),
+                CommandRisk::ProcessControl,
+            ),
+            _ => policy.evaluate(&request.cwd, request.kind.policy_command().as_deref()),
+        }
     }
 
     fn decision_from_evaluation(evaluation: &PolicyEvaluation) -> ToolPolicyDecision {
@@ -1204,6 +1256,7 @@ impl ToolRuntime for ShellToolRuntime {
             | ToolRequestKind::MultiAgent { .. }
             | ToolRequestKind::LinuxPreview { .. }
             | ToolRequestKind::LinuxApply { .. }
+            | ToolRequestKind::LinuxSystemd { .. }
             | ToolRequestKind::LinuxReadOnly { .. } => Ok(ToolResponse::declined(
                 request.id,
                 "YunXi has registered this tool but the specialized runtime is not attached",
@@ -1419,6 +1472,17 @@ impl ToolRuntime for CompositeToolRuntime {
                     request.policy.execution_policy,
                     runtime_events,
                 );
+            }
+            ToolRequestKind::LinuxSystemd { input } => {
+                return linux_systemd::execute(
+                    request.id,
+                    &request.cwd,
+                    input,
+                    request.policy.execution_policy,
+                    control.cancellation_token(),
+                )
+                .await
+                .map(|response| response.with_runtime_events(runtime_events));
             }
             _ => return self.shell.execute_with_control(request, control).await,
         }?;

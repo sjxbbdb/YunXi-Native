@@ -206,6 +206,10 @@ pub enum ProviderToolCall {
         id: Option<String>,
         arguments_json: String,
     },
+    LinuxSystemd {
+        id: Option<String>,
+        arguments_json: String,
+    },
     LinuxReadOnly {
         id: Option<String>,
         operation: String,
@@ -257,6 +261,9 @@ impl From<ProviderToolCall> for ToolCall {
             }
             ProviderToolCall::LinuxApply { id, arguments_json } => {
                 Self::LinuxApply { id, arguments_json }
+            }
+            ProviderToolCall::LinuxSystemd { id, arguments_json } => {
+                Self::LinuxSystemd { id, arguments_json }
             }
             ProviderToolCall::LinuxReadOnly {
                 id,
@@ -2305,6 +2312,9 @@ fn provider_tool_call_request_json(tool_call: &ProviderToolCall, index: usize) -
         ProviderToolCall::LinuxApply { id, arguments_json } => {
             (id.as_deref(), "linux_apply", arguments_json.clone())
         }
+        ProviderToolCall::LinuxSystemd { id, arguments_json } => {
+            (id.as_deref(), "linux_systemd", arguments_json.clone())
+        }
         ProviderToolCall::LinuxReadOnly {
             id,
             operation,
@@ -2964,6 +2974,10 @@ fn parse_openai_tool_call(
             arguments_json: arguments.to_string(),
         }),
         "linux_apply" => Ok(ProviderToolCall::LinuxApply {
+            id,
+            arguments_json: arguments.to_string(),
+        }),
+        "linux_systemd" => Ok(ProviderToolCall::LinuxSystemd {
             id,
             arguments_json: arguments.to_string(),
         }),

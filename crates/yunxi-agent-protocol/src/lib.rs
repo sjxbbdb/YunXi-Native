@@ -396,6 +396,10 @@ pub enum ToolCall {
         id: Option<String>,
         arguments_json: String,
     },
+    LinuxSystemd {
+        id: Option<String>,
+        arguments_json: String,
+    },
     LinuxReadOnly {
         id: Option<String>,
         operation: String,
@@ -416,6 +420,7 @@ impl ToolCall {
             | Self::ViewImage { id, .. } => id.as_deref(),
             Self::LinuxPreview { id, .. } => id.as_deref(),
             Self::LinuxApply { id, .. } => id.as_deref(),
+            Self::LinuxSystemd { id, .. } => id.as_deref(),
             Self::LinuxReadOnly { id, .. } => id.as_deref(),
         }
     }
@@ -765,6 +770,17 @@ mod tests {
         let parsed = from_jsonl_line(&line).expect("parsed event");
 
         assert_eq!(parsed, event);
+    }
+
+    #[test]
+    fn linux_systemd_tool_call_round_trips_json() {
+        let call = ToolCall::LinuxSystemd {
+            id: Some("call-systemd".to_string()),
+            arguments_json: r#"{"action":"restart","unit":"demo.service"}"#.to_string(),
+        };
+        let encoded = serde_json::to_string(&call).expect("encode");
+        let decoded: ToolCall = serde_json::from_str(&encoded).expect("decode");
+        assert_eq!(decoded, call);
     }
 
     #[test]

@@ -150,6 +150,14 @@ fn approval_command_and_paths(request: &ToolRequest) -> (Option<String>, Vec<Pat
             )),
             Vec::new(),
         ),
+        ToolRequestKind::LinuxSystemd { input } => (
+            Some(format!(
+                "systemctl --user {} {}",
+                input.action.as_str(),
+                input.unit
+            )),
+            Vec::new(),
+        ),
         ToolRequestKind::LinuxReadOnly {
             operation,
             arguments,

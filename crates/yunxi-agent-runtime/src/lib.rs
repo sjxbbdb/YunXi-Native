@@ -4990,6 +4990,13 @@ fn tool_call_started_event(call: yunxi_agent_protocol::ToolCall) -> AgentEvent {
                 arguments_json: Some(arguments_json),
             }
         }
+        yunxi_agent_protocol::ToolCall::LinuxSystemd { id, arguments_json } => {
+            AgentEvent::ToolCallStarted {
+                id,
+                name: "linux_systemd".to_string(),
+                arguments_json: Some(arguments_json),
+            }
+        }
         yunxi_agent_protocol::ToolCall::LinuxReadOnly {
             id,
             operation,
@@ -5045,6 +5052,9 @@ fn provider_tool_call_from_protocol(call: ToolCall) -> AgentResult<ProviderToolC
         }
         ToolCall::LinuxApply { id, arguments_json } => {
             Ok(ProviderToolCall::LinuxApply { id, arguments_json })
+        }
+        ToolCall::LinuxSystemd { id, arguments_json } => {
+            Ok(ProviderToolCall::LinuxSystemd { id, arguments_json })
         }
         ToolCall::LinuxReadOnly {
             id,
@@ -5113,6 +5123,10 @@ fn provider_tool_call_from_function(
             id,
             arguments_json: arguments.to_string(),
         }),
+        "linux_systemd" => Ok(ProviderToolCall::LinuxSystemd {
+            id,
+            arguments_json: arguments.to_string(),
+        }),
         "linux_readonly" => Ok(ProviderToolCall::LinuxReadOnly {
             id,
             operation: required_json_string(&args, "operation")?,
@@ -5154,6 +5168,7 @@ fn provider_tool_call_id(call: &ProviderToolCall) -> Option<&str> {
         | ProviderToolCall::ViewImage { id, .. } => id.as_deref(),
         ProviderToolCall::LinuxPreview { id, .. } => id.as_deref(),
         ProviderToolCall::LinuxApply { id, .. } => id.as_deref(),
+        ProviderToolCall::LinuxSystemd { id, .. } => id.as_deref(),
         ProviderToolCall::LinuxReadOnly { id, .. } => id.as_deref(),
     }
 }
@@ -5170,6 +5185,7 @@ fn ensure_provider_tool_call_id(call: &mut ProviderToolCall, fallback: String) -
         | ProviderToolCall::ViewImage { id, .. } => id,
         ProviderToolCall::LinuxPreview { id, .. } => id,
         ProviderToolCall::LinuxApply { id, .. } => id,
+        ProviderToolCall::LinuxSystemd { id, .. } => id,
         ProviderToolCall::LinuxReadOnly { id, .. } => id,
     };
     id.get_or_insert(fallback).clone()
@@ -5541,6 +5557,22 @@ fn map_tool_call(
                 policy,
             }
         }
+        ProviderToolCall::LinuxSystemd { id, arguments_json } => {
+            let input = serde_json::from_str(&arguments_json).unwrap_or_else(|_| {
+                yunxi_agent_tools::linux_systemd::LinuxSystemdInput {
+                    action: yunxi_agent_tools::linux_systemd::SystemdAction::Start,
+                    unit: String::new(),
+                }
+            });
+            policy.approval = ApprovalDecision::Required;
+            policy.execution_policy.approval = ApprovalRequirement::AskBeforeRunning;
+            ToolRequest {
+                id,
+                cwd,
+                kind: ToolRequestKind::LinuxSystemd { input },
+                policy,
+            }
+        }
         ProviderToolCall::LinuxReadOnly {
             id,
             operation,
@@ -5600,6 +5632,11 @@ fn tool_request_command(request: &ToolRequest) -> Option<String> {
         ToolRequestKind::LinuxApply { input } => Some(format!(
             "linux_apply {}",
             serde_json::to_string(input).unwrap_or_else(|_| "{}".to_string())
+        )),
+        ToolRequestKind::LinuxSystemd { input } => Some(format!(
+            "systemctl --user {} {}",
+            input.action.as_str(),
+            input.unit
         )),
         ToolRequestKind::LinuxReadOnly {
             operation,
@@ -5957,6 +5994,23 @@ where
                 })
                 .await?;
             }
+            ToolRuntimeEvent::LinuxSystemd {
+                action,
+                unit,
+                status,
+                command,
+                exit_code,
+                truncated,
+                mutation,
+            } => {
+                sink.emit(AgentEvent::Reasoning {
+                    content: format!(
+                        "Linux systemd mutation: action={action}, unit={unit}, status={status}, mutation={mutation}, exit_code={}, truncated={truncated}, command={command}",
+                        exit_code.map_or_else(|| "none".to_string(), |code| code.to_string())
+                    ),
+                })
+                .await?;
+            }
         }
     }
     Ok(())
@@ -6102,6 +6156,14 @@ where
             })
             .await
         }
+        ToolRequestKind::LinuxSystemd { input } => {
+            sink.emit(AgentEvent::ToolCallStarted {
+                id: request.id.clone(),
+                name: "linux_systemd".to_string(),
+                arguments_json: serde_json::to_string(input).ok(),
+            })
+            .await
+        }
         ToolRequestKind::LinuxReadOnly {
             operation,
             arguments,
@@ -6227,6 +6289,15 @@ where
             sink.emit(AgentEvent::ToolCallCompleted {
                 id: response.id.clone(),
                 name: "linux_apply".to_string(),
+                output: render_tool_response(response),
+                status: map_tool_response_status(response),
+            })
+            .await
+        }
+        ToolRequestKind::LinuxSystemd { input } => {
+            sink.emit(AgentEvent::ToolCallCompleted {
+                id: response.id.clone(),
+                name: format!("linux_systemd:{}", input.action.as_str()),
                 output: render_tool_response(response),
                 status: map_tool_response_status(response),
             })

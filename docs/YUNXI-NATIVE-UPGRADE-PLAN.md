@@ -330,8 +330,14 @@ daemon 还对 `Hello` 与握手后的首个请求设置 5 秒超时，防止半�
 
 随后接入 `linux_apply`：以 typed write/delete/move 承载工作区 regular-file 变更，复用
 Approval/Sandbox，不接受任意 shell；在 `.yunxi/undo` 写入 journal/备份并提供 `undo()`，
-执行或 journal 提交失败会回滚。systemd、package、network 等高风险 mutation 仍只做预览，
-不因文件变更工具而扩大执行边界。
+执行或 journal 提交失败会回滚。不因文件变更工具而扩大执行边界。
+
+当前已另行接入 `linux_systemd` 高风险 mutation ToolSpec：只接受六种 typed action 和
+token-safe unit，固定执行 `systemctl --user <action> <unit>`，沿用 Approval/Escalation，
+使用 DirectProcessRunner/ExecManager 的有界输出与取消，并返回明确的 unavailable/failed/
+cancelled 结构化结果和 `mutation: true` 审计事件。`yunxi-agent-linux/tests/linux_systemd_smoke.sh`
+通过临时 PATH fake systemctl 校验 argv，不触碰真实 systemd；system scope、shell、任意
+参数和未批准执行均被拒绝。
 
 **门槛**：每个工具有 schema、权限矩阵、错误恢复、单元测试和至少一个真实 Linux 验收脚本。
 

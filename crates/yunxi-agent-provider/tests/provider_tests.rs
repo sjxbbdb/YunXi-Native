@@ -240,7 +240,12 @@ fn openai_request_json_uses_yunxi_provider_messages() {
     #[cfg(target_os = "linux")]
     let expected_tool_names = expected_tool_names
         .into_iter()
-        .chain(["linux_preview", "linux_apply", "linux_readonly"])
+        .chain([
+            "linux_preview",
+            "linux_apply",
+            "linux_systemd",
+            "linux_readonly",
+        ])
         .collect::<Vec<_>>();
     assert_eq!(tool_names, expected_tool_names);
     assert_eq!(

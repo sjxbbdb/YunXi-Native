@@ -12,6 +12,8 @@ use yunxi_agent_tools::linux_apply::LinuxApplyInput;
 use yunxi_agent_tools::linux_preview::{
     LinuxMutationIntent, LinuxPreviewInput, LinuxPreviewStatus,
 };
+#[cfg(target_os = "linux")]
+use yunxi_agent_tools::linux_systemd::{LinuxSystemdInput, SystemdAction};
 use yunxi_agent_tools::{
     CompositeToolRuntime, NoopToolRuntime, ShellToolRuntime, ToolFileChangeKind, ToolName,
     ToolPolicy, ToolPolicyDecision, ToolRegistry, ToolRequest, ToolRequestKind, ToolRouteStatus,
@@ -54,6 +56,7 @@ fn default_tool_registry_exposes_model_visible_specs() {
         .chain([
             ToolName::LinuxPreview,
             ToolName::LinuxApply,
+            ToolName::LinuxSystemd,
             ToolName::LinuxReadOnly,
         ])
         .collect::<Vec<_>>();
@@ -66,6 +69,93 @@ fn default_tool_registry_exposes_model_visible_specs() {
         registry.spec(ToolName::Patch).expect("patch").parameters["required"],
         serde_json::json!(["op", "path"])
     );
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn linux_systemd_requires_approval_before_execution() {
+    let cwd = tempfile::tempdir().expect("tempdir");
+    let mut config = AgentConfig::new(cwd.path());
+    config.approval_mode = ApprovalMode::OnRequest;
+    config.sandbox_mode = SandboxMode::DangerFullAccess;
+    let response = CompositeToolRuntime::default()
+        .execute(
+            ToolRequest::linux_systemd(
+                cwd.path(),
+                LinuxSystemdInput {
+                    action: SystemdAction::Restart,
+                    unit: "demo.service".into(),
+                },
+            )
+            .with_policy(ToolPolicy::from_config(&config)),
+        )
+        .await
+        .expect("response");
+    assert_eq!(response.status, ToolStatus::Declined);
+    assert!(response.lifecycle_events.is_empty());
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn linux_systemd_fake_runner_records_mutation_audit() {
+    use std::os::unix::fs::PermissionsExt;
+    use std::sync::{Mutex, OnceLock};
+    static PATH_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    let _path_guard = PATH_LOCK
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .expect("path lock");
+    let cwd = tempfile::tempdir().expect("tempdir");
+    let script = cwd.path().join("systemctl");
+    let marker = cwd.path().join("argv");
+    std::fs::write(
+        &script,
+        format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$@\" > '{}'\n",
+            marker.display()
+        ),
+    )
+    .expect("script");
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    let old_path = std::env::var_os("PATH");
+    unsafe {
+        std::env::set_var(
+            "PATH",
+            format!(
+                "{}:{}",
+                cwd.path().display(),
+                old_path.as_deref().unwrap_or_default().to_string_lossy()
+            ),
+        );
+    }
+    let response = CompositeToolRuntime::default()
+        .execute(
+            ToolRequest::linux_systemd(
+                cwd.path(),
+                LinuxSystemdInput {
+                    action: SystemdAction::Restart,
+                    unit: "demo.service".into(),
+                },
+            )
+            .with_policy(ToolPolicy::trusted()),
+        )
+        .await
+        .expect("response");
+    if let Some(path) = old_path {
+        unsafe {
+            std::env::set_var("PATH", path);
+        }
+    } else {
+        unsafe {
+            std::env::remove_var("PATH");
+        }
+    }
+    assert_eq!(response.status, ToolStatus::Completed);
+    assert_eq!(
+        std::fs::read_to_string(marker).unwrap(),
+        "--user\nrestart\ndemo.service\n"
+    );
+    assert!(response.runtime_events.iter().any(|event| matches!(event, ToolRuntimeEvent::LinuxSystemd { mutation: true, status, .. } if status == "ok")));
 }
 
 #[test]
@@ -94,7 +184,12 @@ fn default_tool_registry_exports_openai_function_schema() {
     #[cfg(target_os = "linux")]
     let expected = expected
         .into_iter()
-        .chain(["linux_preview", "linux_apply", "linux_readonly"])
+        .chain([
+            "linux_preview",
+            "linux_apply",
+            "linux_systemd",
+            "linux_readonly",
+        ])
         .collect::<Vec<_>>();
     assert_eq!(names, expected);
     assert_eq!(tools[0]["type"], "function");

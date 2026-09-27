@@ -144,6 +144,16 @@ typed mutation intent，只返回风险、审批、沙盒、目标和 side-effec
 `ExecCommand`、启动进程或写入文件。即使当前策略要求审批/升级，预览也会把该结论放在
 结构化计划中，而不是提前变成无上下文的拒绝。
 
+### 用户级 systemd 变更
+
+Runtime 还注册了独立的 `linux_systemd` ToolSpec，用于经过审批的用户级服务变更。
+输入只有 `start`、`stop`、`restart`、`reload`、`enable`、`disable` 和 token-safe unit；
+执行始终是固定的 `systemctl --user <action> <unit>` argv，不接受 system scope、任意
+参数或 shell 文本。工具沿用 ToolPolicy/Approval/Escalation，未获批准不会执行；进程
+通过 DirectProcessRunner/ExecManager 执行，输出有界并支持取消。缺少 `systemctl`、非零
+退出或取消会返回结构化失败及 `mutation: true` 审计事件，不会误报成功。Linux smoke
+使用 PATH 下临时 fake `systemctl` 断言 argv，不触碰真实 systemd。
+
 ### 类型化工作区文件变更
 
 Linux Runtime 同时注册 `linux_apply` ToolSpec。它只接受 `write_file`、`delete_path`、
