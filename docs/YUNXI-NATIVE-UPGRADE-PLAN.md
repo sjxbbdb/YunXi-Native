@@ -491,6 +491,11 @@ Embedding 计算与批量写入之间若发生 chunk 更新，替换事务会再
 它始终固定执行 `<allowlisted-command> --help`，不接受路径、参数或任意可执行文件，
 并与 `man` 采集共用 provenance、输出上限和 `ingest_text`；后续若扩展名单必须逐项
 审查副作用与版本差异。
+采集 metadata 同时记录 `risk_level=read_only_reference`（采集过程的风险）与
+`risk_class`（被描述命令的语义风险）：`read_only`、`mixed`、`mutating`、
+`destructive` 或 `unknown`。后者只是 Planner 的可审计提示，不能替代 ToolPolicy、
+Approval 或 Sandbox；例如 `rm` 的帮助文档会标为 `destructive`，而 `cat` 标为
+`read_only`。
 真实 Linux 验收脚本 `yunxi-agent-linux/tests/knowledge_help_smoke.sh` 会逐项检查这些
 命令的文档身份、source version、固定 `[command, --help]` argv，以及缺少工具时的
 结构化状态，并拒绝带路径、参数或 shell 语法的伪命令。

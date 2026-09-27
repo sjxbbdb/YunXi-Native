@@ -117,6 +117,7 @@
 - 知识 worker：已有单 workspace `--cwd` 与显式多 workspace `--workspace` fleet；fleet 只处理调用方明确列出的工作区，跨轮 round-robin、独立 XDG 游标状态、单工作区故障隔离和脱敏 JSON 已覆盖；daemon 级自动发现、告警和统一策略仍待实现。
 - 知识导入：project/private 支持 stdin 与显式单文件（UTF-8 文本/Markdown）导入；文件入口限定工作区边界、拒绝 `.yunxi` 状态目录和超大文件，不做目录扫描。
 - 知识队列诊断：已有只读 `knowledge-worker-status`，同一快照观察 active/staging 队列，区分就绪、退避、失败、耗尽和过期 lease；不会创建/迁移数据库或触发 worker。
+- 知识风险 provenance：`man/help` 文档同时记录采集风险 `risk_level` 与被描述命令的 `risk_class`，并由 Planner 诊断透传；它只做提示，不能绕过 Approval/Sandbox。
 - Unix socket daemon：已补齐协议版本、frame 上限、单例锁、Ping、attached Cancel、完成回合有界 Follow，以及 detached output-only active Follow。
 - daemon detached Cancel、持久化 run 和跨重启续跑：待实现。
 - Miyu Linux 专用 Skills：待评估，不在核心 Runtime 中硬编码。

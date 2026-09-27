@@ -151,6 +151,7 @@ with tempfile.TemporaryDirectory(prefix="yunxi-help-smoke-") as directory:
         "collector": "linux.command_help",
         "command": "cat",
         "risk_level": "read_only_reference",
+        "risk_class": "read_only",
         "source_type": "command_help",
     }, metadata
 

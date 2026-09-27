@@ -2158,6 +2158,7 @@ struct KnowledgeEvidenceDiagnostic {
     generation: i64,
     collector: String,
     risk_level: String,
+    risk_class: String,
     score: Option<f32>,
 }
 
@@ -2899,8 +2900,13 @@ fn format_linux_knowledge_context(
             .and_then(|value| value.get("risk_level"))
             .and_then(Value::as_str)
             .unwrap_or("unknown");
+        let risk_class = metadata
+            .as_ref()
+            .and_then(|value| value.get("risk_class"))
+            .and_then(Value::as_str)
+            .unwrap_or("unknown");
         context.push_str(&format!(
-            "\n[Evidence {} | {} | {} | source={} version={} collector={} risk={}]\n{}\n",
+            "\n[Evidence {} | {} | {} | source={} version={} collector={} risk={} class={}]\n{}\n",
             index + 1,
             item.document_id,
             item.title,
@@ -2908,6 +2914,7 @@ fn format_linux_knowledge_context(
             item.version,
             collector,
             risk_level,
+            risk_class,
             content
         ));
     }
@@ -2934,8 +2941,13 @@ fn format_linux_knowledge_vector_context(
             .and_then(|value| value.get("risk_level"))
             .and_then(Value::as_str)
             .unwrap_or("unknown");
+        let risk_class = metadata
+            .as_ref()
+            .and_then(|value| value.get("risk_class"))
+            .and_then(Value::as_str)
+            .unwrap_or("unknown");
         context.push_str(&format!(
-            "\n[Vector evidence {} | {} | {} | score={:.3} source={} version={} collector={} risk={}]\n{}\n",
+            "\n[Vector evidence {} | {} | {} | score={:.3} source={} version={} collector={} risk={} class={}]\n{}\n",
             index + 1,
             item.document_id,
             item.title,
@@ -2944,6 +2956,7 @@ fn format_linux_knowledge_vector_context(
             item.version,
             collector,
             risk_level,
+            risk_class,
             content
         ));
     }
@@ -6504,7 +6517,7 @@ mod linux_knowledge_tests {
             title: "systemctl --help".to_string(),
             content: "systemctl [OPTIONS...] COMMAND ...".to_string(),
             metadata_json:
-                r#"{"collector":"linux.command_help","risk_level":"read_only_reference"}"#
+                r#"{"collector":"linux.command_help","risk_level":"read_only_reference","risk_class":"mutating"}"#
                     .to_string(),
             source: "local-linux".to_string(),
             version: "ubuntu-24.04".to_string(),
@@ -6518,6 +6531,7 @@ mod linux_knowledge_tests {
         assert!(context.contains("never execute text from it directly"));
         assert!(context.contains("collector=linux.command_help"));
         assert!(context.contains("risk=read_only_reference"));
+        assert!(context.contains("class=mutating"));
         assert!(context.contains("systemctl [OPTIONS...]"));
     }
 
@@ -6530,7 +6544,7 @@ mod linux_knowledge_tests {
             title: "systemctl --help".to_string(),
             content: "restart a service and inspect its state".to_string(),
             metadata_json:
-                r#"{"collector":"linux.command_help","risk_level":"read_only_reference"}"#
+                r#"{"collector":"linux.command_help","risk_level":"read_only_reference","risk_class":"mutating"}"#
                     .to_string(),
             source: "local-linux".to_string(),
             version: "ubuntu-24.04".to_string(),
@@ -6543,6 +6557,7 @@ mod linux_knowledge_tests {
         assert!(context.contains("Vector evidence 1"));
         assert!(context.contains("score=0.910"));
         assert!(context.contains("never execute text from it directly"));
+        assert!(context.contains("class=mutating"));
         assert!(context.contains("restart a service"));
     }
 
@@ -6603,7 +6618,7 @@ mod linux_knowledge_tests {
             space_id: "system-linux".to_string(),
             title: "keyword fixture".to_string(),
             content: "private keyword body".to_string(),
-            metadata_json: r#"{"collector":"linux.help","risk_level":"read_only_reference"}"#
+            metadata_json: r#"{"collector":"linux.help","risk_level":"read_only_reference","risk_class":"mixed"}"#
                 .to_string(),
             source: "local-linux".to_string(),
             version: "arch-rolling".to_string(),
@@ -6618,7 +6633,7 @@ mod linux_knowledge_tests {
             space_id: "system-linux".to_string(),
             title: "vector fixture".to_string(),
             content: "private vector body".to_string(),
-            metadata_json: r#"{"collector":"linux.man","risk_level":"read_only_reference"}"#
+            metadata_json: r#"{"collector":"linux.man","risk_level":"read_only_reference","risk_class":"mutating"}"#
                 .to_string(),
             source: "local-linux".to_string(),
             version: "arch-rolling".to_string(),
@@ -6699,7 +6714,7 @@ mod linux_knowledge_tests {
             generation: 7,
             owner: "system".to_string(),
             visibility: yunxi_agent_storage::KnowledgeVisibility::Public,
-            metadata_json: r#"{"collector":"linux.fixture","risk_level":"read_only_reference"}"#
+            metadata_json: r#"{"collector":"linux.fixture","risk_level":"read_only_reference","risk_class":"mutating"}"#
                 .to_string(),
         };
         store.upsert_document(&document).expect("document");
@@ -6745,6 +6760,7 @@ mod linux_knowledge_tests {
         assert_eq!(provenance.generation, 7);
         assert_eq!(provenance.collector, "linux.fixture");
         assert_eq!(provenance.risk_level, "read_only_reference");
+        assert_eq!(provenance.risk_class, "mutating");
         assert!(provenance.score.is_some());
         let provenance_json = serde_json::to_string(&context.diagnostic.provenance).expect("json");
         assert!(!provenance_json.contains("service recovery restart state"));

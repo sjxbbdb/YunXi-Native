@@ -112,6 +112,7 @@ fn knowledge_evidence_diagnostic(
         generation: item.generation,
         collector: metadata_label(metadata.as_ref(), "collector"),
         risk_level: metadata_label(metadata.as_ref(), "risk_level"),
+        risk_class: metadata_label(metadata.as_ref(), "risk_class"),
         score,
     }
 }
@@ -130,6 +131,7 @@ fn knowledge_vector_evidence_diagnostic(
         generation: item.generation,
         collector: metadata_label(metadata.as_ref(), "collector"),
         risk_level: metadata_label(metadata.as_ref(), "risk_level"),
+        risk_class: metadata_label(metadata.as_ref(), "risk_class"),
         score: Some(item.score),
     }
 }

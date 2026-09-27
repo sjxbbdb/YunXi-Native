@@ -21,6 +21,20 @@ use yunxi_agent_storage::{
 pub const MAX_OUTPUT_BYTES: usize = 64 * 1024;
 const MAX_TOKEN_CHARS: usize = 128;
 
+/// Classify the command described by a knowledge document, not the safety of
+/// the read-only collection process itself.  This label is advisory metadata
+/// for planning and provenance; execution still goes through ToolPolicy,
+/// Approval, and Sandbox.
+pub fn command_risk_class(command: &str) -> &'static str {
+    match command {
+        "cat" | "find" | "grep" | "ip" | "ls" => "read_only",
+        "rm" => "destructive",
+        "cp" | "pacman" | "sed" | "systemctl" | "tar" => "mutating",
+        "awk" | "bash" | "fish" | "git" => "mixed",
+        _ => "unknown",
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ManPageRequest {
     pub topic: String,
@@ -200,6 +214,7 @@ pub fn document_for(request: &ManPageRequest) -> KnowledgeDocument {
             "collector": "linux.man",
             "argv": man_argv(request),
             "risk_level": "read_only_reference",
+            "risk_class": command_risk_class(&request.topic),
             "source_type": "man",
             "topic": request.topic,
             "section": request.section,
@@ -222,6 +237,7 @@ fn help_document_for(request: &CommandHelpRequest) -> KnowledgeDocument {
             "collector": "linux.command_help",
             "argv": help_argv(request),
             "risk_level": "read_only_reference",
+            "risk_class": command_risk_class(&request.command),
             "source_type": "command_help",
             "command": request.command,
         })
@@ -482,6 +498,7 @@ mod tests {
             serde_json::from_str(&document.metadata_json).expect("metadata json");
         assert_eq!(metadata["collector"], "linux.man");
         assert_eq!(metadata["risk_level"], "read_only_reference");
+        assert_eq!(metadata["risk_class"], "mixed");
         assert_eq!(metadata["argv"][0], "man");
     }
 
@@ -506,6 +523,7 @@ mod tests {
         .expect("help metadata json");
         assert_eq!(metadata["collector"], "linux.command_help");
         assert_eq!(metadata["risk_level"], "read_only_reference");
+        assert_eq!(metadata["risk_class"], "mutating");
         assert_eq!(metadata["argv"][1], "--help");
         let invalid = CommandHelpRequest {
             command: "./script".to_string(),
@@ -541,6 +559,15 @@ mod tests {
             };
             assert!(validate_help_request(&request).is_err(), "{command}");
         }
+    }
+
+    #[test]
+    fn command_risk_class_is_stable_and_advisory() {
+        assert_eq!(command_risk_class("ls"), "read_only");
+        assert_eq!(command_risk_class("rm"), "destructive");
+        assert_eq!(command_risk_class("systemctl"), "mutating");
+        assert_eq!(command_risk_class("git"), "mixed");
+        assert_eq!(command_risk_class("unknown-command"), "unknown");
     }
 
     #[test]
