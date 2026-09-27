@@ -335,6 +335,67 @@ async fn linux_process_fake_kill_records_fixed_argv_and_audit() {
 
 #[cfg(all(target_os = "linux", unix))]
 #[tokio::test]
+async fn linux_process_cancellation_returns_structured_report_and_audit() {
+    use std::os::unix::fs::PermissionsExt;
+    use std::time::Duration;
+
+    let cwd = tempfile::tempdir().expect("tempdir");
+    let script = cwd.path().join("kill");
+    let started = cwd.path().join("started");
+    std::fs::write(
+        &script,
+        format!(
+            "#!/bin/sh\nprintf started > '{}'\nexec /bin/sleep 30\n",
+            started.display()
+        ),
+    )
+    .expect("script");
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+
+    let token = AgentCancellationToken::new();
+    let cancel = token.clone();
+    let task = tokio::spawn(async move {
+        yunxi_agent_tools::linux_process::execute_with_env(
+            Some("cancel-process".into()),
+            cwd.path(),
+            LinuxProcessInput::Signal {
+                pid: 42,
+                signal: ProcessSignal::Term,
+            },
+            ToolPolicy::trusted().execution_policy,
+            token,
+            [("PATH".to_string(), cwd.path().display().to_string())]
+                .into_iter()
+                .collect(),
+        )
+        .await
+    });
+
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while !started.exists() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("fake kill started");
+    cancel.cancel();
+
+    let response = task.await.expect("join").expect("response");
+    let report: serde_json::Value = serde_json::from_str(&response.output.unwrap()).unwrap();
+    assert_eq!(report["status"], "cancelled", "report={report}");
+    assert_eq!(report["cancelled"], true, "report={report}");
+    assert!(response.runtime_events.iter().any(|event| matches!(
+        event,
+        ToolRuntimeEvent::LinuxProcess {
+            mutation: true,
+            status,
+            ..
+        } if status == "cancelled"
+    )));
+}
+
+#[cfg(all(target_os = "linux", unix))]
+#[tokio::test]
 async fn linux_process_fake_renice_rejects_injection_and_records_argv() {
     use std::os::unix::fs::PermissionsExt;
     let cwd = tempfile::tempdir().expect("tempdir");
