@@ -108,6 +108,42 @@ set -e
 [[ "$DUPLICATE_RC" -ne 0 ]] || { echo "duplicate worker daemon unexpectedly succeeded" >&2; exit 1; }
 grep -q '不能向活动 daemon 附加 knowledge worker' "$TMP_ROOT/duplicate.out"
 
+# A damaged knowledge database is isolated to the worker. The daemon must keep
+# its Unix socket alive and record a redacted degraded state rather than exit.
+printf '%s' 'not a sqlite database' >"$DB"
+sleep 1
+python3 - "$SOCKET" <<'PY'
+import json, socket, struct, sys
+path = sys.argv[1]
+with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
+    sock.settimeout(5)
+    sock.connect(path)
+    def send(value):
+        payload = json.dumps(value, separators=(",", ":")).encode()
+        sock.sendall(struct.pack(">I", len(payload)) + payload)
+    def recv():
+        header = sock.recv(4)
+        assert len(header) == 4, header
+        size = struct.unpack(">I", header)[0]
+        payload = bytearray()
+        while len(payload) < size:
+            chunk = sock.recv(size - len(payload))
+            assert chunk, "daemon closed before response"
+            payload.extend(chunk)
+        return json.loads(payload)
+    send({"kind":"hello","protocol_version":2,"client":"daemon-knowledge-corrupt-smoke","capabilities":["ping"]})
+    assert recv()["kind"] == "hello_ack"
+    send({"kind":"ping","request_id":"corrupt-ping"})
+    assert recv() == {"kind":"pong","request_id":"corrupt-ping"}
+PY
+for _ in $(seq 1 40); do
+  if grep -l '"last_status": "degraded"' "$XDG_STATE_HOME"/yunxi/knowledge-worker/*.json >/dev/null 2>&1; then
+    break
+  fi
+  sleep 0.1
+done
+grep -l '"last_status": "degraded"' "$XDG_STATE_HOME"/yunxi/knowledge-worker/*.json >/dev/null
+
 MEMORY_AFTER="$(sha256sum "$MEMORY_FILE" | awk '{print $1}')"
 [[ "$MEMORY_BEFORE" == "$MEMORY_AFTER" ]] || { echo "memory file changed" >&2; exit 1; }
 kill -TERM "$DAEMON_PID"
