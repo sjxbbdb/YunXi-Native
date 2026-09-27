@@ -261,7 +261,7 @@ bash yunxi-agent-linux/tests/shell_prompt_cancel_smoke.sh ./target/release/yunxi
 优先放在 `$XDG_RUNTIME_DIR/yunxi/yunxi.sock`，否则放在 `$XDG_STATE_HOME/yunxi/run/yunxi.sock`，
 目录为 0700、socket 为 0600。daemon 只允许当前用户通过本地 socket 访问。
 
-IPC 已提供有界的完成回合回放：`Turn` 会先返回 `run_accepted`，随后可见输出以 `event(run_id, seq, frame)` 发送；客户端重连后使用 `follow(run_id, after_seq)` 获取缺失事件。回放按回合数、事件数和事件总字节数限制，只保留 daemon 生命周期内最近的有限回合；活动回合、daemon 重启后的 run 或已淘汰游标会明确返回 `resync_required`，不伪装成断线续跑。
+IPC 已提供有界的回合回放：`Turn` 会先返回 `run_accepted`，随后可见输出以 `event(run_id, seq, frame)` 发送；客户端重连后使用 `follow(run_id, after_seq)` 获取缺失事件。`Turn` 的 `delivery` 默认是 `attached`（兼容旧客户端，连接断开会取消并丢弃回合）；显式指定 `detached_output_only` 后，daemon 会把运行与 Unix socket 解耦，客户端可以断开，再用 active Follow 接收 backlog+live 事件直到 `Done`。detached 模式只发布 `Thread`、`Message`、`Done`，审批和 user-input 请求会在 runtime 内明确拒绝，不发送可恢复 prompt。回放按回合数、事件数和事件总字节数限制；未知 run、过期游标或 active Follow lag 会返回结构化 `resync_required`。detached cancel 不在本切片范围内。
 
 在进入 Runtime 之前，daemon 还会对 `Turn` 的语义字段做独立上限校验，避免合法的大 frame
 被当作无限大的提示词或路径继续处理：`prompt` ≤ 64 KiB、`cwd` ≤ 4 KiB、`request_id`

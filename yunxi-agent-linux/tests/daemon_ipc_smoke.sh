@@ -116,7 +116,7 @@ def hello(sock):
     assert frame["kind"] == "hello_ack", frame
     assert frame["protocol_version"] == protocol_version, frame
     assert frame["max_frame_bytes"] == 24 * 1024 * 1024, frame
-    assert {"ping", "turn", "cancel", "follow_resync", "follow_replay"}.issubset(
+    assert {"ping", "turn", "cancel", "follow_resync", "follow_replay", "follow_active", "detached_output_only"}.issubset(
         frame["capabilities"]
     ), frame
 
@@ -168,6 +168,50 @@ with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
     error = recv(sock)
     assert error["kind"] == "error", error
     assert "--offline" in error["message"] and "--live" in error["message"], error
+
+# Detached output-only runs do not depend on the originating socket. Close the
+# client immediately after acceptance, then Follow from a fresh connection.
+detached_run_id = None
+with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
+    sock.settimeout(8)
+    sock.connect(socket_path)
+    hello(sock)
+    send(
+        sock,
+        {
+            "kind": "turn",
+            "request_id": "detached-1",
+            "cwd": "/tmp",
+            "prompt": "detached smoke",
+            "session_id": None,
+            "offline": True,
+            "live": False,
+            "provider": None,
+            "model": None,
+            "delivery": "detached_output_only",
+        },
+    )
+    accepted = recv(sock)
+    assert accepted["kind"] == "run_accepted", accepted
+    detached_run_id = accepted["run_id"]
+
+with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
+    sock.settimeout(8)
+    sock.connect(socket_path)
+    hello(sock)
+    send(sock, {"kind": "follow", "run_id": detached_run_id, "after_seq": 0})
+    detached_events = []
+    while True:
+        frame = recv(sock)
+        if frame["kind"] == "resync_required":
+            raise AssertionError(frame)
+        assert frame["kind"] == "event", frame
+        assert frame["run_id"] == detached_run_id, frame
+        assert frame["frame"]["kind"] in {"thread", "message", "done"}, frame
+        detached_events.append(frame)
+        if frame["frame"]["kind"] == "done":
+            break
+    assert detached_events, detached_events
 
 # The offline static runtime gives the replay ring a completed, credential-free
 # run.  Reconnect by run_id and verify that the numbered event sequence is

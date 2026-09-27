@@ -73,6 +73,29 @@ impl AgentRunControl {
         )
     }
 
+    /// Create a stream that publishes runtime events but cannot suspend on an
+    /// interactive approval or user-input request. Hosts such as detached IPC
+    /// runs use this mode so interactive tools are declined by the runtime
+    /// rather than becoming orphaned prompts after the client disconnects.
+    pub fn streaming_output_only() -> (Self, AgentRunStreamReceiver) {
+        let (event_tx, events) = mpsc::unbounded_channel();
+        let (_approval_tx, approvals) = mpsc::unbounded_channel();
+        let (_user_input_tx, user_inputs) = mpsc::unbounded_channel();
+        (
+            Self {
+                event_tx: Some(event_tx),
+                approval_tx: None,
+                user_input_tx: None,
+                cancellation_token: AgentCancellationToken::new(),
+            },
+            AgentRunStreamReceiver {
+                events,
+                approvals,
+                user_inputs,
+            },
+        )
+    }
+
     pub fn with_cancellation_token(mut self, cancellation_token: AgentCancellationToken) -> Self {
         self.cancellation_token = cancellation_token;
         self
@@ -152,5 +175,17 @@ impl AgentRunControl {
             return Ok(None);
         }
         Ok(response.await.ok())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::AgentRunControl;
+
+    #[test]
+    fn output_only_stream_cannot_suspend_for_interactive_requests() {
+        let (control, _stream) = AgentRunControl::streaming_output_only();
+        assert!(!control.has_interactive_approval());
+        assert!(!control.has_interactive_user_input());
     }
 }

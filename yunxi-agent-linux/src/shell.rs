@@ -34,7 +34,7 @@ use tokio::net::{UnixListener, UnixStream};
 #[cfg(unix)]
 use tokio::signal::unix::{Signal, SignalKind, signal};
 #[cfg(unix)]
-use tokio::sync::{Mutex, mpsc};
+use tokio::sync::{Mutex, broadcast, mpsc};
 #[cfg(unix)]
 use tokio::time::sleep;
 #[cfg(unix)]
@@ -2112,6 +2112,9 @@ enum ClientFrame {
         live: bool,
         provider: Option<String>,
         model: Option<String>,
+        /// The legacy/default delivery is attached: disconnect cancels the run.
+        #[serde(default)]
+        delivery: DeliveryMode,
     },
     Cancel {
         request_id: String,
@@ -2138,6 +2141,15 @@ enum ClientFrame {
         id: Option<String>,
         value: Option<String>,
     },
+}
+
+#[cfg(unix)]
+#[derive(Debug, Clone, Copy, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum DeliveryMode {
+    #[default]
+    Attached,
+    DetachedOutputOnly,
 }
 
 #[cfg(unix)]
@@ -2202,6 +2214,8 @@ const REPLAY_MAX_EVENTS_PER_RUN: usize = 64;
 
 #[cfg(unix)]
 const REPLAY_MAX_BYTES_PER_RUN: usize = 2 * 1024 * 1024;
+#[cfg(unix)]
+const REPLAY_LIVE_CHANNEL_CAPACITY: usize = 128;
 
 /// An event retained for a completed run. Only user-visible output is kept;
 /// approvals and user-input prompts are intentionally excluded because they
@@ -2215,19 +2229,25 @@ struct ReplayEvent {
 }
 
 #[cfg(unix)]
-#[derive(Debug, Default)]
+#[derive(Debug)]
 struct ReplayRun {
     next_seq: u64,
     events: VecDeque<ReplayEvent>,
     event_bytes: usize,
     complete: bool,
+    live_tx: broadcast::Sender<ReplayEvent>,
+    active_follow_allowed: bool,
 }
 
 #[cfg(unix)]
 #[derive(Debug)]
 enum ReplayLookup {
     Unknown,
-    Active,
+    Active {
+        events: Vec<ReplayEvent>,
+        receiver: broadcast::Receiver<ReplayEvent>,
+    },
+    ActiveUnavailable,
     Stale,
     Events(Vec<ReplayEvent>),
 }
@@ -2260,10 +2280,25 @@ impl Default for ReplayStore {
 #[cfg(unix)]
 impl ReplayStore {
     fn begin(&mut self, run_id: &str) -> bool {
+        self.begin_with_delivery(run_id, false)
+    }
+
+    fn begin_with_delivery(&mut self, run_id: &str, active_follow_allowed: bool) -> bool {
         if self.runs.values().filter(|run| !run.complete).count() >= self.max_active_runs {
             return false;
         }
-        self.runs.insert(run_id.to_string(), ReplayRun::default());
+        let (live_tx, _) = broadcast::channel(REPLAY_LIVE_CHANNEL_CAPACITY);
+        self.runs.insert(
+            run_id.to_string(),
+            ReplayRun {
+                next_seq: 0,
+                events: VecDeque::new(),
+                event_bytes: 0,
+                complete: false,
+                live_tx,
+                active_follow_allowed,
+            },
+        );
         true
     }
 
@@ -2295,12 +2330,14 @@ impl ReplayStore {
             };
             run.event_bytes = run.event_bytes.saturating_sub(evicted.bytes);
         }
-        run.events.push_back(ReplayEvent {
+        let event = ReplayEvent {
             seq,
             bytes,
             frame: frame.clone(),
-        });
+        };
+        run.events.push_back(event.clone());
         run.event_bytes = run.event_bytes.saturating_add(bytes);
+        let _ = run.live_tx.send(event);
         Some(seq)
     }
 
@@ -2321,8 +2358,19 @@ impl ReplayStore {
         let Some(run) = self.runs.get(run_id) else {
             return ReplayLookup::Unknown;
         };
+        if let Some(oldest) = run.events.front().map(|event| event.seq)
+            && after_seq < oldest.saturating_sub(1)
+        {
+            return ReplayLookup::Stale;
+        }
+        if !run.complete && !run.active_follow_allowed {
+            return ReplayLookup::ActiveUnavailable;
+        }
         if !run.complete {
-            return ReplayLookup::Active;
+            return ReplayLookup::Active {
+                events: run.events.iter().cloned().collect(),
+                receiver: run.live_tx.subscribe(),
+            };
         }
         let Some(oldest) = run.events.front().map(|event| event.seq) else {
             return ReplayLookup::Events(Vec::new());
@@ -2707,6 +2755,7 @@ async fn run_shell_intercept(
             live,
             provider,
             model,
+            delivery: DeliveryMode::Attached,
         },
     )
     .await?;
@@ -3147,6 +3196,8 @@ async fn handle_connection(
                 "cancel".to_string(),
                 "follow_resync".to_string(),
                 "follow_replay".to_string(),
+                "follow_active".to_string(),
+                "detached_output_only".to_string(),
             ],
         },
     )
@@ -3170,6 +3221,7 @@ async fn handle_connection(
             live,
             provider,
             model,
+            delivery,
         } => {
             if let Err(error) = validate_turn_request(
                 &request_id,
@@ -3188,21 +3240,56 @@ async fn handle_connection(
                 .await?;
                 return Ok(());
             }
-            run_daemon_turn(
-                &mut writer,
-                &mut rx,
-                sessions,
-                replays,
-                request_id,
-                cwd,
-                prompt,
-                session_id,
-                offline,
-                live,
-                provider,
-                model,
-            )
-            .await?;
+            match delivery {
+                DeliveryMode::Attached => {
+                    run_daemon_turn(
+                        &mut writer,
+                        &mut rx,
+                        sessions,
+                        replays,
+                        request_id,
+                        cwd,
+                        prompt,
+                        session_id,
+                        offline,
+                        live,
+                        provider,
+                        model,
+                    )
+                    .await?;
+                }
+                DeliveryMode::DetachedOutputOnly => {
+                    let run_id = begin_detached_run(&replays).await?;
+                    if let Err(error) = write_frame(
+                        &mut writer,
+                        &ServerFrame::RunAccepted {
+                            run_id: run_id.clone(),
+                        },
+                    )
+                    .await
+                    {
+                        replays.lock().await.discard(&run_id);
+                        return Err(error);
+                    }
+                    let task_replays = Arc::clone(&replays);
+                    tokio::spawn(async move {
+                        run_detached_turn(
+                            task_replays,
+                            sessions,
+                            run_id,
+                            request_id,
+                            cwd,
+                            prompt,
+                            session_id,
+                            offline,
+                            live,
+                            provider,
+                            model,
+                        )
+                        .await;
+                    });
+                }
+            }
         }
         ClientFrame::Follow {
             run_id,
@@ -3241,12 +3328,17 @@ async fn handle_connection(
                     )
                     .await?;
                 }
-                ReplayLookup::Active => {
+                ReplayLookup::Active { events, receiver } => {
+                    follow_active_run(&mut writer, &run_id, after_seq, events, receiver, replays)
+                        .await?;
+                }
+                ReplayLookup::ActiveUnavailable => {
                     write_frame(
                         &mut writer,
                         &ServerFrame::ResyncRequired {
                             run_id,
-                            reason: "当前回合仍在运行；不支持活动回合断线续跑".to_string(),
+                            reason: "attached 回合仍在运行；断线续跑仅适用于 detached_output_only"
+                                .to_string(),
                         },
                     )
                     .await?;
@@ -3362,6 +3454,235 @@ async fn run_daemon_turn<W: tokio::io::AsyncWrite + Unpin>(
             .await;
             guard.discard().await;
             Err(error)
+        }
+    }
+}
+
+#[cfg(unix)]
+async fn begin_detached_run(replays: &Arc<Mutex<ReplayStore>>) -> Result<String> {
+    let run_id = new_request_id();
+    if !replays.lock().await.begin_with_delivery(&run_id, true) {
+        bail!("YunXi shell daemon 当前活动回合过多，请稍后重试");
+    }
+    Ok(run_id)
+}
+
+#[cfg(unix)]
+async fn run_detached_turn(
+    replays: Arc<Mutex<ReplayStore>>,
+    sessions: Arc<Mutex<HashMap<String, String>>>,
+    run_id: String,
+    request_id: String,
+    cwd: String,
+    prompt: String,
+    requested_session: Option<String>,
+    offline: bool,
+    live: bool,
+    provider: Option<String>,
+    model: Option<String>,
+) {
+    let result = run_detached_turn_inner(
+        Arc::clone(&replays),
+        sessions,
+        run_id.clone(),
+        request_id,
+        cwd,
+        prompt,
+        requested_session,
+        offline,
+        live,
+        provider,
+        model,
+    )
+    .await;
+    if result.is_err() {
+        record_replay_frame(
+            &replays,
+            &run_id,
+            ServerFrame::Done {
+                status: "failed".to_string(),
+            },
+        )
+        .await;
+    }
+    replays.lock().await.finish(&run_id);
+}
+
+#[cfg(unix)]
+async fn run_detached_turn_inner(
+    replays: Arc<Mutex<ReplayStore>>,
+    sessions: Arc<Mutex<HashMap<String, String>>>,
+    run_id: String,
+    _request_id: String,
+    cwd: String,
+    prompt: String,
+    requested_session: Option<String>,
+    offline: bool,
+    live: bool,
+    provider: Option<String>,
+    model: Option<String>,
+) -> Result<()> {
+    let cwd_path = PathBuf::from(&cwd);
+    let mut config = AgentConfig::new(cwd_path.clone());
+    if let Some(provider) = provider {
+        config.provider = Some(provider);
+    }
+    if let Some(model) = model {
+        config.model = Some(model);
+    }
+    let selection = crate::ProviderSelection::resolve(&config, offline, live)?;
+    let backend = if selection.live {
+        YunXiRuntimeBackend::for_workspace_with_live_provider(&cwd_path, &config)
+    } else {
+        YunXiRuntimeBackend::for_workspace(&cwd_path)
+    };
+    let session_key = requested_session
+        .clone()
+        .unwrap_or_else(|| format!("cwd:{cwd}"));
+    let prior = if requested_session.is_some() {
+        requested_session
+    } else {
+        sessions.lock().await.get(&session_key).cloned()
+    };
+    config.session_title = Some("YunXi Linux fish shell detached turn".to_string());
+    config.parent_session_id = prior;
+    let agent = Agent::new(config);
+    let (control, mut stream) = AgentRunControl::streaming_output_only();
+    let mut turn =
+        Box::pin(agent.run_with_backend_stream(&backend, AgentInput::text(prompt), control));
+    let mut thread_id = None;
+    let mut message_sent = false;
+    let result = loop {
+        tokio::select! {
+            turn_result = &mut turn => break turn_result.context("YunXi Runtime 执行失败")?,
+            event = stream.events.recv() => if let Some(event) = event {
+                record_detached_agent_event(&replays, &run_id, &mut thread_id, &mut message_sent, event).await?;
+            },
+        }
+    };
+    while let Ok(event) = stream.events.try_recv() {
+        record_detached_agent_event(&replays, &run_id, &mut thread_id, &mut message_sent, event)
+            .await?;
+    }
+    if !message_sent && let Some(content) = result.final_response {
+        record_replay_frame(&replays, &run_id, ServerFrame::Message { content }).await;
+    }
+    let status = match result.status {
+        AgentRunStatus::Completed => "completed",
+        AgentRunStatus::Failed => "failed",
+        AgentRunStatus::Cancelled => "cancelled",
+    };
+    if let Some(thread_id) = thread_id {
+        sessions.lock().await.insert(session_key, thread_id);
+    }
+    record_replay_frame(
+        &replays,
+        &run_id,
+        ServerFrame::Done {
+            status: status.to_string(),
+        },
+    )
+    .await;
+    Ok(())
+}
+
+#[cfg(unix)]
+async fn record_detached_agent_event(
+    replays: &Arc<Mutex<ReplayStore>>,
+    run_id: &str,
+    thread_id: &mut Option<String>,
+    message_sent: &mut bool,
+    event: AgentEvent,
+) -> Result<()> {
+    match event {
+        AgentEvent::ThreadStarted { thread_id: id } => {
+            *thread_id = Some(id.clone());
+            record_replay_frame(replays, run_id, ServerFrame::Thread { thread_id: id }).await;
+        }
+        AgentEvent::Message { content, .. } => {
+            *message_sent = true;
+            record_replay_frame(replays, run_id, ServerFrame::Message { content }).await;
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+async fn record_replay_frame(
+    replays: &Arc<Mutex<ReplayStore>>,
+    run_id: &str,
+    frame: ServerFrame,
+) -> Option<u64> {
+    replays.lock().await.record(run_id, &frame)
+}
+
+#[cfg(unix)]
+async fn follow_active_run<W: tokio::io::AsyncWrite + Unpin>(
+    writer: &mut W,
+    run_id: &str,
+    after_seq: u64,
+    backlog: Vec<ReplayEvent>,
+    mut receiver: broadcast::Receiver<ReplayEvent>,
+    _replays: Arc<Mutex<ReplayStore>>,
+) -> Result<()> {
+    let mut cursor = after_seq;
+    for event in backlog {
+        if event.seq > cursor {
+            write_frame(
+                writer,
+                &numbered_replay_frame(run_id, event.seq, event.frame.clone()),
+            )
+            .await?;
+            cursor = event.seq;
+        }
+        // A client may present a cursor beyond the current sequence. Once
+        // Done is already in the atomic backlog, never leave that client
+        // waiting for a receiver event that can no longer arrive.
+        if matches!(event.frame, ServerFrame::Done { .. }) {
+            return Ok(());
+        }
+    }
+    loop {
+        match receiver.recv().await {
+            Ok(event) => {
+                if event.seq > cursor {
+                    write_frame(
+                        writer,
+                        &numbered_replay_frame(run_id, event.seq, event.frame.clone()),
+                    )
+                    .await?;
+                    cursor = event.seq;
+                }
+                // Check Done even when it is at/below the requested cursor;
+                // this prevents an unbounded wait for an impossible future
+                // event on a malformed or stale high cursor.
+                if matches!(event.frame, ServerFrame::Done { .. }) {
+                    return Ok(());
+                }
+            }
+            Err(broadcast::error::RecvError::Lagged(_)) => {
+                write_frame(
+                    writer,
+                    &ServerFrame::ResyncRequired {
+                        run_id: run_id.to_string(),
+                        reason: "active Follow 事件滞后，必须重新同步".to_string(),
+                    },
+                )
+                .await?;
+                return Ok(());
+            }
+            Err(broadcast::error::RecvError::Closed) => {
+                write_frame(
+                    writer,
+                    &ServerFrame::ResyncRequired {
+                        run_id: run_id.to_string(),
+                        reason: "active Follow 对应回合不可用，必须重新同步".to_string(),
+                    },
+                )
+                .await?;
+                return Ok(());
+            }
         }
     }
 }
@@ -3793,7 +4114,16 @@ mod tests {
             ..ReplayStore::default()
         };
         store.begin("active");
-        assert!(matches!(store.lookup("active", 0), ReplayLookup::Active));
+        assert!(matches!(
+            store.lookup("active", 0),
+            ReplayLookup::ActiveUnavailable
+        ));
+
+        assert!(store.begin_with_delivery("detached-active", true));
+        assert!(matches!(
+            store.lookup("detached-active", 0),
+            ReplayLookup::Active { .. }
+        ));
 
         store.begin("run-1");
         for content in ["one", "two", "three"] {
@@ -3817,6 +4147,51 @@ mod tests {
         );
         store.finish("run-2");
         assert!(matches!(store.lookup("run-1", 2), ReplayLookup::Unknown));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn detached_active_follow_keeps_backlog_and_live_order() {
+        let mut store = ReplayStore::default();
+        assert!(store.begin_with_delivery("detached", true));
+        store.record(
+            "detached",
+            &ServerFrame::Thread {
+                thread_id: "thread-1".to_string(),
+            },
+        );
+
+        let ReplayLookup::Active {
+            events: backlog,
+            mut receiver,
+        } = store.lookup("detached", 0)
+        else {
+            panic!("detached active run should provide backlog and live receiver");
+        };
+        assert_eq!(
+            backlog.iter().map(|event| event.seq).collect::<Vec<_>>(),
+            vec![1]
+        );
+
+        store.record(
+            "detached",
+            &ServerFrame::Message {
+                content: "hello".to_string(),
+            },
+        );
+        store.record(
+            "detached",
+            &ServerFrame::Done {
+                status: "completed".to_string(),
+            },
+        );
+
+        let message = receiver.recv().await.expect("live message event");
+        let done = receiver.recv().await.expect("live done event");
+        assert_eq!(message.seq, 2);
+        assert!(matches!(message.frame, ServerFrame::Message { .. }));
+        assert_eq!(done.seq, 3);
+        assert!(matches!(done.frame, ServerFrame::Done { .. }));
     }
 
     #[cfg(unix)]
