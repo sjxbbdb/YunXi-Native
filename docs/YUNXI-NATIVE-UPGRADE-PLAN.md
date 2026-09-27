@@ -392,12 +392,13 @@ PATH/`BASH_ENV` 回归这一边界。这只是采集器边界，不改变 Runtim
 
 同时提供了显式 `retry_embedding_job`/`knowledge-retry` 恢复边界：只有 `failed` 状态
 且尚未超过三次尝试的任务才能重新排队，原始 `last_error` 会保留用于诊断。它是
-人工强制恢复入口，真正的常驻 daemon 调度、告警和跨任务退避仍留待后续设计。
+人工强制恢复入口；daemon 的单 workspace 常驻调度已在后续增量接入，跨 workspace 告警
+聚合与统一退避策略仍留待后续设计。
 
 队列现在为每个任务持久化 `next_attempt_at_millis`。provider 或索引临时失败会按
 有界指数退避自动到期重试（最多三次），而文档缺失、generation 过期和 provider
-model 不匹配被视为终态失败；lease 回收仍立即恢复，不套用退避。常驻 daemon 的
-调度、告警和跨任务退避策略仍不在本切片范围内。
+model 不匹配被视为终态失败；lease 回收仍立即恢复，不套用退避。daemon 已能在显式
+workspace 内常驻调度；跨 workspace 统一退避、告警聚合和自动发现仍不在本切片范围内。
 
 当前新增了显式 `knowledge-worker --watch` 轮询器作为过渡调度边界：它绑定一个明确的
 workspace，按间隔以有限 batch 领取到期任务，复用已有 lease/退避/重试契约，不扫描其他

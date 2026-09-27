@@ -188,7 +188,7 @@ workspace，也不会自动激活 generation。除原有的 `--cwd` 单 workspac
 共享的预算。单个 SQLite 损坏、权限或索引失败只会标记该工作区并继续处理其他工作区，
 JSON 默认只返回 `workspace_index`，不泄露绝对路径。按 `Ctrl+C` 或 `SIGTERM` 停止时
 会输出结构化 stopped 记录。fleet 仍是显式 CLI 边界，不会自行发现新目录，也不会替代
-未来需要告警和统一策略的 daemon 调度器。其 round-robin 游标与累计统计写入
+未来需要跨 workspace 告警和统一策略的调度器。其 round-robin 游标与累计统计写入
 `$XDG_STATE_HOME/yunxi/knowledge-worker/`（未设置时为 `~/.local/state/yunxi/knowledge-worker/`）
 的独立状态文件；文件原子替换且用户私有，损坏或版本不兼容时只重置游标并返回
 结构化 warning，不接触长期记忆或 `knowledge.sqlite3`。
