@@ -56,7 +56,7 @@ makepkg -si --syncdeps
 bundled SQLite 与 ring 的 native static link；不会改变运行时的 SQLite 数据库边界，
 也不需要用户手动设置环境变量。
 
-PKGBUILD 当前固定到最新已推送修复提交，`pkgver` 保持不变、`pkgrel=13`。构建只产出
+PKGBUILD 当前固定到最新已推送修复提交，`pkgver` 保持不变、`pkgrel=14`。构建只产出
 `yunxi-linux`，安装到
 `/usr/bin/yunxi-linux`，并把
 用户级服务安装到 `/usr/lib/systemd/user/yunxi-linux.service`。服务以当前登录用户运行，
@@ -117,8 +117,8 @@ sudo pacman -Rns yunxi-native
 卸载不会删除 `~/.local/state/yunxi`、工作区 `.yunxi/`、长期记忆或知识库，也不会删除
 fish hook；如需清理，必须由用户按路径显式处理。升级、降级回滚沿用 pacman 的包事务。
 
-当前 pin 和 `pkgrel=13` 已在 Arch WSL 实机完成静态验证：先运行 preflight/static smoke，
-再用 `makepkg --clean --cleanbuild --noconfirm --syncdeps` 构建并临时安装 `pkgrel=13`，检查
+当前 pin 和 `pkgrel=14` 已在 Arch WSL 实机完成静态验证：先运行 preflight/static smoke，
+再用 `makepkg --clean --cleanbuild --noconfirm --syncdeps` 构建并临时安装 `pkgrel=14`，检查
 `/usr/bin/yunxi-linux --version`、两个 user unit，随后卸载并确认包文件/unit 被移除；此前
 的临时副本构建还用
 `pacman -U` 完成 `7 → 8` 升级、`8 → 7` 回滚，最后用 `pacman -Rns --noconfirm`
