@@ -258,6 +258,7 @@ fn validate_request(request: &ManPageRequest) -> AgentResult<()> {
 
 fn validate_help_request(request: &CommandHelpRequest) -> AgentResult<()> {
     const ALLOWED_COMMANDS: &[&str] = &[
+        "bash",
         "fish",
         "git",
         "systemctl",
@@ -500,7 +501,9 @@ mod tests {
 
     #[test]
     fn coreutils_help_commands_are_allowlisted_without_opening_arbitrary_paths() {
-        for command in ["awk", "cat", "cp", "find", "grep", "ls", "rm", "sed", "tar"] {
+        for command in [
+            "awk", "bash", "cat", "cp", "find", "grep", "ls", "rm", "sed", "tar",
+        ] {
             let request = CommandHelpRequest {
                 command: command.to_string(),
                 source_version: "ubuntu-24.04".to_string(),

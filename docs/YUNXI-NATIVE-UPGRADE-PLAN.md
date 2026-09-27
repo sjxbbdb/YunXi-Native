@@ -470,7 +470,7 @@ Embedding 计算与批量写入之间若发生 chunk 更新，替换事务会再
 `ingest_text`，缺少 man、非零退出、超时或截断不会把 stderr 当作知识正文，也不会
 进入 Planner 或执行器。
 
-在同一边界上补充了受限的 `--help` 采集器，仅允许 `fish`、`git`、`systemctl`、
+在同一边界上补充了受限的 `--help` 采集器，仅允许 `bash`、`fish`、`git`、`systemctl`、
 `pacman`、`ip` 以及 `awk`、`cat`、`cp`、`find`、`grep`、`ls`、`rm`、`sed`、`tar`。
 它始终固定执行 `<allowlisted-command> --help`，不接受路径、参数或任意可执行文件，
 并与 `man` 采集共用 provenance、输出上限和 `ingest_text`；后续若扩展名单必须逐项

@@ -139,7 +139,7 @@ pub(crate) enum LinuxShellCommand {
     },
     /// Collect help text from an explicitly allowlisted local command.
     KnowledgeHelp {
-        /// Allowlisted command: fish, git, systemctl, pacman, ip, or a small
+        /// Allowlisted command: bash, fish, git, systemctl, pacman, ip, or a small
         /// fixed set of read-only shell/coreutils help commands.
         command: String,
         /// Distro/runtime version recorded as provenance; `auto` reads os-release.

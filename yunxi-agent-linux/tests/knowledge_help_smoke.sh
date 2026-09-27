@@ -20,6 +20,7 @@ import tempfile
 
 binary = sys.argv[1]
 commands = [
+    "bash",
     "fish",
     "git",
     "systemctl",
