@@ -388,6 +388,10 @@ pub enum ToolCall {
         id: Option<String>,
         path: String,
     },
+    LinuxPreview {
+        id: Option<String>,
+        arguments_json: String,
+    },
     LinuxReadOnly {
         id: Option<String>,
         operation: String,
@@ -406,6 +410,7 @@ impl ToolCall {
             | Self::ToolSearch { id, .. }
             | Self::RequestUserInput { id, .. }
             | Self::ViewImage { id, .. } => id.as_deref(),
+            Self::LinuxPreview { id, .. } => id.as_deref(),
             Self::LinuxReadOnly { id, .. } => id.as_deref(),
         }
     }

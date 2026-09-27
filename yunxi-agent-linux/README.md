@@ -139,6 +139,11 @@ bash yunxi-agent-linux/tests/linux_tool_smoke.sh ./target/release/yunxi-linux
 缺少 `systemctl`、`man`、`ip`、`ss`、`df` 或 `pacman` 时允许结果为结构化 `unavailable`，不会把缺少
 发行版工具误判为测试失败。
 
+Linux Runtime 还注册了模型可见的 `linux_preview` ToolSpec。它接受固定只读 argv 或
+typed mutation intent，只返回风险、审批、沙盒、目标和 side-effects 计划；不会创建
+`ExecCommand`、启动进程或写入文件。即使当前策略要求审批/升级，预览也会把该结论放在
+结构化计划中，而不是提前变成无上下文的拒绝。正式写入工具仍需另行设计可回滚边界。
+
 ## 显式 project/private 知识空间
 
 Linux 知识库现在支持由用户显式创建的 `project` 与 `private` 空间。它们不会自动扫描

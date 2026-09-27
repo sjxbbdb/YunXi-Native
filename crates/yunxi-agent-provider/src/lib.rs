@@ -198,6 +198,10 @@ pub enum ProviderToolCall {
         id: Option<String>,
         path: String,
     },
+    LinuxPreview {
+        id: Option<String>,
+        arguments_json: String,
+    },
     LinuxReadOnly {
         id: Option<String>,
         operation: String,
@@ -244,6 +248,9 @@ impl From<ProviderToolCall> for ToolCall {
                 Self::RequestUserInput { id, prompt }
             }
             ProviderToolCall::ViewImage { id, path } => Self::ViewImage { id, path },
+            ProviderToolCall::LinuxPreview { id, arguments_json } => {
+                Self::LinuxPreview { id, arguments_json }
+            }
             ProviderToolCall::LinuxReadOnly {
                 id,
                 operation,
@@ -2285,6 +2292,9 @@ fn provider_tool_call_request_json(tool_call: &ProviderToolCall, index: usize) -
             "view_image",
             json!({"path": path}).to_string(),
         ),
+        ProviderToolCall::LinuxPreview { id, arguments_json } => {
+            (id.as_deref(), "linux_preview", arguments_json.clone())
+        }
         ProviderToolCall::LinuxReadOnly {
             id,
             operation,
@@ -2938,6 +2948,10 @@ fn parse_openai_tool_call(
         "view_image" => Ok(ProviderToolCall::ViewImage {
             id,
             path: required_string(&args, "path")?,
+        }),
+        "linux_preview" => Ok(ProviderToolCall::LinuxPreview {
+            id,
+            arguments_json: arguments.to_string(),
         }),
         "linux_readonly" => Ok(ProviderToolCall::LinuxReadOnly {
             id,

@@ -62,6 +62,18 @@ impl ToolRequest {
         }
     }
 
+    /// Construct a Linux operation preview request.  The preview adapter is
+    /// deliberately a separate request kind so model-visible planning cannot
+    /// accidentally fall through to the shell or patch runners.
+    pub fn linux_preview(cwd: impl Into<PathBuf>, input: linux_preview::LinuxPreviewInput) -> Self {
+        Self {
+            id: None,
+            cwd: cwd.into(),
+            kind: ToolRequestKind::LinuxPreview { input },
+            policy: ToolPolicy::trusted(),
+        }
+    }
+
     pub fn with_policy(mut self, policy: ToolPolicy) -> Self {
         self.policy = policy;
         self
@@ -99,6 +111,10 @@ pub enum ToolRequestKind {
     ViewImage {
         path: String,
     },
+    /// Plan a Linux operation without spawning or mutating anything.
+    LinuxPreview {
+        input: linux_preview::LinuxPreviewInput,
+    },
     LinuxReadOnly {
         operation: String,
         arguments: Value,
@@ -116,6 +132,7 @@ impl ToolRequestKind {
             Self::ToolSearch { .. } => ToolName::ToolSearch,
             Self::RequestUserInput { .. } => ToolName::RequestUserInput,
             Self::ViewImage { .. } => ToolName::ViewImage,
+            Self::LinuxPreview { .. } => ToolName::LinuxPreview,
             Self::LinuxReadOnly { .. } => ToolName::LinuxReadOnly,
         }
     }
@@ -130,6 +147,10 @@ impl ToolRequestKind {
             Self::ToolSearch { query } => Some(format!("tool_search {query}")),
             Self::RequestUserInput { prompt } => Some(format!("request_user_input {prompt}")),
             Self::ViewImage { path } => Some(format!("view_image {path}")),
+            Self::LinuxPreview { input } => Some(format!(
+                "linux_preview {}",
+                serde_json::to_string(input).unwrap_or_else(|_| "{}".to_string())
+            )),
             Self::LinuxReadOnly {
                 operation,
                 arguments,
@@ -149,6 +170,7 @@ pub enum ToolName {
     ToolSearch,
     RequestUserInput,
     ViewImage,
+    LinuxPreview,
     LinuxReadOnly,
 }
 
@@ -163,6 +185,7 @@ impl ToolName {
             Self::ToolSearch => "tool_search",
             Self::RequestUserInput => "request_user_input",
             Self::ViewImage => "view_image",
+            Self::LinuxPreview => "linux_preview",
             Self::LinuxReadOnly => "linux_readonly",
         }
     }
@@ -332,6 +355,8 @@ pub fn default_tool_registry() -> ToolRegistry {
         tool_search_tool_spec(),
         request_user_input_tool_spec(),
         view_image_tool_spec(),
+        #[cfg(target_os = "linux")]
+        linux_preview_tool_spec(),
         #[cfg(target_os = "linux")]
         linux_readonly_tool_spec(),
     ])
@@ -578,6 +603,37 @@ fn linux_readonly_tool_spec() -> ToolSpec {
         ToolName::LinuxReadOnly,
         "Read-only Linux host inspection through a fixed argv allowlist. It cannot start services, change networking, kill processes, or execute shell syntax.",
         linux_readonly::parameters_schema(),
+        true,
+    )
+}
+
+#[cfg(target_os = "linux")]
+fn linux_preview_tool_spec() -> ToolSpec {
+    ToolSpec::new(
+        ToolName::LinuxPreview,
+        "Plan a Linux read-only or typed mutation operation without executing it. Returns a structured plan with risk, approval, sandbox, targets, and side effects; never spawns a process or writes files.",
+        json!({
+            "type": "object",
+            "properties": {
+                "mode": {
+                    "type": "string",
+                    "enum": ["argv", "mutation"],
+                    "description": "Use argv for the fixed read-only allowlist, or mutation for a typed operation intent."
+                },
+                "argv": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "maxItems": 32,
+                    "description": "Fixed read-only argv only; shell syntax is rejected."
+                },
+                "intent": {
+                    "type": "object",
+                    "description": "Typed mutation intent; this is preview data and is never executed by this tool."
+                }
+            },
+            "required": ["mode"],
+            "additionalProperties": false
+        }),
         true,
     )
 }
@@ -1063,8 +1119,15 @@ impl ToolRuntime for ShellToolRuntime {
     ) -> AgentResult<ToolResponse> {
         let request = normalize_linux_readonly_policy(request);
         let runtime_events = policy_runtime_events(&request);
-        if let Some(response) = declined_by_policy(&request) {
-            return Ok(response);
+        let is_preview = matches!(request.kind, ToolRequestKind::LinuxPreview { .. });
+        // A preview is itself the approval boundary: it must be able to
+        // return the structured plan that says approval is required.  The
+        // planner still evaluates the same ExecutionPolicy, but the generic
+        // execution gate must not turn that plan into an early refusal.
+        if !is_preview {
+            if let Some(response) = declined_by_policy(&request) {
+                return Ok(response);
+            }
         }
 
         let policy = request.policy.clone();
@@ -1091,6 +1154,7 @@ impl ToolRuntime for ShellToolRuntime {
             ToolRequestKind::Mcp { .. }
             | ToolRequestKind::Skill { .. }
             | ToolRequestKind::MultiAgent { .. }
+            | ToolRequestKind::LinuxPreview { .. }
             | ToolRequestKind::LinuxReadOnly { .. } => Ok(ToolResponse::declined(
                 request.id,
                 "YunXi has registered this tool but the specialized runtime is not attached",
@@ -1232,8 +1296,15 @@ impl ToolRuntime for CompositeToolRuntime {
     ) -> AgentResult<ToolResponse> {
         let request = normalize_linux_readonly_policy(request);
         let runtime_events = policy_runtime_events(&request);
-        if let Some(response) = declined_by_policy(&request) {
-            return Ok(response);
+        let is_preview = matches!(request.kind, ToolRequestKind::LinuxPreview { .. });
+        // A preview is itself the approval boundary: it must be able to
+        // return the structured plan that says approval is required. The
+        // planner still evaluates the same ExecutionPolicy, but the generic
+        // execution gate must not turn that plan into an early refusal.
+        if !is_preview {
+            if let Some(response) = declined_by_policy(&request) {
+                return Ok(response);
+            }
         }
 
         let response = match request.kind.clone() {
@@ -1282,6 +1353,15 @@ impl ToolRuntime for CompositeToolRuntime {
                 .await
                 .map(|response| response.with_runtime_events(runtime_events));
             }
+            ToolRequestKind::LinuxPreview { input } => {
+                return run_linux_preview(
+                    request.id,
+                    request.cwd,
+                    input,
+                    request.policy.execution_policy,
+                    runtime_events,
+                );
+            }
             _ => return self.shell.execute_with_control(request, control).await,
         }?;
         Ok(response.with_runtime_events(runtime_events))
@@ -1296,6 +1376,30 @@ fn normalize_linux_readonly_policy(mut request: ToolRequest) -> ToolRequest {
         request.policy.execution_policy.network = NetworkPolicy::Disabled;
     }
     request
+}
+
+fn run_linux_preview(
+    id: Option<String>,
+    cwd: PathBuf,
+    input: linux_preview::LinuxPreviewInput,
+    policy: ExecutionPolicy,
+    runtime_events: Vec<ToolRuntimeEvent>,
+) -> AgentResult<ToolResponse> {
+    let plan = match linux_preview::plan(&cwd, input, &policy) {
+        Ok(plan) => plan,
+        Err(error) => {
+            return Ok(
+                ToolResponse::declined(id, error.to_string()).with_runtime_events(runtime_events)
+            );
+        }
+    };
+    let output = serde_json::to_string(&plan).map_err(|error| AgentError::Execution {
+        message: format!("serialize linux preview plan: {error}"),
+    })?;
+    Ok(
+        ToolResponse::completed(id, output, Some(0), Vec::new())
+            .with_runtime_events(runtime_events),
+    )
 }
 
 async fn run_shell(

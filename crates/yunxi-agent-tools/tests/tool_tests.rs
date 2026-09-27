@@ -6,6 +6,10 @@ use yunxi_agent_mcp::{
     InMemoryMcpRuntime, McpRuntimeSnapshot, McpServerConfig, McpToolResult, McpToolSpec,
     McpTransport,
 };
+#[cfg(target_os = "linux")]
+use yunxi_agent_tools::linux_preview::{
+    LinuxMutationIntent, LinuxPreviewInput, LinuxPreviewStatus,
+};
 use yunxi_agent_tools::{
     CompositeToolRuntime, NoopToolRuntime, ShellToolRuntime, ToolFileChangeKind, ToolName,
     ToolPolicy, ToolPolicyDecision, ToolRegistry, ToolRequest, ToolRequestKind, ToolRouteStatus,
@@ -45,7 +49,7 @@ fn default_tool_registry_exposes_model_visible_specs() {
     #[cfg(target_os = "linux")]
     let expected = expected
         .into_iter()
-        .chain([ToolName::LinuxReadOnly])
+        .chain([ToolName::LinuxPreview, ToolName::LinuxReadOnly])
         .collect::<Vec<_>>();
     assert_eq!(names, expected);
     assert_eq!(
@@ -84,13 +88,89 @@ fn default_tool_registry_exports_openai_function_schema() {
     #[cfg(target_os = "linux")]
     let expected = expected
         .into_iter()
-        .chain(["linux_readonly"])
+        .chain(["linux_preview", "linux_readonly"])
         .collect::<Vec<_>>();
     assert_eq!(names, expected);
     assert_eq!(tools[0]["type"], "function");
     assert_eq!(
         tools[0]["function"]["parameters"]["properties"]["command"]["type"],
         "string"
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn linux_preview_is_model_visible_and_never_executes_or_writes() {
+    let cwd = tempfile::tempdir().expect("tempdir");
+    let marker = cwd.path().join("must-not-exist");
+    let request = ToolRequest::linux_preview(
+        cwd.path(),
+        LinuxPreviewInput::Mutation {
+            intent: LinuxMutationIntent::WriteFile {
+                path: marker.display().to_string(),
+                bytes: 7,
+            },
+        },
+    )
+    .with_policy(ToolPolicy::from_config(
+        &AgentConfig::new(cwd.path())
+            .with_approval_mode(ApprovalMode::Never)
+            .with_sandbox_mode(SandboxMode::ReadOnly),
+    ));
+
+    let registry = default_tool_registry();
+    assert!(
+        registry
+            .model_visible_specs()
+            .iter()
+            .any(|spec| spec.name == ToolName::LinuxPreview)
+    );
+    let response = CompositeToolRuntime::default()
+        .execute(request)
+        .await
+        .expect("preview response");
+    assert_eq!(response.status, ToolStatus::Completed);
+    assert!(response.lifecycle_events.is_empty());
+    assert!(response.changed_files.is_empty());
+    assert!(!marker.exists());
+    let plan: serde_json::Value =
+        serde_json::from_str(&response.output.expect("plan output")).expect("plan json");
+    assert_eq!(plan["status"], "escalation_required");
+    assert_eq!(plan["runner"], "none");
+    assert_eq!(plan["side_effects"]["spawned"], false);
+    assert_eq!(plan["side_effects"]["files_changed"], false);
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn linux_preview_preserves_approval_boundary_in_structured_plan() {
+    let cwd = tempfile::tempdir().expect("tempdir");
+    let mut config = AgentConfig::new(cwd.path());
+    config.approval_mode = ApprovalMode::OnRequest;
+    let response = CompositeToolRuntime::default()
+        .execute(
+            ToolRequest::linux_preview(
+                cwd.path(),
+                LinuxPreviewInput::Mutation {
+                    intent: LinuxMutationIntent::DeletePath {
+                        path: "old.txt".into(),
+                    },
+                },
+            )
+            .with_policy(ToolPolicy::from_config(&config)),
+        )
+        .await
+        .expect("preview response");
+    assert_eq!(response.status, ToolStatus::Completed);
+    let plan: serde_json::Value =
+        serde_json::from_str(&response.output.expect("plan output")).expect("plan json");
+    assert_eq!(plan["status"], "approval_required");
+    assert_eq!(plan["approval_required"], true);
+    assert_eq!(plan["risk"], "destructive");
+    assert_eq!(plan["runner"], "none");
+    assert_eq!(
+        serde_json::from_value::<LinuxPreviewStatus>(plan["status"].clone()).unwrap(),
+        LinuxPreviewStatus::ApprovalRequired
     );
 }
 

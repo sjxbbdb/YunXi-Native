@@ -240,7 +240,7 @@ fn openai_request_json_uses_yunxi_provider_messages() {
     #[cfg(target_os = "linux")]
     let expected_tool_names = expected_tool_names
         .into_iter()
-        .chain(["linux_readonly"])
+        .chain(["linux_preview", "linux_readonly"])
         .collect::<Vec<_>>();
     assert_eq!(tool_names, expected_tool_names);
     assert_eq!(
@@ -1368,6 +1368,39 @@ fn openai_response_json_parses_patch_tool_call() {
         vec![ProviderToolCall::Patch {
             id: Some("call_patch".to_string()),
             patch: r#"{"op":"write","path":"notes.txt","content":"hello"}"#.to_string()
+        }]
+    );
+}
+
+#[test]
+fn openai_response_json_parses_linux_preview_tool_call() {
+    let response = parse_openai_response_json(
+        r#"{
+          "choices": [{
+            "message": {
+              "role": "assistant",
+              "content": null,
+              "tool_calls": [{
+                "id": "call_preview",
+                "type": "function",
+                "function": {
+                  "name": "linux_preview",
+                  "arguments": "{\"mode\":\"mutation\",\"intent\":{\"kind\":\"delete_path\",\"path\":\"old.txt\"}}"
+                }
+              }]
+            }
+          }]
+        }"#,
+    )
+    .expect("provider response");
+
+    assert_eq!(
+        response.tool_calls,
+        vec![ProviderToolCall::LinuxPreview {
+            id: Some("call_preview".to_string()),
+            arguments_json:
+                r#"{"mode":"mutation","intent":{"kind":"delete_path","path":"old.txt"}}"#
+                    .to_string(),
         }]
     );
 }

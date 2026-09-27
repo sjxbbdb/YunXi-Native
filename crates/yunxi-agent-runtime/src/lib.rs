@@ -4976,6 +4976,13 @@ fn tool_call_started_event(call: yunxi_agent_protocol::ToolCall) -> AgentEvent {
             name: "view_image".to_string(),
             arguments_json: Some(format!(r#"{{"path":{}}}"#, json_string(&path))),
         },
+        yunxi_agent_protocol::ToolCall::LinuxPreview { id, arguments_json } => {
+            AgentEvent::ToolCallStarted {
+                id,
+                name: "linux_preview".to_string(),
+                arguments_json: Some(arguments_json),
+            }
+        }
         yunxi_agent_protocol::ToolCall::LinuxReadOnly {
             id,
             operation,
@@ -5026,6 +5033,9 @@ fn provider_tool_call_from_protocol(call: ToolCall) -> AgentResult<ProviderToolC
             Ok(ProviderToolCall::RequestUserInput { id, prompt })
         }
         ToolCall::ViewImage { id, path } => Ok(ProviderToolCall::ViewImage { id, path }),
+        ToolCall::LinuxPreview { id, arguments_json } => {
+            Ok(ProviderToolCall::LinuxPreview { id, arguments_json })
+        }
         ToolCall::LinuxReadOnly {
             id,
             operation,
@@ -5089,6 +5099,10 @@ fn provider_tool_call_from_function(
             id,
             path: required_json_string(&args, "path")?,
         }),
+        "linux_preview" => Ok(ProviderToolCall::LinuxPreview {
+            id,
+            arguments_json: arguments.to_string(),
+        }),
         "linux_readonly" => Ok(ProviderToolCall::LinuxReadOnly {
             id,
             operation: required_json_string(&args, "operation")?,
@@ -5128,6 +5142,7 @@ fn provider_tool_call_id(call: &ProviderToolCall) -> Option<&str> {
         | ProviderToolCall::ToolSearch { id, .. }
         | ProviderToolCall::RequestUserInput { id, .. }
         | ProviderToolCall::ViewImage { id, .. } => id.as_deref(),
+        ProviderToolCall::LinuxPreview { id, .. } => id.as_deref(),
         ProviderToolCall::LinuxReadOnly { id, .. } => id.as_deref(),
     }
 }
@@ -5142,6 +5157,7 @@ fn ensure_provider_tool_call_id(call: &mut ProviderToolCall, fallback: String) -
         | ProviderToolCall::ToolSearch { id, .. }
         | ProviderToolCall::RequestUserInput { id, .. }
         | ProviderToolCall::ViewImage { id, .. } => id,
+        ProviderToolCall::LinuxPreview { id, .. } => id,
         ProviderToolCall::LinuxReadOnly { id, .. } => id,
     };
     id.get_or_insert(fallback).clone()
@@ -5488,6 +5504,17 @@ fn map_tool_call(
             kind: ToolRequestKind::ViewImage { path },
             policy,
         },
+        ProviderToolCall::LinuxPreview { id, arguments_json } => {
+            let input = serde_json::from_str(&arguments_json).unwrap_or_else(|_| {
+                yunxi_agent_tools::linux_preview::LinuxPreviewInput::Argv { argv: Vec::new() }
+            });
+            ToolRequest {
+                id,
+                cwd,
+                kind: ToolRequestKind::LinuxPreview { input },
+                policy,
+            }
+        }
         ProviderToolCall::LinuxReadOnly {
             id,
             operation,
@@ -5540,6 +5567,10 @@ fn tool_request_command(request: &ToolRequest) -> Option<String> {
             Some(format!("request_user_input {prompt}"))
         }
         ToolRequestKind::ViewImage { path } => Some(format!("view_image {path}")),
+        ToolRequestKind::LinuxPreview { input } => Some(format!(
+            "linux_preview {}",
+            serde_json::to_string(input).unwrap_or_else(|_| "{}".to_string())
+        )),
         ToolRequestKind::LinuxReadOnly {
             operation,
             arguments,
@@ -6025,6 +6056,14 @@ where
             })
             .await
         }
+        ToolRequestKind::LinuxPreview { input } => {
+            sink.emit(AgentEvent::ToolCallStarted {
+                id: request.id.clone(),
+                name: "linux_preview".to_string(),
+                arguments_json: serde_json::to_string(input).ok(),
+            })
+            .await
+        }
         ToolRequestKind::LinuxReadOnly {
             operation,
             arguments,
@@ -6132,6 +6171,15 @@ where
             sink.emit(AgentEvent::ToolCallCompleted {
                 id: response.id.clone(),
                 name: "view_image".to_string(),
+                output: render_tool_response(response),
+                status: map_tool_response_status(response),
+            })
+            .await
+        }
+        ToolRequestKind::LinuxPreview { .. } => {
+            sink.emit(AgentEvent::ToolCallCompleted {
+                id: response.id.clone(),
+                name: "linux_preview".to_string(),
                 output: render_tool_response(response),
                 status: map_tool_response_status(response),
             })
