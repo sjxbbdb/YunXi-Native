@@ -94,8 +94,9 @@ sudo pacman -Rns yunxi-native
 ```
 
 卸载不会删除 `~/.local/state/yunxi`、工作区 `.yunxi/`、长期记忆或知识库，也不会删除
-fish hook；如需清理，必须由用户按路径显式处理。升级沿用 pacman 的包事务，数据迁移和
-回滚策略仍在 Phase 6 后续增量中，不把当前 PKGBUILD 宣称为最终发布流水线。
+fish hook；如需清理，必须由用户按路径显式处理。升级、降级回滚沿用 pacman 的包事务，
+已在 Arch WSL 中实机验收 `pkgrel=6 → 7 → 6`，不会触碰用户数据；跨机器发布仍需由
+目标发行环境自行签名并复验包来源。
 
 ## 明确不包含
 
