@@ -679,7 +679,7 @@ Memory 与 Knowledge retrieval 的 `elapsed_ms`、选择/丢弃或证据数量�
 - 兼容第二个发行版前先冻结 Host/Tool adapter 接口。
 
 当前增量：已新增 `packaging/arch/yunxi-native/PKGBUILD` 与配套用户级 systemd unit，
-并将包源固定到当前已验证的 `f58af4fe25ec065beec379ec2bac31278901e6c7` commit，
+并将包源固定到当前已验证的 `95f52b5bc4e419a20d099f49cd7f99d4f2168dfc` commit，
 从 workspace 构建 `/usr/bin/yunxi-linux`；service 对 daemon 设置
 `MemoryHigh=1536M`、`MemoryMax=2G`、`TasksMax=128`、`LimitNOFILE=4096` 和
 `OOMPolicy=stop`，不自动启用服务、不创建 root daemon、不删除用户数据。配套的
