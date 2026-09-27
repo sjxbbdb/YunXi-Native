@@ -29,6 +29,7 @@ assert {item["name"] for item in specs} == {
     "linux.pacman",
     "linux.filesystem_summary",
     "linux.filesystem_list",
+    "linux.disk_usage",
 }, specs
 assert all(
     item["risk_class"] == "read_only"
@@ -94,6 +95,7 @@ run_probe "$TMP_ROOT/systemd.json" linux.systemd_status systemd-status --unit yu
 run_probe "$TMP_ROOT/man.json" linux.man man fish
 run_probe "$TMP_ROOT/pacman-info.json" linux.pacman pacman --info yunxi-agent
 run_probe "$TMP_ROOT/pacman-search.json" linux.pacman pacman --search yunxi
+run_probe "$TMP_ROOT/disk-usage.json" linux.disk_usage disk-usage --path "$TMP_ROOT"
 run_filesystem_probe "$TMP_ROOT/filesystem-summary.json" linux.filesystem_summary filesystem-summary --path "$TMP_ROOT" --limit 4
 run_filesystem_probe "$TMP_ROOT/filesystem-list.json" linux.filesystem_list filesystem-list --path "$TMP_ROOT" --limit 4
 
@@ -111,6 +113,10 @@ if "$BINARY" linux-tool pacman --info 'yunxi-agent; touch /tmp/yunxi-smoke' >/de
 fi
 if "$BINARY" linux-tool filesystem-list --path "$(printf 'x%.0s' {1..4100})" >/dev/null 2>&1; then
   echo "filesystem path length injection unexpectedly accepted" >&2
+  exit 1
+fi
+if "$BINARY" linux-tool disk-usage --path $'bad\npath' >/dev/null 2>&1; then
+  echo "disk usage path control character unexpectedly accepted" >&2
   exit 1
 fi
 

@@ -164,6 +164,38 @@ async fn linux_readonly_filesystem_tool_uses_bounded_find() {
 
 #[cfg(unix)]
 #[tokio::test]
+async fn linux_readonly_disk_usage_uses_fixed_df_runner() {
+    let cwd = tempfile::tempdir().expect("tempdir");
+    let response = CompositeToolRuntime::default()
+        .execute(ToolRequest {
+            id: Some("linux-disk-usage-test".to_string()),
+            cwd: cwd.path().to_path_buf(),
+            kind: ToolRequestKind::LinuxReadOnly {
+                operation: "disk_usage".to_string(),
+                arguments: serde_json::json!({"path": "."}),
+            },
+            policy: ToolPolicy::trusted(),
+        })
+        .await
+        .expect("linux disk usage response");
+    assert_eq!(response.status, ToolStatus::Completed);
+    assert!(response.runtime_events.iter().any(|event| matches!(
+        event,
+        ToolRuntimeEvent::LinuxReadOnly { operation, .. } if operation == "disk_usage"
+    )));
+    assert!(response.lifecycle_events.iter().any(|event| matches!(
+        event,
+        ExecLifecycleEvent::Started { command, .. } if command.starts_with("df -P -k -- ")
+    )));
+    let output = response.output.expect("structured output");
+    let value: serde_json::Value = serde_json::from_str(&output).expect("json output");
+    assert_eq!(value["tool"], "linux_readonly");
+    assert_eq!(value["operation"], "disk_usage");
+    assert_eq!(value["status"], "ok");
+}
+
+#[cfg(unix)]
+#[tokio::test]
 async fn linux_readonly_normalizes_policy_and_reports_unavailable_structured() {
     let parent = tempfile::Builder::new()
         .prefix("yunxi-linux-readonly-contract-")

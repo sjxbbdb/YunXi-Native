@@ -14,6 +14,7 @@ pub enum LinuxReadOperation {
     NetworkSnapshot,
     FilesystemSummary,
     FilesystemList,
+    DiskUsage,
     PacmanQuery,
 }
 
@@ -26,6 +27,7 @@ impl LinuxReadOperation {
             "network_snapshot" | "network" => Some(Self::NetworkSnapshot),
             "filesystem_summary" | "filesystem" => Some(Self::FilesystemSummary),
             "filesystem_list" | "directory_list" => Some(Self::FilesystemList),
+            "disk_usage" | "disk" | "df" => Some(Self::DiskUsage),
             "pacman_query" | "pacman" => Some(Self::PacmanQuery),
             _ => None,
         }
@@ -39,6 +41,7 @@ impl LinuxReadOperation {
             Self::NetworkSnapshot => "network_snapshot",
             Self::FilesystemSummary => "filesystem_summary",
             Self::FilesystemList => "filesystem_list",
+            Self::DiskUsage => "disk_usage",
             Self::PacmanQuery => "pacman_query",
         }
     }
@@ -51,7 +54,7 @@ pub fn parameters_schema() -> Value {
         "properties": {
             "operation": {
                 "type": "string",
-                "enum": ["systemd_status", "man_page", "process_list", "network_snapshot", "filesystem_summary", "filesystem_list", "pacman_query"]
+                "enum": ["systemd_status", "man_page", "process_list", "network_snapshot", "filesystem_summary", "filesystem_list", "disk_usage", "pacman_query"]
             },
             "unit": {"type": "string", "description": "A systemd unit name; no paths or shell syntax."},
             "user": {"type": "boolean", "description": "Inspect the per-user systemd manager (default true)."},
@@ -296,6 +299,21 @@ fn fixed_argv(operation: LinuxReadOperation, arguments: &Value) -> Result<Vec<St
                 format!("%y\\t%s\\t%f\\t{operation}\\n"),
             ])
         }
+        LinuxReadOperation::DiskUsage => {
+            let path = arguments
+                .get("path")
+                .and_then(Value::as_str)
+                .unwrap_or(".")
+                .trim();
+            validate_path(path)?;
+            Ok(vec![
+                "df".into(),
+                "-P".into(),
+                "-k".into(),
+                "--".into(),
+                path.to_string(),
+            ])
+        }
         LinuxReadOperation::PacmanQuery => {
             let mode = arguments
                 .get("mode")
@@ -516,6 +534,11 @@ mod tests {
                 ],
             ),
             (
+                LinuxReadOperation::DiskUsage,
+                json!({"path":"/tmp/a path"}),
+                vec!["df", "-P", "-k", "--", "/tmp/a path"],
+            ),
+            (
                 LinuxReadOperation::PacmanQuery,
                 json!({"mode":"info", "package":"yunxi-agent"}),
                 vec!["pacman", "--info", "--", "yunxi-agent"],
@@ -548,6 +571,11 @@ mod tests {
             )
             .is_err()
         );
+        assert_eq!(
+            fixed_argv(LinuxReadOperation::DiskUsage, &json!({"path":"."})).unwrap(),
+            vec!["df", "-P", "-k", "--", "."]
+        );
+        assert!(fixed_argv(LinuxReadOperation::DiskUsage, &json!({"path":"bad\npath"})).is_err());
         assert!(
             fixed_argv(
                 LinuxReadOperation::PacmanQuery,

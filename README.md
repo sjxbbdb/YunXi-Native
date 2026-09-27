@@ -75,7 +75,7 @@ Linux Host 负责终端接入、daemon 生命周期、IPC、事件回放和 Linu
 
 ### Linux 系统工具层（当前增量）
 
-Linux 版已经开始把系统能力接入为固定的 `linux_readonly` ToolSpec：`systemd_status`、`man_page`、`process_list`、`network_snapshot`。它们只读本机状态，使用严格的 JSON schema、参数白名单和固定 argv 直接进程执行，不经过 `sh -c`，并沿用 YunXi 既有的 ToolRouter、ToolPolicy、审批、沙盒诊断和审计事件。缺少发行版工具时返回结构化 `unavailable`，不会自动改用任意 shell 命令。
+Linux 版已经开始把系统能力接入为固定的 `linux_readonly` ToolSpec：`systemd_status`、`man_page`、`process_list`、`network_snapshot`、`filesystem_summary`、`filesystem_list`、`disk_usage` 和 `pacman_query`。它们只读本机状态，使用严格的 JSON schema、参数白名单和固定 argv 直接进程执行，不经过 `sh -c`，并沿用 YunXi 既有的 ToolRouter、ToolPolicy、审批、沙盒诊断和审计事件。缺少发行版工具时返回结构化 `unavailable`，不会自动改用任意 shell 命令。
 
 ### 知识库边界（Phase 4 基础切片）
 
@@ -246,7 +246,7 @@ JSON，不设置跨机器阈值，也不会触碰真实用户数据；发行前�
 撤回只允许命中固定的 `system-linux` 公共空间，并在一个事务内删除文档、chunk、
 FTS 行和向量；找不到文档不会误报成功，也不会触碰 project/private 或长期记忆库。
 
-这条边界是 Linux 原生交互的第一步：先让 YunXi 能可靠地理解并观察系统，再进入预览、可回滚修改和高风险操作。CLI 还提供 `yunxi-linux linux-tool describe|filesystem-summary|filesystem-list|processes|network|systemd-status|man|pacman` 作为本机诊断入口；其中 filesystem 入口只做有界的非递归目录摘要/列表，`pacman` 仅支持已安装包信息和包数据库搜索，禁止安装、删除、升级、刷新数据库等变更操作。它与 Runtime ToolSpec 同样禁止写入和任意命令拼接。真实 Linux 验收脚本为 `yunxi-agent-linux/tests/linux_tool_smoke.sh`。
+这条边界是 Linux 原生交互的第一步：先让 YunXi 能可靠地理解并观察系统，再进入预览、可回滚修改和高风险操作。CLI 还提供 `yunxi-linux linux-tool describe|filesystem-summary|filesystem-list|disk-usage|processes|network|systemd-status|man|pacman` 作为本机诊断入口；其中 filesystem 入口只做有界的非递归目录摘要/列表，`disk-usage` 固定调用 `df -P -k -- PATH` 读取文件系统使用量，`pacman` 仅支持已安装包信息和包数据库搜索，禁止安装、删除、升级、刷新数据库等变更操作。它与 Runtime ToolSpec 同样禁止写入和任意命令拼接。真实 Linux 验收脚本为 `yunxi-agent-linux/tests/linux_tool_smoke.sh`。
 
 ## 仓库结构
 

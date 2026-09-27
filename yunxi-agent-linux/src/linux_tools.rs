@@ -75,6 +75,13 @@ pub(crate) enum LinuxToolCommand {
         #[arg(long, default_value_t = DEFAULT_FILESYSTEM_ENTRY_LIMIT)]
         limit: usize,
     },
+    /// Read POSIX-style filesystem capacity and usage for one path.
+    DiskUsage {
+        /// File or directory whose mounted filesystem should be inspected.
+        /// No shell expansion is performed.
+        #[arg(long, default_value = ".")]
+        path: PathBuf,
+    },
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -185,6 +192,10 @@ pub(crate) fn run(command: LinuxToolCommand) -> Result<()> {
                 limit.clamp(1, MAX_FILESYSTEM_ENTRY_LIMIT),
             ))?
         }
+        LinuxToolCommand::DiskUsage { path } => {
+            validate_filesystem_path(&path)?;
+            serde_json::to_value(run_disk_usage(&path))?
+        }
     };
     println!("{}", serde_json::to_string_pretty(&value)?);
     Ok(())
@@ -237,6 +248,13 @@ fn specs() -> Vec<LinuxToolSpec> {
         LinuxToolSpec {
             name: "linux.filesystem_list",
             description: "Read a bounded, non-recursive list of one directory's entries.",
+            risk_class: "read_only",
+            requires_root: false,
+            mutates_system: false,
+        },
+        LinuxToolSpec {
+            name: "linux.disk_usage",
+            description: "Read filesystem capacity and usage for one explicit path.",
             risk_class: "read_only",
             requires_root: false,
             mutates_system: false,
@@ -335,6 +353,19 @@ fn run_filesystem_list(path: &Path, limit: usize) -> LinuxFilesystemResult {
         entries,
         error: None,
     }
+}
+
+fn run_disk_usage(path: &Path) -> LinuxToolResult {
+    run_fixed_command(
+        "df",
+        vec![
+            "-P".to_string(),
+            "-k".to_string(),
+            "--".to_string(),
+            path.to_string_lossy().into_owned(),
+        ],
+        "linux.disk_usage",
+    )
 }
 
 fn bounded_directory_entries(path: &Path, limit: usize) -> BoundedDirectoryEntries {
@@ -602,8 +633,8 @@ fn validate_pacman_token(value: &str, label: &str) -> Result<()> {
 
 fn validate_filesystem_path(path: &Path) -> Result<()> {
     let text = path.to_string_lossy();
-    if text.is_empty() || text.contains('\0') {
-        bail!("filesystem path is empty or contains NUL")
+    if text.is_empty() || text.chars().any(char::is_control) {
+        bail!("filesystem path is empty or contains control characters")
     }
     if text.len() > MAX_FILESYSTEM_PATH_BYTES {
         bail!("filesystem path exceeds {MAX_FILESYSTEM_PATH_BYTES} bytes")
@@ -636,7 +667,7 @@ mod tests {
     #[test]
     fn catalog_is_read_only_and_non_root() {
         let specs = specs();
-        assert_eq!(specs.len(), 7);
+        assert_eq!(specs.len(), 8);
         assert!(specs.iter().all(|spec| {
             spec.risk_class == "read_only" && !spec.requires_root && !spec.mutates_system
         }));
@@ -700,7 +731,18 @@ mod tests {
     fn filesystem_paths_reject_nul_and_oversized_components() {
         assert!(validate_filesystem_path(Path::new("./safe")).is_ok());
         assert!(validate_filesystem_path(Path::new("bad\0path")).is_err());
+        assert!(validate_filesystem_path(Path::new("bad\npath")).is_err());
         let oversized = "x".repeat(MAX_FILESYSTEM_ENTRY_NAME_BYTES + 1);
         assert!(validate_filesystem_path(Path::new(&oversized)).is_err());
+    }
+
+    #[test]
+    fn disk_usage_uses_fixed_df_argv_and_preserves_path_as_one_argument() {
+        let result = run_disk_usage(Path::new("/tmp/a path"));
+        assert_eq!(result.tool, "linux.disk_usage");
+        assert_eq!(result.command, ["df", "-P", "-k", "--", "/tmp/a path"]);
+        assert_eq!(result.risk_class, "read_only");
+        assert!(!result.requires_root);
+        assert!(!result.mutates_system);
     }
 }

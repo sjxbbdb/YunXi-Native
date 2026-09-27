@@ -311,9 +311,9 @@ daemon 还对 `Hello` 与握手后的首个请求设置 5 秒超时，防止半�
 - 建立 pacman/systemd/man/process/network 的 ToolSpec、审批策略和审计事件；
 - 可选吸收 Landlock backend，不改变 YunXi 策略层。
 
-**当前增量**：已先落地 `linux_readonly` 固定 ToolSpec，覆盖有界的 `filesystem_summary`/`filesystem_list`、`systemd_status`、`man_page`、`process_list`、`network_snapshot` 和 Arch `pacman` 只读查询七类本机观察能力。filesystem 只读取明确路径的一层目录，不递归、不执行 shell；`pacman` 只允许固定的 `--info`（已安装包元数据）和 `--search`（包数据库搜索）模式，明确排除安装、删除、升级、数据库刷新等变更操作。参数经过严格 schema 与 token 校验，外部命令使用固定 argv 的 `DirectProcessRunner`，不经过 `sh -c`，输出限制为 64 KiB，并记录 Linux tool runtime event。工具仍进入现有 `ToolRouter`、`ToolPolicy`、审批与沙盒诊断链路；缺少发行版工具时返回结构化 `unavailable`，不会把缺包误报为执行成功。当前 CLI 的 `linux-tool` 仍是便捷探针，通用 Runtime ToolSpec 是模型可见的正式入口。
+**当前增量**：已先落地 `linux_readonly` 固定 ToolSpec，覆盖有界的 `filesystem_summary`/`filesystem_list`、`disk_usage`、`systemd_status`、`man_page`、`process_list`、`network_snapshot` 和 Arch `pacman` 只读查询八类本机观察能力。filesystem 只读取明确路径的一层目录，不递归、不执行 shell；`disk_usage` 只允许固定的 `df -P -k -- PATH` argv；`pacman` 只允许固定的 `--info`（已安装包元数据）和 `--search`（包数据库搜索）模式，明确排除安装、删除、升级、数据库刷新等变更操作。参数经过严格 schema 与 token 校验，外部命令使用固定 argv 的 `DirectProcessRunner`，不经过 `sh -c`，输出限制为 64 KiB，并记录 Linux tool runtime event。工具仍进入现有 `ToolRouter`、`ToolPolicy`、审批与沙盒诊断链路；缺少发行版工具时返回结构化 `unavailable`，不会把缺包误报为执行成功。当前 CLI 的 `linux-tool` 仍是便捷探针，通用 Runtime ToolSpec 是模型可见的正式入口。
 
-真实验收脚本 `yunxi-agent-linux/tests/linux_tool_smoke.sh` 已覆盖七个只读探针的 JSON
+真实验收脚本 `yunxi-agent-linux/tests/linux_tool_smoke.sh` 已覆盖八个只读探针的 JSON
 契约、缺少可选系统工具时的 `unavailable` 结果、64 KiB 输出边界，以及 systemd/man
 参数中的 shell 语法拒绝（含 pacman 查询）；它不要求 root，也不修改本机状态。
 
