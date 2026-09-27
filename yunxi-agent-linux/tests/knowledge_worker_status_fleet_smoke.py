@@ -110,6 +110,17 @@ with tempfile.TemporaryDirectory(prefix="yunxi-status-fleet-") as directory:
     assert before["scheduler"] == "read_only_snapshot", before
     assert before["workspace_count"] == 4, before
     assert before["status"] == "degraded", before
+    aggregate = before["aggregate"]
+    assert aggregate["status"] == "degraded", aggregate
+    counts = aggregate["workspace_status_counts"]
+    assert counts["ready"] == 1, aggregate
+    assert counts["idle"] == 1, aggregate
+    assert counts["degraded"] == 1, aggregate
+    assert counts["error"] == 1, aggregate
+    assert aggregate["pending"] >= 1, aggregate
+    assert aggregate["failed"] >= 1, aggregate
+    assert aggregate["retry"] >= 0, aggregate
+    assert len(aggregate["warnings"]) <= 8, aggregate
     items = before["workspaces"]
     assert items[0]["status"] == "ready" and items[0]["active"]["pending"] >= 1, items
     assert items[1]["status"] == "degraded", items
@@ -132,6 +143,25 @@ with tempfile.TemporaryDirectory(prefix="yunxi-status-fleet-") as directory:
     )
     assert stable_snapshot(after) == stable_snapshot(before), (before, after)
     assert memory_file.read_bytes() == memory_bytes
+
+    # A fleet-wide diagnostic must stay bounded even when every selected
+    # workspace is damaged.  Only stable codes and indexes may escape; paths
+    # and SQLite/provider error text stay redacted.
+    warning_workspaces = []
+    for index in range(10):
+        warning_workspace = root / f"corrupt-{index}"
+        database = warning_workspace / ".yunxi" / "knowledge"
+        database.mkdir(parents=True)
+        (database / "knowledge.sqlite3").write_bytes(b"not a sqlite database")
+        warning_workspaces.append(warning_workspace)
+    warning_args = [
+        "knowledge-worker-status",
+        *sum((["--workspace", str(path)] for path in warning_workspaces), []),
+    ]
+    warning_snapshot = run_json(*warning_args)
+    assert warning_snapshot["aggregate"]["status"] == "degraded", warning_snapshot
+    assert len(warning_snapshot["aggregate"]["warnings"]) == 8, warning_snapshot
+    assert str(root) not in json.dumps(warning_snapshot["aggregate"]), warning_snapshot
 
     invalid = run(
         "knowledge-worker-status",

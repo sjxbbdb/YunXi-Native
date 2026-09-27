@@ -7,6 +7,7 @@
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use std::collections::BTreeMap;
 use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -20,6 +21,7 @@ const STATE_SCHEMA_VERSION: u32 = 1;
 const DEFAULT_FLEET_WORKER_ID: &str = "yunxi-linux-embedding-fleet";
 pub(super) const DEFAULT_DAEMON_WORKER_ID: &str = "yunxi-linux-daemon-knowledge";
 const MAX_STATUS_WORKSPACES: usize = 32;
+const MAX_AGGREGATE_WARNINGS: usize = 8;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct SchedulerState {
@@ -531,6 +533,94 @@ fn print_record(record: &Value) -> Result<()> {
     Ok(())
 }
 
+/// Build a bounded, path-free operational summary from read-only workspace
+/// snapshots.  The per-workspace records remain the source of detail; this
+/// aggregate is deliberately small and stable enough for a daemon/monitor to
+/// consume without parsing paths or storage error text.
+fn aggregate_status(results: &[Value]) -> Value {
+    let mut workspace_status_counts = BTreeMap::from([
+        ("idle".to_string(), 0_u64),
+        ("ready".to_string(), 0_u64),
+        ("complete".to_string(), 0_u64),
+        ("degraded".to_string(), 0_u64),
+        ("error".to_string(), 0_u64),
+        ("other".to_string(), 0_u64),
+    ]);
+    let mut pending = 0_u64;
+    let mut running = 0_u64;
+    let mut failed = 0_u64;
+    let mut retry = 0_u64;
+    let mut warnings = Vec::new();
+
+    for (workspace_index, result) in results.iter().enumerate() {
+        let status = result
+            .get("status")
+            .and_then(Value::as_str)
+            .unwrap_or("other");
+        let count_key = match status {
+            "idle" | "ready" | "complete" | "degraded" | "error" => status,
+            _ => "other",
+        };
+        *workspace_status_counts
+            .entry(count_key.to_string())
+            .or_default() += 1;
+
+        if status == "error" || status == "degraded" {
+            warnings.push(json!({
+                "code": if status == "error" {
+                    "knowledge_store_unavailable"
+                } else {
+                    "knowledge_queue_degraded"
+                },
+                "workspace_index": workspace_index,
+            }));
+        }
+
+        for queue_name in ["active", "staging"] {
+            let Some(queue) = result.get(queue_name).and_then(Value::as_object) else {
+                continue;
+            };
+            let read_count =
+                |name: &str| queue.get(name).and_then(Value::as_u64).unwrap_or_default();
+            pending = pending.saturating_add(read_count("pending"));
+            running = running.saturating_add(read_count("running"));
+            failed = failed.saturating_add(read_count("failed"));
+            retry = retry
+                .saturating_add(read_count("retry_due"))
+                .saturating_add(read_count("retry_waiting"));
+            if read_count("failed") > 0 && warnings.len() < MAX_AGGREGATE_WARNINGS {
+                warnings.push(json!({
+                    "code": "embedding_queue_failed",
+                    "workspace_index": workspace_index,
+                    "queue": queue_name,
+                }));
+            }
+        }
+    }
+
+    warnings.truncate(MAX_AGGREGATE_WARNINGS);
+    let degraded = workspace_status_counts
+        .get("error")
+        .copied()
+        .unwrap_or_default()
+        > 0
+        || workspace_status_counts
+            .get("degraded")
+            .copied()
+            .unwrap_or_default()
+            > 0
+        || failed > 0;
+    json!({
+        "status": if degraded { "degraded" } else { "healthy" },
+        "workspace_status_counts": workspace_status_counts,
+        "pending": pending,
+        "running": running,
+        "failed": failed,
+        "retry": retry,
+        "warnings": warnings,
+    })
+}
+
 pub(super) async fn run(
     worker_id: Option<String>,
     max_jobs: usize,
@@ -696,12 +786,14 @@ pub(super) fn run_status(workspaces: Vec<PathBuf>) -> Result<()> {
     } else {
         "idle"
     };
+    let aggregate = aggregate_status(&results);
     print_record(&json!({
         "schema_version": 1,
         "scheduler": "read_only_snapshot",
         "status": status,
         "workspace_count": results.len(),
         "embedding_model": yunxi_agent_persona::LOCAL_MEMORY_EMBEDDING_MODEL,
+        "aggregate": aggregate,
         "workspaces": results,
     }))
 }
