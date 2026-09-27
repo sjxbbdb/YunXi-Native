@@ -695,7 +695,7 @@ Memory 与 Knowledge retrieval 的 `elapsed_ms`、选择/丢弃或证据数量�
 - 兼容第二个发行版前先冻结 Host/Tool adapter 接口。
 
 当前增量：已新增 `packaging/arch/yunxi-native/PKGBUILD` 与配套用户级 systemd unit，
-并将包源固定到当前源码 commit `0776de713f1b5ab5632be9fec8942adcbd319a47`；该提交
+并将包源固定到最新行为代码 commit `0776de713f1b5ab5632be9fec8942adcbd319a47`；该提交
 基于包含混合召回确定性排序的 `af6dc1198e79df0e16636874ee4d04af13c1fbad`，并包含
 后续 fish 接管修复。`pkgver` 不变、`pkgrel=7`，从 workspace 构建 `/usr/bin/yunxi-linux`；
 service 对 daemon 设置
