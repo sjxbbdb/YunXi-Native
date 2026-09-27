@@ -12,6 +12,9 @@ pub enum LinuxReadOperation {
     ManPage,
     ProcessList,
     NetworkSnapshot,
+    FilesystemSummary,
+    FilesystemList,
+    PacmanQuery,
 }
 
 impl LinuxReadOperation {
@@ -21,6 +24,9 @@ impl LinuxReadOperation {
             "man_page" | "man" => Some(Self::ManPage),
             "process_list" | "processes" | "process" => Some(Self::ProcessList),
             "network_snapshot" | "network" => Some(Self::NetworkSnapshot),
+            "filesystem_summary" | "filesystem" => Some(Self::FilesystemSummary),
+            "filesystem_list" | "directory_list" => Some(Self::FilesystemList),
+            "pacman_query" | "pacman" => Some(Self::PacmanQuery),
             _ => None,
         }
     }
@@ -31,6 +37,9 @@ impl LinuxReadOperation {
             Self::ManPage => "man_page",
             Self::ProcessList => "process_list",
             Self::NetworkSnapshot => "network_snapshot",
+            Self::FilesystemSummary => "filesystem_summary",
+            Self::FilesystemList => "filesystem_list",
+            Self::PacmanQuery => "pacman_query",
         }
     }
 }
@@ -42,14 +51,17 @@ pub fn parameters_schema() -> Value {
         "properties": {
             "operation": {
                 "type": "string",
-                "enum": ["systemd_status", "man_page", "process_list", "network_snapshot"]
+                "enum": ["systemd_status", "man_page", "process_list", "network_snapshot", "filesystem_summary", "filesystem_list", "pacman_query"]
             },
             "unit": {"type": "string", "description": "A systemd unit name; no paths or shell syntax."},
             "user": {"type": "boolean", "description": "Inspect the per-user systemd manager (default true)."},
             "topic": {"type": "string", "description": "A single man-page topic token."},
             "section": {"type": "string", "description": "Optional man section token."},
             "limit": {"type": "integer", "minimum": 1, "maximum": 200},
-            "view": {"type": "string", "enum": ["addr", "route", "sockets"]}
+            "view": {"type": "string", "enum": ["addr", "route", "sockets"]},
+            "path": {"type": "string", "description": "A local directory path; no shell expansion is performed."}
+            ,"mode": {"type": "string", "enum": ["info", "search"]}
+            ,"package": {"type": "string", "description": "A package name or search token; no shell syntax."}
         },
         "required": ["operation"],
         "additionalProperties": false
@@ -127,11 +139,22 @@ pub async fn execute(
             _ => None,
         })
         .unwrap_or_else(|| (trace.summary.aggregated_output.clone(), String::new()));
-    let raw_stdout = if operation == LinuxReadOperation::ProcessList {
-        let limit = arguments.get("limit").and_then(Value::as_u64).unwrap_or(40) as usize;
-        limit_lines(&raw_stdout, limit)
-    } else {
-        raw_stdout
+    let raw_stdout = match operation {
+        LinuxReadOperation::ProcessList
+        | LinuxReadOperation::FilesystemSummary
+        | LinuxReadOperation::FilesystemList => {
+            let default_limit = if operation == LinuxReadOperation::ProcessList {
+                40
+            } else {
+                100
+            };
+            let limit = arguments
+                .get("limit")
+                .and_then(Value::as_u64)
+                .unwrap_or(default_limit) as usize;
+            limit_lines(&raw_stdout, limit)
+        }
+        _ => raw_stdout,
     };
     let stdout = bounded_output(&raw_stdout);
     let stderr = bounded_output(&raw_stderr);
@@ -242,6 +265,53 @@ fn fixed_argv(operation: LinuxReadOperation, arguments: &Value) -> Result<Vec<St
                 _ => Err("network view must be addr, route, or sockets".to_string()),
             }
         }
+        LinuxReadOperation::FilesystemSummary | LinuxReadOperation::FilesystemList => {
+            let path = arguments
+                .get("path")
+                .and_then(Value::as_str)
+                .unwrap_or(".")
+                .trim();
+            validate_path(path)?;
+            let limit = arguments
+                .get("limit")
+                .and_then(Value::as_u64)
+                .unwrap_or(100);
+            if !(1..=200).contains(&limit) {
+                return Err("filesystem limit must be between 1 and 200".to_string());
+            }
+            let operation = match operation {
+                LinuxReadOperation::FilesystemSummary => "summary",
+                LinuxReadOperation::FilesystemList => "list",
+                _ => unreachable!(),
+            };
+            Ok(vec![
+                "find".into(),
+                "--".into(),
+                path.to_string(),
+                "-mindepth".into(),
+                "1".into(),
+                "-maxdepth".into(),
+                "1".into(),
+                "-printf".into(),
+                format!("%y\\t%s\\t%f\\t{operation}\\n"),
+            ])
+        }
+        LinuxReadOperation::PacmanQuery => {
+            let mode = arguments
+                .get("mode")
+                .and_then(Value::as_str)
+                .unwrap_or("search");
+            let package = required_token(arguments, "package")?;
+            if !valid_pacman_token(&package) {
+                return Err("pacman package contains unsupported characters".to_string());
+            }
+            let flag = match mode {
+                "info" => "--info",
+                "search" => "--search",
+                _ => return Err("pacman mode must be info or search".to_string()),
+            };
+            Ok(vec!["pacman".into(), flag.into(), "--".into(), package])
+        }
     }
 }
 
@@ -285,6 +355,24 @@ fn valid_token(value: &str) -> bool {
         && value
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || ".@_:+-".contains(c))
+}
+
+fn validate_path(value: &str) -> Result<(), String> {
+    if value.is_empty() || value.len() > 4096 || value.chars().any(char::is_control) {
+        return Err(
+            "filesystem path must be non-empty, <= 4096 bytes, and contain no control characters"
+                .to_string(),
+        );
+    }
+    Ok(())
+}
+
+fn valid_pacman_token(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 128
+        && value
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || ".@_:+-/*?".contains(c))
 }
 
 fn canonical_command(argv: &[String]) -> String {
@@ -337,6 +425,20 @@ mod tests {
             .is_err()
         );
         assert!(fixed_argv(LinuxReadOperation::ManPage, &json!({"topic":"x|id"})).is_err());
+        assert!(
+            fixed_argv(
+                LinuxReadOperation::FilesystemList,
+                &json!({"path":"bad\npath"})
+            )
+            .is_err()
+        );
+        assert!(
+            fixed_argv(
+                LinuxReadOperation::PacmanQuery,
+                &json!({"mode":"search", "package":"yunxi;touch"})
+            )
+            .is_err()
+        );
     }
     #[test]
     fn command_is_fixed_argv() {
@@ -383,6 +485,41 @@ mod tests {
                 json!({"view":"route"}),
                 vec!["ip", "-json", "route"],
             ),
+            (
+                LinuxReadOperation::FilesystemSummary,
+                json!({"path":"/tmp/work", "limit": 3}),
+                vec![
+                    "find",
+                    "--",
+                    "/tmp/work",
+                    "-mindepth",
+                    "1",
+                    "-maxdepth",
+                    "1",
+                    "-printf",
+                    "%y\\t%s\\t%f\\tsummary\\n",
+                ],
+            ),
+            (
+                LinuxReadOperation::FilesystemList,
+                json!({"path":".", "limit": 2}),
+                vec![
+                    "find",
+                    "--",
+                    ".",
+                    "-mindepth",
+                    "1",
+                    "-maxdepth",
+                    "1",
+                    "-printf",
+                    "%y\\t%s\\t%f\\tlist\\n",
+                ],
+            ),
+            (
+                LinuxReadOperation::PacmanQuery,
+                json!({"mode":"info", "package":"yunxi-agent"}),
+                vec!["pacman", "--info", "--", "yunxi-agent"],
+            ),
         ];
         for (operation, arguments, expected) in cases {
             let argv = fixed_argv(operation, &arguments).expect("valid fixed argv");
@@ -397,6 +534,27 @@ mod tests {
         assert!(fixed_argv(LinuxReadOperation::ProcessList, &json!({"limit": 0})).is_err());
         assert!(fixed_argv(LinuxReadOperation::ProcessList, &json!({"limit": 201})).is_err());
         assert_eq!(limit_lines("one\ntwo\nthree\nfour\n", 2), "one\ntwo");
+        assert!(
+            fixed_argv(
+                LinuxReadOperation::FilesystemList,
+                &json!({"path":".", "limit": 0})
+            )
+            .is_err()
+        );
+        assert!(
+            fixed_argv(
+                LinuxReadOperation::FilesystemSummary,
+                &json!({"path":".", "limit": 201})
+            )
+            .is_err()
+        );
+        assert!(
+            fixed_argv(
+                LinuxReadOperation::PacmanQuery,
+                &json!({"mode":"search", "package":"yunxi-agent"})
+            )
+            .is_ok()
+        );
     }
     #[test]
     fn output_is_bounded() {

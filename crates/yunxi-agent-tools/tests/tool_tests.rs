@@ -131,6 +131,39 @@ async fn linux_readonly_process_tool_uses_fixed_runner() {
 
 #[cfg(unix)]
 #[tokio::test]
+async fn linux_readonly_filesystem_tool_uses_bounded_find() {
+    let cwd = tempfile::tempdir().expect("tempdir");
+    std::fs::write(cwd.path().join("note.txt"), "hello").expect("file");
+    let response = CompositeToolRuntime::default()
+        .execute(ToolRequest {
+            id: Some("linux-filesystem-test".to_string()),
+            cwd: cwd.path().to_path_buf(),
+            kind: ToolRequestKind::LinuxReadOnly {
+                operation: "filesystem_list".to_string(),
+                arguments: serde_json::json!({"path": ".", "limit": 3}),
+            },
+            policy: ToolPolicy::trusted(),
+        })
+        .await
+        .expect("linux filesystem response");
+    assert_eq!(response.status, ToolStatus::Completed);
+    assert!(response
+        .runtime_events
+        .iter()
+        .any(|event| matches!(event, ToolRuntimeEvent::LinuxReadOnly { operation, .. } if operation == "filesystem_list")));
+    assert!(response
+        .lifecycle_events
+        .iter()
+        .any(|event| matches!(event, ExecLifecycleEvent::Started { command, .. } if command.starts_with("find "))));
+    let output = response.output.expect("structured output");
+    let value: serde_json::Value = serde_json::from_str(&output).expect("json output");
+    assert_eq!(value["tool"], "linux_readonly");
+    assert_eq!(value["operation"], "filesystem_list");
+    assert_eq!(value["status"], "ok");
+}
+
+#[cfg(unix)]
+#[tokio::test]
 async fn linux_readonly_normalizes_policy_and_reports_unavailable_structured() {
     let parent = tempfile::Builder::new()
         .prefix("yunxi-linux-readonly-contract-")
