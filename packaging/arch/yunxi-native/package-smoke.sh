@@ -74,6 +74,16 @@ grep -Fq 'LimitNOFILE=4096' "$service" \
   || fail "service must cap open files"
 grep -Fq 'OOMPolicy=stop' "$service" \
   || fail "service must define OOM behavior"
+grep -Fq 'SyslogIdentifier=yunxi-native' "$service" \
+  || fail "service must identify daemon logs"
+grep -Fq 'StandardOutput=journal' "$service" \
+  || fail "service must use journald for stdout"
+grep -Fq 'StandardError=journal' "$service" \
+  || fail "service must use journald for stderr"
+grep -Fq 'LogRateLimitIntervalSec=30s' "$service" \
+  || fail "service must rate-limit journal writes"
+grep -Fq 'LogRateLimitBurst=200' "$service" \
+  || fail "service must bound journal burst"
 grep -Fq 'UMask=0077' "$service" \
   || fail "service must set a private umask"
 grep -Fq 'WantedBy=default.target' "$service" \

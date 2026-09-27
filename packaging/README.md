@@ -8,6 +8,12 @@
 这些限制只约束 YunXi daemon，不会替外部 Provider 进程设限；需要调整时应在本机复制
 service 到用户配置目录后显式覆盖，不修改打包文件中的安全基线。
 
+daemon 日志统一写入用户级 journald，标识为 `yunxi-native`，并在 service 层设置
+`LogRateLimitIntervalSec=30s`、`LogRateLimitBurst=200`，避免异常回合无限刷屏。日志
+轮转和保留周期由宿主 journald 统一管理，不在安装包中修改全局 `journald.conf`；查看与
+清理使用 `journalctl --user -t yunxi-native` 和宿主已有的 `--vacuum-time/--vacuum-size`
+策略。
+
 在没有 Arch `makepkg` 的环境中，可以先运行只读 preflight。它检查 Linux 环境、工具可用性、
 PKGBUILD 元数据、源码 pin 是否存在且为当前提交的祖先、unit 模板、工作区状态和 XDG
 数据目录权限；不会安装包、启用服务、迁移数据或读取记忆/知识正文：

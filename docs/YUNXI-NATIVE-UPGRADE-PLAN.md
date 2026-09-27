@@ -700,7 +700,9 @@ Memory 与 Knowledge retrieval 的 `elapsed_ms`、选择/丢弃或证据数量�
 后续 fish 接管修复。`pkgver` 不变、`pkgrel=7`，从 workspace 构建 `/usr/bin/yunxi-linux`；
 service 对 daemon 设置
 `MemoryHigh=1536M`、`MemoryMax=2G`、`TasksMax=128`、`LimitNOFILE=4096` 和
-`OOMPolicy=stop`，不自动启用服务、不创建 root daemon、不删除用户数据。配套的
+`OOMPolicy=stop`；标准输出/错误进入用户级 journald，使用 `SyslogIdentifier=yunxi-native`
+和 `LogRateLimitIntervalSec=30s`/`LogRateLimitBurst=200` 做服务级限流，保留周期由宿主
+journald 统一管理，不修改全局日志配置。不自动启用服务、不创建 root daemon、不删除用户数据。配套的
 `package-smoke.sh` 可在无 Arch 环境中静态验证这些安装、安全和生命周期边界。
 已在并行 Arch Linux WSL 发行版中使用 `makepkg --clean --cleanbuild --noconfirm --syncdeps`
 完成 `pkgrel=7` 的真实构建与 `yunxi-agent-linux` release 测试；因 Arch
