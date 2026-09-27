@@ -64,6 +64,10 @@ use linux_tools::LinuxToolCommand;
 const HOOK_MARKER: &str = "# YunXi Agent fish hook";
 const MAX_KNOWLEDGE_CATALOG_COMMANDS: usize = 32;
 const MAX_KNOWLEDGE_MAN_TOPICS: usize = 32;
+const KNOWLEDGE_IMPORT_DIRECTORY_MAX_DEPTH: usize = 8;
+const KNOWLEDGE_IMPORT_DIRECTORY_MAX_FILES: usize = 512;
+const KNOWLEDGE_IMPORT_DIRECTORY_MAX_TOTAL_BYTES: u64 = 64 * 1024 * 1024;
+const KNOWLEDGE_IMPORT_DIRECTORY_MAX_FILE_BYTES: u64 = 8 * 1024 * 1024;
 
 #[cfg(unix)]
 const MAX_TURN_PROMPT_BYTES: usize = 64 * 1024;
@@ -356,6 +360,29 @@ pub(crate) enum LinuxShellCommand {
         #[arg(long)]
         visibility: String,
         /// Workspace whose knowledge database receives the document.
+        #[arg(long, default_value = ".")]
+        cwd: PathBuf,
+    },
+    /// Import an explicitly selected directory of project/private knowledge.
+    KnowledgeImportDirectory {
+        /// Directory to traverse, resolved relative to --cwd when relative.
+        directory: PathBuf,
+        /// Existing project/private space id.
+        #[arg(long)]
+        space_id: String,
+        /// Provenance label for the imported directory.
+        #[arg(long)]
+        source: String,
+        /// User-controlled source version/revision.
+        #[arg(long)]
+        version: String,
+        /// Owner id; must match the existing space.
+        #[arg(long)]
+        owner: String,
+        /// Visibility; must match the existing space.
+        #[arg(long)]
+        visibility: String,
+        /// Workspace whose knowledge database receives the documents.
         #[arg(long, default_value = ".")]
         cwd: PathBuf,
     },
@@ -678,6 +705,17 @@ pub(crate) async fn run_command(command: LinuxShellCommand) -> Result<()> {
             owner,
             visibility,
             cwd,
+        ),
+        LinuxShellCommand::KnowledgeImportDirectory {
+            directory,
+            space_id,
+            source,
+            version,
+            owner,
+            visibility,
+            cwd,
+        } => run_knowledge_import_directory(
+            directory, space_id, source, version, owner, visibility, cwd,
         ),
         LinuxShellCommand::KnowledgeRetract {
             document_id,
@@ -1578,6 +1616,226 @@ fn run_knowledge_import_file(
     )
 }
 
+fn run_knowledge_import_directory(
+    directory: PathBuf,
+    space_id: String,
+    source: String,
+    version: String,
+    owner: String,
+    visibility: String,
+    cwd: PathBuf,
+) -> Result<()> {
+    validate_knowledge_identifier("space_id", &space_id)?;
+    validate_knowledge_metadata("source", &source)?;
+    validate_knowledge_metadata("version", &version)?;
+    validate_knowledge_metadata("owner", &owner)?;
+    let _visibility = parse_knowledge_visibility(&visibility)?;
+    let access = knowledge_access_context()?;
+    authorize_cli_mutation_owner(&access, &owner)?;
+    let cwd = canonical_knowledge_cwd(cwd)?;
+    let raw_directory = if directory.is_absolute() {
+        directory
+    } else {
+        cwd.join(directory)
+    };
+    let metadata = std::fs::symlink_metadata(&raw_directory).context("无法读取知识目录元数据")?;
+    if metadata.file_type().is_symlink() {
+        bail!("知识目录不能是符号链接")
+    }
+    let directory =
+        std::fs::canonicalize(&raw_directory).context("无法访问知识目录；目录必须位于工作区内")?;
+    if !directory.starts_with(&cwd) {
+        bail!("知识目录必须位于工作区内")
+    }
+    if directory == cwd.join(".yunxi") || directory.starts_with(cwd.join(".yunxi")) {
+        bail!("知识目录不能位于工作区的 .yunxi 状态目录内")
+    }
+    if !std::fs::metadata(&directory)?.is_dir() {
+        bail!("知识目录必须是目录")
+    }
+
+    let (files, skipped_during_walk) = collect_knowledge_directory_files(&directory)?;
+    let mut imported = 0usize;
+    let mut skipped = skipped_during_walk;
+    let mut failed = 0usize;
+    let mut total_bytes = 0u64;
+    let mut documents = Vec::with_capacity(files.len());
+    for path in files {
+        let relative = path
+            .strip_prefix(&directory)
+            .unwrap_or(path.as_path())
+            .to_string_lossy()
+            .replace('\\', "/");
+        let metadata = match std::fs::metadata(&path) {
+            Ok(metadata) => metadata,
+            Err(_) => {
+                failed += 1;
+                documents.push(serde_json::json!({
+                    "status": "failed",
+                    "relative_path": relative,
+                    "error_code": "metadata_unavailable",
+                }));
+                continue;
+            }
+        };
+        if metadata.len() > KNOWLEDGE_IMPORT_DIRECTORY_MAX_FILE_BYTES
+            || total_bytes.saturating_add(metadata.len())
+                > KNOWLEDGE_IMPORT_DIRECTORY_MAX_TOTAL_BYTES
+        {
+            skipped += 1;
+            documents.push(serde_json::json!({
+                "status": "skipped",
+                "relative_path": relative,
+                "reason": "size_limit",
+            }));
+            continue;
+        }
+        let input = match std::fs::read_to_string(&path) {
+            Ok(input) => input,
+            Err(_) => {
+                skipped += 1;
+                documents.push(serde_json::json!({
+                    "status": "skipped",
+                    "relative_path": relative,
+                    "reason": "non_utf8_or_unreadable",
+                }));
+                continue;
+            }
+        };
+        total_bytes = total_bytes.saturating_add(metadata.len());
+        let document_id = format!("dir-{:016x}", stable_directory_hash(&relative));
+        let title = relative.clone();
+        match import_knowledge_text(
+            space_id.clone(),
+            document_id.clone(),
+            title,
+            source.clone(),
+            version.clone(),
+            owner.clone(),
+            visibility.clone(),
+            cwd.clone(),
+            input,
+            "directory",
+        ) {
+            Ok(result) => {
+                imported += 1;
+                documents.push(serde_json::json!({
+                    "status": "imported",
+                    "relative_path": relative,
+                    "document_id": document_id,
+                    "generation": result["generation"],
+                    "chunks_written": result["chunks_written"],
+                    "embedding_job": result["embedding_job"],
+                }));
+            }
+            Err(_) => {
+                failed += 1;
+                documents.push(serde_json::json!({
+                    "status": "failed",
+                    "relative_path": relative,
+                    "document_id": document_id,
+                    "error_code": "knowledge_import_failed",
+                }));
+            }
+        }
+    }
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&serde_json::json!({
+            "schema_version": 1,
+            "status": if failed > 0 { "completed_with_errors" } else { "imported" },
+            "space_id": space_id,
+            "source": source,
+            "version": version,
+            "files_discovered": documents.len(),
+            "imported": imported,
+            "skipped": skipped,
+            "failed": failed,
+            "total_bytes": total_bytes,
+            "documents": documents,
+        }))?
+    );
+    Ok(())
+}
+
+fn collect_knowledge_directory_files(root: &Path) -> Result<(Vec<PathBuf>, usize)> {
+    fn visit(
+        directory: &Path,
+        depth: usize,
+        files: &mut Vec<PathBuf>,
+        skipped: &mut usize,
+    ) -> Result<()> {
+        let mut entries = std::fs::read_dir(directory)
+            .with_context(|| "读取知识目录失败".to_string())?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        entries.sort_by_key(|entry| entry.file_name());
+        for entry in entries {
+            let path = entry.path();
+            let metadata = std::fs::symlink_metadata(&path)?;
+            if metadata.file_type().is_symlink() {
+                *skipped += 1;
+                continue;
+            }
+            if metadata.is_dir() {
+                if entry.file_name() == ".yunxi" || depth >= KNOWLEDGE_IMPORT_DIRECTORY_MAX_DEPTH {
+                    *skipped += 1;
+                    continue;
+                }
+                visit(&path, depth + 1, files, skipped)?;
+                continue;
+            }
+            if metadata.is_file() && is_knowledge_directory_text_file(&path) {
+                if files.len() >= KNOWLEDGE_IMPORT_DIRECTORY_MAX_FILES {
+                    bail!(
+                        "知识目录超过 {} 个文件的上限",
+                        KNOWLEDGE_IMPORT_DIRECTORY_MAX_FILES
+                    )
+                }
+                files.push(path);
+            } else {
+                *skipped += 1;
+            }
+        }
+        Ok(())
+    }
+
+    let mut files = Vec::new();
+    let mut skipped = 0;
+    visit(root, 0, &mut files, &mut skipped)?;
+    Ok((files, skipped))
+}
+
+fn is_knowledge_directory_text_file(path: &Path) -> bool {
+    const EXTENSIONS: &[&str] = &[
+        "c", "cc", "cpp", "fish", "go", "h", "hpp", "java", "js", "json", "md", "py", "rs", "sh",
+        "toml", "ts", "tsx", "txt", "yaml", "yml",
+    ];
+    let file_name = path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default();
+    if matches!(
+        file_name,
+        "AGENTS.md" | "Dockerfile" | "LICENSE" | "Makefile" | "PKGBUILD" | "README"
+    ) {
+        return true;
+    }
+    path.extension()
+        .and_then(|value| value.to_str())
+        .is_some_and(|extension| {
+            EXTENSIONS
+                .iter()
+                .any(|allowed| extension.eq_ignore_ascii_case(allowed))
+        })
+}
+
+fn stable_directory_hash(value: &str) -> u64 {
+    value.bytes().fold(0xcbf29ce484222325u64, |hash, byte| {
+        hash.wrapping_mul(0x100000001b3)
+            .wrapping_add(u64::from(byte))
+    })
+}
+
 fn run_knowledge_import_text(
     space_id: String,
     document_id: String,
@@ -1590,6 +1848,34 @@ fn run_knowledge_import_text(
     input: String,
     import_kind: &str,
 ) -> Result<()> {
+    let result = import_knowledge_text(
+        space_id,
+        document_id,
+        title,
+        source,
+        version,
+        owner,
+        visibility,
+        cwd,
+        input,
+        import_kind,
+    )?;
+    println!("{}", serde_json::to_string_pretty(&result)?);
+    Ok(())
+}
+
+fn import_knowledge_text(
+    space_id: String,
+    document_id: String,
+    title: String,
+    source: String,
+    version: String,
+    owner: String,
+    visibility: String,
+    cwd: PathBuf,
+    input: String,
+    import_kind: &str,
+) -> Result<serde_json::Value> {
     validate_knowledge_identifier("space_id", &space_id)?;
     validate_knowledge_identifier("document_id", &document_id)?;
     validate_knowledge_metadata("title", &title)?;
@@ -1650,26 +1936,22 @@ fn run_knowledge_import_text(
         &document.document_id,
         yunxi_agent_persona::LOCAL_MEMORY_EMBEDDING_MODEL,
     )?;
-    println!(
-        "{}",
-        serde_json::to_string_pretty(&serde_json::json!({
-            "schema_version": 1,
-            "status": "imported",
-            "space_id": document.space_id,
-            "document_id": document.document_id,
-            "generation": document.generation,
-            "content_hash": summary.content_hash,
-            "chunks_written": summary.chunks_written,
-            "chunks_removed": summary.chunks_removed,
-            "embedding_job": {
-                "job_id": job.job_id,
-                "status": job.status.as_str(),
-                "embedding_model": job.embedding_model,
-                "generation": job.generation,
-            },
-        }))?
-    );
-    Ok(())
+    Ok(serde_json::json!({
+        "schema_version": 1,
+        "status": "imported",
+        "space_id": document.space_id,
+        "document_id": document.document_id,
+        "generation": document.generation,
+        "content_hash": summary.content_hash,
+        "chunks_written": summary.chunks_written,
+        "chunks_removed": summary.chunks_removed,
+        "embedding_job": {
+            "job_id": job.job_id,
+            "status": job.status.as_str(),
+            "embedding_model": job.embedding_model,
+            "generation": job.generation,
+        },
+    }))
 }
 
 fn run_knowledge_index(document_id: String, cwd: PathBuf) -> Result<()> {

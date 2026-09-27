@@ -332,7 +332,7 @@ daemon 还对 `Hello` 与握手后的首个请求设置 5 秒超时，防止半�
 
 - 建立知识空间、访问控制、P0/P1/P2 采集器、规范化器、chunker、embedding worker、SQLite+FTS 索引和 generation 切换；
 - 先覆盖 shell/coreutils/fish/systemd/pacman/git/网络诊断；
-- 提供 project/private 的显式创建与 stdin 导入适配器，首版不默认读取用户目录；
+- 提供 project/private 的显式创建、stdin、单文件和用户指定目录导入适配器，首版不默认读取用户目录；
 - 将 RAG 证据接入 Planner，不直接接入执行器；
 - 建立 200+ 任务集和离线评测报告。
 
@@ -350,6 +350,11 @@ active generation，不再把 generation `1` 当作运行时事实；未知空�
 `knowledge-import-file` 只读取用户明确指定的单个 UTF-8 文本/Markdown 文件，二者都不扫描
 路径、不执行导入内容，并把文档绑定到空间当前 generation 后入队 embedding job。文件入口
 只允许工作区内的普通文件，拒绝工作区外路径和 `.yunxi` 状态目录，单文件限制为 8 MiB。
+本增量新增 `knowledge-import-directory`：目录必须由用户显式指定，按稳定顺序递归导入常见
+文本/源码文件，支持真实项目资料；`.yunxi`、符号链接、不可读二进制和超出资源上限的条目
+会逐项跳过，单文件导入失败不会中止其他文件。导入复用同一 `KnowledgeAccessContext`、
+active generation 和 embedding job 边界，不自动激活代际、不读取长期记忆，也不扫描用户目录
+之外的范围。真实验收脚本为 `yunxi-agent-linux/tests/knowledge_directory_import_smoke.sh`。
 project 首版仅允许 owner visibility，private 允许 owner/private；source/version 必须与
 空间一致。`knowledge-search` 与 `knowledge-vector-search` 支持显式 `--space-id`、
 `--owner`、`--visibility`，不匹配的访问身份会被拒绝，导入的 project/private 证据不会

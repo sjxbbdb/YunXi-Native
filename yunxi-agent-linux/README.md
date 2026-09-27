@@ -147,7 +147,10 @@ typed mutation intent，只返回风险、审批、沙盒、目标和 side-effec
 ## 显式 project/private 知识空间
 
 Linux 知识库现在支持由用户显式创建的 `project` 与 `private` 空间。它们不会自动扫描
-用户目录，也不会默认进入 Linux Planner；只有通过 stdin 或明确指定的单个文件导入才会入库。空间
+用户目录，也不会默认进入 Linux Planner；可以通过 stdin、明确指定的单个文件，或用户明确
+传入的目录导入真实项目资料和源码。目录导入按稳定顺序递归读取常见文本/源码文件，跳过
+`.yunxi`、符号链接和不可读二进制，并在输出中给出逐文件结果与汇总；这些只是路径越界和资源
+耗尽防线，不限制正常的项目知识类型。空间
 的 owner、visibility、source 和 version 是访问与 provenance 边界，重复初始化必须完全
 匹配，否则命令会拒绝静默覆盖。
 
@@ -173,6 +176,11 @@ printf '%s\n' '项目约定：先 dry-run，再申请审批。' | \
 ./target/release/yunxi-linux knowledge-import-file docs/project-guide.md \
   --space-id project-demo --document-id project-guide-file --title 'Project Guide (file)' \
   --source project-notes --version v1 --owner "$PRINCIPAL" --visibility owner --cwd .
+
+# 显式导入一个项目目录（不会扫描目录之外的内容）
+./target/release/yunxi-linux knowledge-import-directory src \
+  --space-id project-demo --source project-notes --version v1 \
+  --owner "$PRINCIPAL" --visibility owner --cwd .
 
 ./target/release/yunxi-linux knowledge-search 'dry-run' \
   --space-id project-demo --owner "$PRINCIPAL" --visibility owner --cwd .
@@ -430,6 +438,12 @@ project/private 知识空间的 stdin 导入、owner/visibility 隔离、重复�
 
 ```bash
 bash yunxi-agent-linux/tests/knowledge_project_private_smoke.sh ./target/release/yunxi-linux
+```
+
+显式项目目录导入、源码扩展识别、`.yunxi`/符号链接隔离、逐文件失败隔离和总量边界可用：
+
+```bash
+bash yunxi-agent-linux/tests/knowledge_directory_import_smoke.sh ./target/release/yunxi-linux
 ```
 
 知识查询延迟可用同一套临时知识库测量（输出冷查询与后续 warm-ish 查询的
