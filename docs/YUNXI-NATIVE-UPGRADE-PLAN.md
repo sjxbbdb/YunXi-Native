@@ -377,8 +377,8 @@ embedding 队列、FTS 与本地向量检索，且检索结果继续保留 docum
 记忆数据库。
 
 采集子进程还使用固定的系统 `PATH`，并显式禁用 `BASH_ENV`、`ENV` 与用户/系统 Git
-配置，避免帮助文本因宿主用户环境而改变或执行启动脚本；这只是采集器边界，不改变
-Runtime 工具的环境策略。
+配置，避免帮助文本因宿主用户环境而改变或执行启动脚本；真实 help smoke 会注入恶意
+PATH/`BASH_ENV` 回归这一边界。这只是采集器边界，不改变 Runtime 工具的环境策略。
 
 为避免 daemon 或终端进程崩溃后留下永久 `running` 任务，领取事务还会回收超过五分钟
 未更新的 worker lease，并把它重新置为 `pending`；旧 worker 随后提交 complete/fail

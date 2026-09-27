@@ -39,6 +39,43 @@ commands = [
 
 with tempfile.TemporaryDirectory(prefix="yunxi-help-smoke-") as directory:
     workspace = pathlib.Path(directory)
+    # The collector must not resolve an allowlisted command through a
+    # user-controlled PATH or source a user-controlled BASH_ENV file.
+    poison_dir = workspace / "poison-bin"
+    poison_dir.mkdir()
+    poison_marker = workspace / "poison-marker"
+    poison_bash = poison_dir / "bash"
+    poison_bash.write_text(
+        f"#!/bin/sh\nprintf poison > {poison_marker}\nexit 99\n",
+        encoding="utf-8",
+    )
+    poison_bash.chmod(0o755)
+    poison_env_file = workspace / "poison-env.sh"
+    poison_env_file.write_text(
+        f"printf poison > {poison_marker}\n", encoding="utf-8"
+    )
+    poisoned_environment = dict(__import__("os").environ)
+    poisoned_environment["PATH"] = str(poison_dir)
+    poisoned_environment["BASH_ENV"] = str(poison_env_file)
+    isolated = subprocess.run(
+        [
+            binary,
+            "knowledge-help",
+            "bash",
+            "--source-version",
+            "ubuntu-24.04",
+            "--cwd",
+            str(workspace),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+        env=poisoned_environment,
+    )
+    isolated_result = json.loads(isolated.stdout)
+    assert isolated_result["status"] == "ok", isolated_result
+    assert not poison_marker.exists(), "collector inherited a user-controlled command environment"
+
     successful = []
     for command in commands:
         completed = subprocess.run(
