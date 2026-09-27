@@ -695,18 +695,24 @@ Memory 与 Knowledge retrieval 的 `elapsed_ms`、选择/丢弃或证据数量�
 - 兼容第二个发行版前先冻结 Host/Tool adapter 接口。
 
 当前增量：已新增 `packaging/arch/yunxi-native/PKGBUILD` 与配套用户级 systemd unit，
-并将包源固定到当前已验证的 `a38dac41ac156f51cd994315af5eee5f6d674c40` commit，
-从 workspace 构建 `/usr/bin/yunxi-linux`；service 对 daemon 设置
+并将包源固定到当前源码 commit `0776de713f1b5ab5632be9fec8942adcbd319a47`；该提交
+基于包含混合召回确定性排序的 `af6dc1198e79df0e16636874ee4d04af13c1fbad`，并包含
+后续 fish 接管修复。`pkgver` 不变、`pkgrel=7`，从 workspace 构建 `/usr/bin/yunxi-linux`；
+service 对 daemon 设置
 `MemoryHigh=1536M`、`MemoryMax=2G`、`TasksMax=128`、`LimitNOFILE=4096` 和
 `OOMPolicy=stop`，不自动启用服务、不创建 root daemon、不删除用户数据。配套的
 `package-smoke.sh` 可在无 Arch 环境中静态验证这些安装、安全和生命周期边界。
-已在并行 Arch Linux WSL 发行版中完成真实 `makepkg --syncdeps` 构建验收；因 Arch
+已在并行 Arch Linux WSL 发行版中使用 `makepkg --clean --cleanbuild --noconfirm --syncdeps`
+完成 `pkgrel=7` 的真实构建与 `yunxi-agent-linux` release 测试；因 Arch
 makepkg 的 native `-flto=auto`/release LTO/LLD 与 bundled SQLite、ring native static
 link 冲突，PKGBUILD 移除该 native LTO、显式关闭 Rust release LTO 并固定 bfd linker；
 Windows/Ubuntu 构建路径不受影响。
 `packaging/README.md` 明确了 Arch 构建、fish hook、卸载和数据边界；安装/升级/回滚的
-完整包事务已在 Arch WSL 实机完成：`pkgrel=6` 安装、升级到 `7`、回滚到 `6` 和卸载，
-并检查二进制/unit 文件边界。跨机器发布的签名、仓库索引和多架构产物仍不在本切片。
+完整包事务已在 Arch WSL 实机完成：安装 `pkgrel=7`，构建临时 `pkgrel=8` 副本并执行
+`7 → 8 → 7` 的 `pacman -U` 升级/回滚，再卸载包；升级与回滚均检查包版本、二进制和
+两个 user unit，卸载后包文件和 unit 被移除，而
+`/home/yunxibuilder/.local/state/yunxi/package-transaction-sentinel` 仍保留，证明事务
+不触碰用户数据。跨机器发布的签名、仓库索引和多架构产物仍不在本切片。
 `docs/YUNXI-NATIVE-PERFORMANCE-BASELINE.md` 记录了 Ubuntu/Arch WSL2 的冷启动、daemon
 就绪和 RSS p50/p95 实测基线；这些是 Ubuntu/Arch WSL2 环境中的实测结果，不构成通用
 SLA。另有

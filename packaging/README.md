@@ -50,7 +50,10 @@ makepkg -si --syncdeps
 bundled SQLite 与 ring 的 native static link；不会改变运行时的 SQLite 数据库边界，
 也不需要用户手动设置环境变量。
 
-PKGBUILD 固定 `_commit`，构建只产出 `yunxi-linux`，安装到 `/usr/bin/yunxi-linux`，并把
+PKGBUILD 当前固定 `_commit=0776de713f1b5ab5632be9fec8942adcbd319a47`（基于包含混合召回
+确定性排序的 `af6dc1198e79df0e16636874ee4d04af13c1fbad`，并包含后续 fish 接管修复），
+`pkgver` 保持不变、`pkgrel=7`。构建只产出 `yunxi-linux`，安装到
+`/usr/bin/yunxi-linux`，并把
 用户级服务安装到 `/usr/lib/systemd/user/yunxi-linux.service`。服务以当前登录用户运行，
 不创建 root daemon、不开放 TCP 端口，也不会在安装时自动启用：
 
@@ -94,9 +97,15 @@ sudo pacman -Rns yunxi-native
 ```
 
 卸载不会删除 `~/.local/state/yunxi`、工作区 `.yunxi/`、长期记忆或知识库，也不会删除
-fish hook；如需清理，必须由用户按路径显式处理。升级、降级回滚沿用 pacman 的包事务，
-已在 Arch WSL 中实机验收 `pkgrel=6 → 7 → 6`，不会触碰用户数据；跨机器发布仍需由
-目标发行环境自行签名并复验包来源。
+fish hook；如需清理，必须由用户按路径显式处理。升级、降级回滚沿用 pacman 的包事务。
+
+当前 pin 和 `pkgrel=7` 已在 Arch WSL 实机完成验证：先运行 preflight/static smoke，
+再用 `makepkg --clean --cleanbuild --noconfirm --syncdeps` 构建并安装 `pkgrel=7`，检查
+`/usr/bin/yunxi-linux --version`、两个 user unit；随后在临时副本构建 `pkgrel=8`，用
+`pacman -U` 完成 `7 → 8` 升级、`8 → 7` 回滚，最后用 `pacman -Rns --noconfirm`
+卸载。升级/回滚的包版本和 unit 文件均正确，卸载后包文件/unit 被移除，用户状态目录
+中的 sentinel 仍保留；全流程不自动启用 user service。跨机器发布仍需由目标发行环境
+自行签名并复验包来源。
 
 ## 明确不包含
 
