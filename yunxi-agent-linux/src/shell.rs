@@ -55,6 +55,8 @@ use yunxi_agent_runtime::YunXiRuntimeBackend;
 
 #[path = "knowledge_collector.rs"]
 mod knowledge_collector;
+#[path = "knowledge_pack.rs"]
+mod knowledge_pack;
 #[path = "knowledge_worker.rs"]
 mod knowledge_worker;
 #[path = "linux_tools.rs"]
@@ -425,6 +427,23 @@ pub(crate) enum LinuxShellCommand {
         #[arg(long, default_value = ".")]
         cwd: PathBuf,
     },
+    /// Import an offline, explicitly verified knowledge pack into a project/private space.
+    KnowledgeImportPack {
+        /// Pack root containing manifest.json; must be an explicit directory inside --cwd.
+        pack: PathBuf,
+        /// Existing project/private space id.
+        #[arg(long)]
+        space_id: String,
+        /// Owner id; must match the existing space and current OS principal.
+        #[arg(long)]
+        owner: String,
+        /// Visibility; must match the existing space.
+        #[arg(long)]
+        visibility: String,
+        /// Workspace whose knowledge database receives the documents.
+        #[arg(long, default_value = ".")]
+        cwd: PathBuf,
+    },
     /// Retract one knowledge document and its derived index rows.
     KnowledgeRetract {
         /// Stable document id returned by a knowledge collector/import.
@@ -768,6 +787,13 @@ pub(crate) async fn run_command(command: LinuxShellCommand) -> Result<()> {
         } => run_knowledge_import_directory(
             directory, space_id, source, version, owner, visibility, cwd,
         ),
+        LinuxShellCommand::KnowledgeImportPack {
+            pack,
+            space_id,
+            owner,
+            visibility,
+            cwd,
+        } => knowledge_pack::run_import(pack, space_id, owner, visibility, cwd),
         LinuxShellCommand::KnowledgeRetract {
             document_id,
             space_id,
@@ -1899,7 +1925,7 @@ fn run_knowledge_import_text(
     input: String,
     import_kind: &str,
 ) -> Result<()> {
-    let result = import_knowledge_text(
+    let result = import_knowledge_text_with_metadata(
         space_id,
         document_id,
         title,
@@ -1910,6 +1936,7 @@ fn run_knowledge_import_text(
         cwd,
         input,
         import_kind,
+        serde_json::json!({}),
     )?;
     println!("{}", serde_json::to_string_pretty(&result)?);
     Ok(())
@@ -1926,6 +1953,34 @@ fn import_knowledge_text(
     cwd: PathBuf,
     input: String,
     import_kind: &str,
+) -> Result<serde_json::Value> {
+    import_knowledge_text_with_metadata(
+        space_id,
+        document_id,
+        title,
+        source,
+        version,
+        owner,
+        visibility,
+        cwd,
+        input,
+        import_kind,
+        serde_json::json!({}),
+    )
+}
+
+pub(super) fn import_knowledge_text_with_metadata(
+    space_id: String,
+    document_id: String,
+    title: String,
+    source: String,
+    version: String,
+    owner: String,
+    visibility: String,
+    cwd: PathBuf,
+    input: String,
+    import_kind: &str,
+    extra_metadata: serde_json::Value,
 ) -> Result<serde_json::Value> {
     validate_knowledge_identifier("space_id", &space_id)?;
     validate_knowledge_identifier("document_id", &document_id)?;
@@ -1963,6 +2018,15 @@ fn import_knowledge_text(
     if normalized.is_empty() {
         bail!("知识导入内容不能为空")
     }
+    let mut metadata = serde_json::Map::new();
+    metadata.insert("import".to_string(), serde_json::json!(import_kind));
+    metadata.insert(
+        "space_kind".to_string(),
+        serde_json::json!(existing.kind.as_str()),
+    );
+    if let serde_json::Value::Object(extra) = extra_metadata {
+        metadata.extend(extra);
+    }
     let document = yunxi_agent_storage::KnowledgeDocument {
         document_id,
         space_id: space_id.clone(),
@@ -1972,11 +2036,7 @@ fn import_knowledge_text(
         generation: scope.generation,
         owner,
         visibility,
-        metadata_json: serde_json::json!({
-            "import": import_kind,
-            "space_kind": existing.kind.as_str(),
-        })
-        .to_string(),
+        metadata_json: serde_json::Value::Object(metadata).to_string(),
     };
     let summary = store.ingest_text(
         &document,

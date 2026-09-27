@@ -271,6 +271,26 @@ bash yunxi-agent-linux/tests/daemon_knowledge_worker_smoke.sh \
 阻止旧 worker 或候选 generation 在未来重新激活同一文档。system public 空间仍可用默认
 `owner=system` 做显式撤回，用户空间必须使用 `knowledge-principal` 返回的当前主体。
 
+### 离线审核知识包
+
+`knowledge-import-pack` 用于导入用户明确选定的离线专题资料或私有知识包。知识包根目录
+必须位于 `--cwd` 内，包含 UTF-8 的 `manifest.json` 和清单列出的普通文本/Markdown 文件；
+不联网、不扫描 HOME、不执行文档内容，也不允许写入 `system` 空间。manifest 的
+`schema_version` 当前为 `1`，并记录 `pack_id`、来源/版本、许可证、审核时间，以及每个
+文档的稳定 id、主题和风险级别。导入会把 pack provenance 写入 `metadata_json`，复用现有
+embedding job、FTS/vector、访问主体和撤回边界，project/private 内容仍不会自动进入
+Linux Planner。
+
+```bash
+./target/release/yunxi-linux knowledge-import-pack ./my-pack \
+  --space-id project-demo --owner "$PRINCIPAL" --visibility owner --cwd .
+```
+
+导入前会完整校验 manifest、路径越界、符号链接、`.yunxi` 状态目录、文件编码和资源上限；
+清单顺序会归一化为稳定顺序并生成 pack digest。真实验收脚本为
+`yunxi-agent-linux/tests/knowledge_import_pack_smoke.sh`，覆盖 owner 隔离、FTS/vector
+闭环、撤回、长期记忆字节不变以及“包内命令文本绝不执行”。
+
 `knowledge-worker --watch` 是显式 workspace 范围内的常驻轮询器：它复用同一套
 lease、退避、重试和 generation 校验，按间隔处理有限数量任务；不会扫描其他
 workspace，也不会自动激活 generation。除原有的 `--cwd` 单 workspace 模式外，

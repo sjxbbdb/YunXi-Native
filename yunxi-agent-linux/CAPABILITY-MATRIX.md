@@ -124,6 +124,7 @@
 - fish hook 全量接管：所有非空提交进入 YunXi，已通过真实 fish + PTY smoke；保守模式不再存在，基础光标隐藏/恢复、原始输入重放、提示符重绘和多行续行缩进已验证；更广泛终端模拟器/复杂提示符矩阵仍按后续边界补齐。
 - 知识 worker：已有单 workspace `--cwd` 与显式多 workspace `--workspace` fleet；fleet 只处理调用方明确列出的工作区，跨轮 round-robin、独立 XDG 游标状态、单工作区故障隔离、确定性持久化工作区退避和脱敏 JSON 已覆盖；`knowledge-worker-status` 另提供跨 workspace 的有界健康/队列/告警聚合摘要。daemon 级自动发现仍不启用。
 - 知识导入：project/private 支持 stdin 与显式单文件（UTF-8 文本/Markdown）导入；文件入口限定工作区边界、拒绝 `.yunxi` 状态目录和超大文件，不做目录扫描。
+- 离线审核知识包：`knowledge-import-pack` 支持用户显式选择的 manifest + 文本/Markdown 文档，保留 pack digest、审核时间、许可证、topic/risk provenance，并复用 owner 隔离、向量队列与撤回边界；不联网、不执行包内内容、不写入 system 空间。
 - 知识队列诊断：已有只读 `knowledge-worker-status`，同一快照观察 active/staging 队列，区分就绪、退避、失败、耗尽和过期 lease；不会创建/迁移数据库或触发 worker。
 - 知识风险 provenance：`man/help` 文档同时记录采集风险 `risk_level` 与被描述命令的 `risk_class`，并由 Planner 诊断透传；它只做提示，不能绕过 Approval/Sandbox。
 - 知识访问主体：`knowledge-principal` 从当前 UID/用户名生成稳定 principal；project/private 的初始化、导入、查询、向量查询、撤回和空间列表均绑定当前主体，不能仅修改 `--owner` 越权；system public 空间使用内部 `system` principal。

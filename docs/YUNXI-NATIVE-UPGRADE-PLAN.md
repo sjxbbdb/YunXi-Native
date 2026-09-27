@@ -400,6 +400,16 @@ project 首版仅允许 owner visibility，private 允许 owner/private；source
 空间隔离、显式撤回和长期记忆数据库未被触碰。`knowledge-retract` 现在也接受显式
 space/owner/visibility，并在同一存储边界内清理文档、FTS、向量和 embedding job。
 
+本增量新增 `knowledge-import-pack` 作为 P2“经过审核的专题资料”与未来私有知识包的
+离线入口。pack 根目录必须由用户显式指定并位于 workspace 内，包含 schema version 为
+`1` 的 UTF-8 `manifest.json`；清单列出的每个文档都会校验路径越界、符号链接、`.yunxi`
+状态目录、编码和资源上限，包内文本只作为数据读取，不会联网或执行。manifest 记录
+pack/source/version、license、verified_at、topic 和 risk_class，导入后作为 provenance
+写入 `metadata_json`，并复用既有 owner/visibility、embedding job、FTS/vector 与撤回
+边界；system 空间与长期记忆均不可写入，project/private 证据仍不会自动进入 Planner。
+清单按稳定 document id 排序并生成 digest；异常在写入前尽量完整校验，真实黑盒验收为
+`yunxi-agent-linux/tests/knowledge_import_pack_smoke.sh`。
+
 本增量进一步把“owner 字符串”绑定为真实访问主体：Linux CLI 通过当前进程的有效 UID
 和用户名生成稳定的 `uid:<uid>:user:<name>` principal，并提供只读的
 `knowledge-principal` 供脚本与用户确认。project/private 的空间初始化、stdin/文件导入、
