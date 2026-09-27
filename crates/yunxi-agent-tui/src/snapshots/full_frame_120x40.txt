@@ -1,5 +1,5 @@
 00|YunXi Agent v2.3.3 | deepseek live | model=deepseek-chat-ultra-long-model-name | C:/.../yunxi-agent-cli
-01|new output below | live · deepseek | running
+01|new output below | live · deepseek/deepseek-chat-ultra-long-mode... | running
 02|────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 03|┌Transcript 12-42 / 49 | new output below──────────────────────────────────────────────────────────────────────────────┐
 04|│[notice] history 11: stable transcript row for viewport evidence                                                      ^

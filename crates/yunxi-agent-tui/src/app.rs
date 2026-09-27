@@ -325,7 +325,8 @@ impl YunxiTuiApp {
                 let mode = mode_label(banner.provider_live);
                 let provider =
                     TextLayout::truncate(&banner.provider, if width < 90 { 16 } else { 24 });
-                let mode_provider = format!("{mode} · {provider}");
+                let model = TextLayout::truncate(&banner.model, if width < 90 { 18 } else { 32 });
+                let mode_provider = format!("{mode} · {provider}/{model}");
                 let state = if self.timeline.has_active_sessions() {
                     "running"
                 } else {
@@ -640,6 +641,7 @@ mod tests {
         assert!(header.contains("D:/"));
         assert!(header.contains("yunxi-agent-cli"));
         assert!(subheader.contains("offline · static"));
+        assert!(subheader.contains("deepseek-chat"));
         assert!(subheader.contains("ready"));
         assert!(!subheader.contains("backend="));
         assert!(!subheader.contains("source="));
