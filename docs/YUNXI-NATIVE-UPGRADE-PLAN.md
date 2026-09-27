@@ -422,8 +422,9 @@ staging 行，激活也会在复制前拒绝。schema 从 7 升到 8，旧知识
 `document_id`、embedding model 与 generation，入队会校验文档代际并对重复请求幂等；
 领取使用 SQLite `IMMEDIATE` 事务，`complete`/`fail` 只允许合法的 worker 状态转换，
 失败只记录队列状态并保留已有向量。实际任务执行由有界 CLI worker 提供；system
-knowledge 的 Planner 只读召回已经接入，project/private 仍保持显式查询边界，daemon
-级跨 workspace 调度留待后续增量。
+knowledge 的 Planner 只读召回已经接入，project/private 仍保持显式查询边界；worker job
+的有界指数退避、显式 fleet 与 daemon 多 workspace 调度也已经接入，仍只处理用户明确
+指定的 workspace。
 
 当前增量已把队列接成一个可验证的最小执行闭环：`SqliteKnowledgeStore` 提供有界的
 `process_next_embedding_job`，先按 worker lease 领取，再用当前本地字符 n-gram provider
@@ -456,14 +457,16 @@ PATH/`BASH_ENV` 回归这一边界。这只是采集器边界，不改变 Runtim
 
 同时提供了显式 `retry_embedding_job`/`knowledge-retry` 恢复边界：只有 `failed` 状态
 且尚未超过三次尝试的任务才能重新排队，原始 `last_error` 会保留用于诊断。它是
-人工强制恢复入口；daemon 的单 workspace 常驻调度已在后续增量接入，跨 workspace 告警
-聚合现在由只读 `knowledge-worker-status` 提供有界摘要；统一退避策略仍留待后续设计。
+人工强制恢复入口；daemon 的单 workspace 常驻调度、显式 fleet/daemon 多 workspace
+调度和跨 workspace 告警聚合已经接入。worker job 使用持久化的有界指数退避；workspace
+级故障另使用按 workspace 指纹持久化的确定性指数退避，二者边界独立。
 
 队列现在为每个任务持久化 `next_attempt_at_millis`。provider 或索引临时失败会按
 有界指数退避自动到期重试（最多三次），而文档缺失、generation 过期和 provider
 model 不匹配被视为终态失败；lease 回收仍立即恢复，不套用退避。daemon 已能在显式
-workspace 内常驻调度；跨 workspace 统一退避和自动发现仍不在本切片范围内，告警聚合
-仅作为只读诊断摘要输出。
+workspace 内常驻调度；显式 fleet worker 与 daemon 均支持多 workspace，workspace
+级故障使用独立、无随机抖动的确定性指数退避，并在进程重启后保持。自动发现仍不在
+本切片范围内，workspace 必须由用户显式指定；告警聚合继续作为只读诊断摘要输出。
 
 当前新增了显式 `knowledge-worker --watch` 轮询器作为过渡调度边界：它绑定一个明确的
 workspace，按间隔以有限 batch 领取到期任务，复用已有 lease/退避/重试契约，不扫描其他
@@ -698,9 +701,11 @@ Windows/Ubuntu 构建路径不受影响。
 完整包事务已在 Arch WSL 实机完成：`pkgrel=6` 安装、升级到 `7`、回滚到 `6` 和卸载，
 并检查二进制/unit 文件边界。跨机器发布的签名、仓库索引和多架构产物仍不在本切片。
 `docs/YUNXI-NATIVE-PERFORMANCE-BASELINE.md` 记录了 Ubuntu/Arch WSL2 的冷启动、daemon
-就绪和 RSS p50/p95 实测基线。另有
+就绪和 RSS p50/p95 实测基线；这些是 Ubuntu/Arch WSL2 环境中的实测结果，不构成通用
+SLA。另有
 `yunxi-agent-linux/tests/performance_smoke.sh`，对 release 进程启动、临时 daemon
-就绪耗时和 `/proc` RSS 输出无硬阈值 JSON 基线；它不替代目标 Arch 主机的实测。
+就绪耗时和 `/proc` RSS 输出无硬阈值 JSON 基线，用于辅助回归，不替代上述实测或通用
+SLA。
 
 本增量新增 packaging/arch/yunxi-native/lifecycle-smoke.sh，在临时 package root
 中模拟安装、升级迁移失败时保持旧 manifest、成功升级、显式回滚和卸载。它验证

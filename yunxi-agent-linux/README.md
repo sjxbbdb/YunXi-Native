@@ -127,7 +127,9 @@ Phase 3 现在提供 `yunxi-agent-tools::linux_preview::plan` 纯规划原语。
 
 预览输出中的 `runner: "none"`、`spawned: false`、`files_changed: false` 和
 `system_modified: false` 是硬契约；`command` 仅供展示，绝不能重新交给 shell。模型可见
-ToolSpec、可回滚写入和高风险执行仍需后续增量接入，当前不把计划误报为执行成功。
+`linux_preview` 仍只负责规划、不负责执行；`linux_apply`、`linux_systemd`、
+`linux_package`、`linux_network` 和 `linux_process` 是彼此分开的、经审批门控的 typed
+执行路径。可回滚写入与高风险执行已接入相应工具，但预览仍不会把计划误报为执行成功。
 
 真实 Linux 验收可运行：
 
