@@ -38,6 +38,26 @@ printf '%s\n' '{"id":"fixture-b","content":"memory b must not change"}' >"$MEMOR
 MEMORY_BEFORE="$(sha256sum "$MEMORY_FILE" | awk '{print $1}')"
 MEMORY_BEFORE_B="$(sha256sum "$MEMORY_FILE_B" | awk '{print $1}')"
 
+# The daemon validates the explicit fleet before binding its socket. Exercise
+# the hard upper bound without creating a competing daemon instance.
+TOO_MANY_ROOT="$TMP_ROOT/too-many"
+mkdir -p "$TOO_MANY_ROOT"
+TOO_MANY_ARGS=()
+for index in $(seq 1 33); do
+  workspace="$TOO_MANY_ROOT/workspace-$index"
+  mkdir -p "$workspace"
+  TOO_MANY_ARGS+=(--knowledge-workspace "$workspace")
+done
+set +e
+"$BINARY" daemon "${TOO_MANY_ARGS[@]}" >"$TMP_ROOT/too-many.out" 2>&1
+TOO_MANY_RC=$?
+set -e
+[[ "$TOO_MANY_RC" -ne 0 ]] || {
+  echo "daemon accepted more than 32 knowledge workspaces" >&2
+  exit 1
+}
+grep -Eq -- 'knowledge-workspace.*32' "$TMP_ROOT/too-many.out"
+
 "$BINARY" knowledge-space-init --space-id daemon-smoke --kind private \
   --visibility private --owner daemon-smoke-owner --source daemon-smoke \
   --version v1 --cwd "$WORKSPACE" >/dev/null
