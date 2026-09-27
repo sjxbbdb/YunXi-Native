@@ -209,6 +209,13 @@ python3 yunxi-agent-linux/tests/knowledge_worker_status_fleet_smoke.py \
 bash yunxi-agent-linux/tests/knowledge_generation_smoke.sh ./target/release/yunxi-linux
 ```
 
+真实 Linux P0 帮助/man 目录的多文档验收会同时检查风险 provenance、精确版本过滤、
+FTS/向量代际一致性和 `man` 来源：
+
+```bash
+bash yunxi-agent-linux/tests/knowledge_catalog_smoke.sh ./target/release/yunxi-linux
+```
+
 `knowledge-space-list` 只列出空间元数据，不读取文档正文、chunk 或向量；它用于确认
 当前 workspace 的 system/project/private 边界，输出按 `space_id` 稳定排序。
 

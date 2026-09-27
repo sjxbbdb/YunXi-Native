@@ -452,6 +452,9 @@ Linux CLI 已暴露这条安全管道：`knowledge-generation-begin` 创建候�
 真实 Linux CLI smoke 现在覆盖这条发布闭环：激活前 staging 文档对 FTS/向量查询不可见，
 未 ready 的候选激活会被拒绝且 active 指针保持不变，seal 后才能原子切换；激活后 FTS 与
 向量检索返回同一 generation，并验证长期记忆向量数据库的文件内容未被改写。
+新增的 `knowledge_catalog_smoke.sh` 又以真实 Linux `--help` 与 `man` 输出建立多文档候选，
+覆盖只读/破坏性风险标签、同一命令的跨发行版版本过滤、man provenance，以及激活后
+FTS/向量代际一致性，避免单文档夹具掩盖 collector 或版本边界问题。
 
 采集 CLI 的成功路径现在会在 `ingest_text` 完成后为当前文档 generation 自动创建
 本地 provider 的 pending job，并在 JSON 结果中返回 job 元数据；它只入队、不启动
