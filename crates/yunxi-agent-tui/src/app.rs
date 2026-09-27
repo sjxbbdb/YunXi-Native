@@ -1,3 +1,4 @@
+use crate::approval_layout::{APPROVAL_HINT_PRIMARY, APPROVAL_HINT_SECONDARY};
 use crate::bottom_pane::{ApprovalRequestView, BottomPane, BottomPaneMode, UserInputRequestView};
 use crate::chat::Transcript;
 use crate::input_map::FocusTarget;
@@ -168,10 +169,8 @@ impl YunxiTuiApp {
         if self.focus == FocusTarget::Approval {
             return TextLayout::priority_line(
                 &[
-                    PrioritySegment::new("Tab select", ClipPriority::MustKeep),
-                    PrioritySegment::new("Enter confirm", ClipPriority::MustKeep),
-                    PrioritySegment::new("Esc decline", ClipPriority::Important),
-                    PrioritySegment::new("Ctrl+C cancel", ClipPriority::Optional),
+                    PrioritySegment::new(APPROVAL_HINT_PRIMARY, ClipPriority::MustKeep),
+                    PrioritySegment::new(APPROVAL_HINT_SECONDARY, ClipPriority::Important),
                 ],
                 width,
             );
@@ -843,8 +842,10 @@ mod tests {
             risk_label: None,
         });
         let approval = app.footer_for_width(100);
-        assert!(approval.contains("Enter confirm"));
+        assert!(approval.contains("Enter confirm selected"));
+        assert!(approval.contains("Tab/Shift+Tab select"));
         assert!(approval.contains("Esc decline"));
+        assert!(approval.contains("Y approve"));
         assert!(!approval.contains("wheel"));
 
         app.show_details(None);

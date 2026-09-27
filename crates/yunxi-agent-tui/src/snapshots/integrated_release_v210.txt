@@ -113,17 +113,17 @@
 09|│                                                                              │
 10|│                                                                              │
 11|│                                                                              │
-12|│                                                                              │
-13|└──────────────────────────────────────────────────────────────────────────────┘
-14|┌Approval required | default: Decline──────────────────────────────────────────┐
-15|│approval shell in C:/Workspace/云汐                                           │
-16|│reason   删除生成目录前需要明确批准                                           │
-17|│risk     risk: destructive                                                    │
-18|│command  Remove-Item -Recurse C:/Workspace/云汐/generated                     │
-19|│                                                                              │
-20|│  Approve  Enter/Y                                                            │
-21|│> Decline (safe default) N/Esc                                                │
-22|│Tab select | Enter confirm | Esc decline | Ctrl+C cancel                      │
+12|└──────────────────────────────────────────────────────────────────────────────┘
+13|┌Approval required | default: Decline──────────────────────────────────────────┐
+14|│approval shell in C:/Workspace/云汐                                           │
+15|│reason   删除生成目录前需要明确批准                                           │
+16|│risk     risk: destructive                                                    │
+17|│command  Remove-Item -Recurse C:/Workspace/云汐/generated                     │
+18|│                                                                              │
+19|│  Approve                                                                     │
+20|│> Decline (safe default)                                                      │
+21|│Tab/Shift+Tab select | Enter confirm selected | Esc decline                   │
+22|│Ctrl+C cancel | Y approve | N decline                                         │
 23|└──────────────────────────────────────────────────────────────────────────────┘
 === tool-approval-failure/details 80x24 style=full ===
 00|YunXi v2.1.0 | deepseek live
@@ -138,17 +138,17 @@
 09|│                                                                              │
 10|│                                                                              │
 11|│                                                                              │
-12|│                                                                              │
-13|└──────────────────────────────────────────────────────────────────────────────┘
-14|┌Approval required | default: Decline──────────────────────────────────────────┐
-15|│approval shell in C:/Workspace/云汐                                           │
-16|│reason   删除生成目录前需要明确批准                                           │
-17|│risk     risk: destructive                                                    │
-18|│command  Remove-Item -Recurse C:/Workspace/云汐/generated                     │
-19|│                                                                              │
-20|│  Approve  Enter/Y                                                            │
-21|│> Decline (safe default) N/Esc                                                │
-22|│Tab select | Enter confirm | Esc decline | Ctrl+C cancel                      │
+12|└──────────────────────────────────────────────────────────────────────────────┘
+13|┌Approval required | default: Decline──────────────────────────────────────────┐
+14|│approval shell in C:/Workspace/云汐                                           │
+15|│reason   删除生成目录前需要明确批准                                           │
+16|│risk     risk: destructive                                                    │
+17|│command  Remove-Item -Recurse C:/Workspace/云汐/generated                     │
+18|│                                                                              │
+19|│  Approve                                                                     │
+20|│> Decline (safe default)                                                      │
+21|│Tab/Shift+Tab select | Enter confirm selected | Esc decline                   │
+22|│Ctrl+C cancel | Y approve | N decline                                         │
 23|└──────────────────────────────────────────────────────────────────────────────┘
 
 === history-scroll-resize/main 100x30 style=ansi16 ===
@@ -292,9 +292,9 @@
 11|│risk     risk: review                                   │
 12|│command  echo safe                                      │
 13|│                                                        │
-14|│  Approve  Enter/Y                                      │
-15|│> Decline (safe default) N/Esc                          │
-16|│Tab select | Enter confirm | Esc decline | Ctrl+C cancel│
+14|│  Approve                                               │
+15|│> Decline (safe default)                                │
+16|│Tab/Shift+Tab select | Enter selected | Esc/N decline   │
 17|└────────────────────────────────────────────────────────┘
 === low-color-semantics/details 58x18 style=monochrome ===
 00|YunXi v2.1.0 | deepseek offline
@@ -311,7 +311,7 @@
 11|│risk     risk: review                                   │
 12|│command  echo safe                                      │
 13|│                                                        │
-14|│  Approve  Enter/Y                                      │
-15|│> Decline (safe default) N/Esc                          │
-16|│Tab select | Enter confirm | Esc decline | Ctrl+C cancel│
+14|│  Approve                                               │
+15|│> Decline (safe default)                                │
+16|│Tab/Shift+Tab select | Enter selected | Esc/N decline   │
 17|└────────────────────────────────────────────────────────┘

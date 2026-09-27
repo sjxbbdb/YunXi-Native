@@ -82,6 +82,34 @@ Linux 版已经开始把系统能力接入为固定的 `linux_readonly` ToolSpec
 Sandbox，工作区变更会写入 `.yunxi/undo` journal，并可用 `undo()` 恢复；它不接受任意
 shell 文本，也不会把 systemd、package 或 network 的高风险操作偷偷变成执行。
 
+### 记忆反思与自动总结（Phase 5）
+
+YunXi 现在可以在一段时间没有新对话后，对最近完成的会话做一次后台“记忆反思”。默认空闲阈值为
+30 分钟，可通过 `YUNXI_MEMORY_REFLECTION_IDLE_SECONDS` 调整（最小 60 秒，最大 24 小时）；
+可用 `YUNXI_MEMORY_REFLECTION_ENABLED=false` 关闭。反思任务只在记忆功能已启用、Provider 和
+模型配置完整时运行，不阻塞当前对话，也不会主动向用户发送消息。
+
+反思不是把聊天记录灌入 Linux 知识库，而是复用现有 MemoryPipeline 和隐私策略，将有限数量的
+新会话生成结构化候选：
+
+```text
+SessionRecord（用户话语 + 云熙回复）
+        ↓ 空闲阈值 + checkpoint + 有界输入
+YunXi 结构化反思（只返回 candidates JSON）
+        ↓ MemoryPipeline / 敏感信息过滤 / 去重
+长期记忆 JSONL ──→ long-term-vectors.sqlite3（仅符合索引策略的记录）
+用户档案 JSON（保持结构化，不向量化）
+```
+
+写入边界保持严格区分：稳定、低风险的偏好和项目上下文可以自动沉淀；个人事实、关系、情绪、
+目标和事件保留为 `pending` 或低置信候选；疑似密码、令牌和其他高敏感内容会被丢弃。反思状态
+保存在工作区 `.yunxi/memory-reflection.json`，以 session 时间和 ID 做幂等 checkpoint，Provider
+失败不会推进 checkpoint，后续可重试。`knowledge.sqlite3` 永远只接受显式导入或受控采集的外部知识，
+不会自动接收聊天总结。
+
+这让 YunXi 能通过可追溯的偏好、项目经历和用户档案逐渐了解用户，同时避免把一次闲聊或模型猜测
+直接固化为事实。
+
 ### 知识库边界（Phase 4 基础切片）
 
 Linux 知识库已经有独立的 `SqliteKnowledgeStore` 基础：数据库文件为 `knowledge.sqlite3`，与长期记忆的 `long-term-vectors.sqlite3` 物理分离。知识空间、文档、chunk、generation、owner 和 visibility 会在检索前校验，当前支持 FTS5 和按模型隔离的有界向量检索。采集前会经过确定性的文本规范化和分块，不读取任意路径；`ingest_text` 在单事务内替换文档 chunk 并清理旧向量，文档 hash 与分块参数未变化时会跳过重建，避免索引与向量残留；`replace_document_vectors` 可为 embedding worker 原子替换一个文档的模型向量集合。Runtime 通过只读 Planner 证据边界消费它，知识文本不会被当作 shell 命令直接运行。

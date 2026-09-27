@@ -337,11 +337,7 @@ fn render_approval_layout_line(line: ApprovalLayoutLine, styles: TuiStyleSet) ->
             ])
         }
         ApprovalLayoutLine::Blank => Line::from(""),
-        ApprovalLayoutLine::Action {
-            label,
-            selected,
-            shortcut,
-        } => option_line(label, selected, shortcut, styles),
+        ApprovalLayoutLine::Action { label, selected } => option_line(label, selected, styles),
         ApprovalLayoutLine::Hint(value) => {
             Line::from(Span::styled(value, styles.style(TuiSemanticStyle::Footer)))
         }
@@ -451,7 +447,7 @@ fn composer_cursor_position(
     }
 }
 
-fn option_line(label: &str, selected: bool, shortcut: &str, styles: TuiStyleSet) -> Line<'static> {
+fn option_line(label: &str, selected: bool, styles: TuiStyleSet) -> Line<'static> {
     let marker = if selected { ">" } else { " " };
     let style = if selected {
         styles.style(TuiSemanticStyle::Selection)
@@ -460,11 +456,7 @@ fn option_line(label: &str, selected: bool, shortcut: &str, styles: TuiStyleSet)
     };
     Line::from(vec![
         Span::raw(format!("{marker} ")),
-        Span::styled(format!("{label:<8}"), style),
-        Span::styled(
-            format!(" {shortcut}"),
-            styles.style(TuiSemanticStyle::Footer),
-        ),
+        Span::styled(label.to_string(), style),
     ])
 }
 
@@ -881,7 +873,7 @@ mod tests {
         assert!(rendered.contains("default: Decline"));
         assert!(rendered.contains("Approve"));
         assert!(rendered.contains("Decline"));
-        assert!(rendered.contains("Tab select"));
+        assert!(rendered.contains("Tab/Shift+Tab select"));
         assert!(rendered.contains("Esc decline"));
         assert!(rendered.contains("risk"));
         assert!(rendered.contains("risk: low"));
@@ -915,7 +907,7 @@ mod tests {
         assert!(rendered.contains("Approve"));
         assert!(rendered.contains("Decline"));
         assert!(rendered.contains("safe default"));
-        assert!(rendered.contains("Tab select"));
+        assert!(rendered.contains("Tab/Shift+Tab select"));
         assert!(rendered.contains("risk: destructive"));
     }
 
@@ -935,7 +927,7 @@ mod tests {
 
             assert!(rendered.contains("Approve"));
             assert!(rendered.contains("Decline"));
-            assert!(rendered.contains("Tab select"));
+            assert!(rendered.contains("Tab/Shift+Tab select"));
             assert!(rendered.contains("risk: destructive"));
         }
     }
@@ -949,7 +941,7 @@ mod tests {
             assert!(snapshot.contains("Remove-Item"), "width={width}");
             assert!(snapshot.contains("Approve"), "width={width}");
             assert!(snapshot.contains("Decline"), "width={width}");
-            assert!(snapshot.contains("Tab select"), "width={width}");
+            assert!(snapshot.contains("Tab/Shift+Tab select"), "width={width}");
             assert!(snapshot.lines().all(|row| {
                 UnicodeWidthStr::width(row.split_once('|').unwrap().1) <= width as usize
             }));

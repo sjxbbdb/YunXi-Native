@@ -206,7 +206,10 @@ with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
         if frame["frame"]["kind"] == "done":
             break
     assert any(event["frame"]["kind"] in {"thread", "message"} for event in events), events
-    assert events[-1]["frame"] == {"kind": "done", "status": "interrupted"}, events
+    done_frame = events[-1]["frame"]
+    assert done_frame["kind"] == "done", events
+    assert done_frame["status"] == "interrupted", events
+    assert done_frame.get("error"), events
 PY
 
 echo "daemon-restart-recovery-smoke=ok"

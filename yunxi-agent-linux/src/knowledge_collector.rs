@@ -359,6 +359,12 @@ fn fixed_environment() -> BTreeMap<String, String> {
             "PATH".to_string(),
             "/usr/sbin:/usr/bin:/sbin:/bin".to_string(),
         ),
+        // Help output is persisted as system knowledge and must be stable
+        // across the user's locale.  In particular, a Chinese host locale
+        // must not turn `linux.command_help` documents into translated text
+        // that cannot be compared or recalled consistently on another host.
+        ("LC_ALL".to_string(), "C".to_string()),
+        ("LANG".to_string(), "C".to_string()),
         // Keep shell-like and git help commands from loading user startup or
         // configuration files while the collector is running read-only.
         ("BASH_ENV".to_string(), "/dev/null".to_string()),
@@ -650,6 +656,8 @@ mod tests {
             environment.get("PATH").map(String::as_str),
             Some("/usr/sbin:/usr/bin:/sbin:/bin")
         );
+        assert_eq!(environment.get("LC_ALL").map(String::as_str), Some("C"));
+        assert_eq!(environment.get("LANG").map(String::as_str), Some("C"));
         assert_eq!(
             environment.get("BASH_ENV").map(String::as_str),
             Some("/dev/null")

@@ -13,6 +13,7 @@ pub fn detect_linux_source_version() -> Option<String> {
     linux_source::detect_source_version()
 }
 mod love_letter;
+mod memory_reflection;
 mod runtime_state;
 mod session_driver;
 mod turn_driver;
@@ -83,6 +84,7 @@ use yunxi_agent_tools::{
     ToolRuntime, ToolRuntimeEvent, ToolStatus,
 };
 
+use crate::memory_reflection::schedule_idle_memory_reflection;
 use crate::runtime_state::runtime_data;
 use crate::session_driver::RuntimeSessionDriver;
 use crate::turn_driver::RuntimeTurnDriver;
@@ -1584,6 +1586,11 @@ impl YunXiRuntimeBackend {
         let events = sink.events().await?;
         session.events = events.clone();
         self.storage.save(session).await?;
+        schedule_idle_memory_reflection(
+            Arc::clone(&self.provider),
+            runtime_config.clone(),
+            Arc::clone(&self.storage),
+        );
         let _ = crate::love_letter::schedule(Arc::clone(&self.provider), runtime_config.clone());
 
         Ok(AgentRunResult {

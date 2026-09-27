@@ -108,6 +108,20 @@ if [[ -d "$repo_root/.git" && "$source_commit" =~ ^[0-9a-f]{40}$ ]]; then
   fi
   if [[ -n "$head_commit" ]] && git -C "$repo_root" merge-base --is-ancestor "$source_commit" "$head_commit"; then
     emit source_commit_ancestor true
+    source_commit_lag=$(git -C "$repo_root" rev-list --count "${source_commit}..${head_commit}" 2>/dev/null || true)
+    if [[ "$source_commit_lag" =~ ^[0-9]+$ ]]; then
+      emit source_commit_lag "$source_commit_lag"
+      # The packaging bump itself normally becomes the one commit after the
+      # pinned source. More than that means a later change was published
+      # without refreshing the package pin.
+      if (( source_commit_lag > 1 )); then
+        warn source_commit_staleness
+      else
+        emit source_commit_fresh true
+      fi
+    else
+      block source_commit_lag
+    fi
   else
     block source_commit_ancestor
   fi

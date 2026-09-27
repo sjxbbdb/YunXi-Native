@@ -5,6 +5,13 @@ const HEADER_LINES: usize = 1;
 const REASON_LINES: usize = 1;
 const RISK_LINES: usize = 1;
 
+/// Approval key semantics are intentionally spelled out in the approval pane.
+/// Enter confirms the highlighted action, so the safe default remains a decline.
+pub(crate) const APPROVAL_HINT_PRIMARY: &str =
+    "Tab/Shift+Tab select | Enter confirm selected | Esc decline";
+pub(crate) const APPROVAL_HINT_SECONDARY: &str = "Ctrl+C cancel | Y approve | N decline";
+const APPROVAL_HINT_NARROW: &str = "Tab/Shift+Tab select | Enter selected | Esc/N decline";
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct ApprovalLayout {
     pub(crate) lines: Vec<ApprovalLayoutLine>,
@@ -27,7 +34,6 @@ pub(crate) enum ApprovalLayoutLine {
     Action {
         label: &'static str,
         selected: bool,
-        shortcut: &'static str,
     },
     Hint(&'static str),
 }
@@ -102,16 +108,19 @@ pub(crate) fn approval_layout_for_width(
     lines.push(ApprovalLayoutLine::Action {
         label: "Approve",
         selected: selected == 0,
-        shortcut: "Enter/Y",
     });
     lines.push(ApprovalLayoutLine::Action {
         label: "Decline (safe default)",
         selected: selected == 1,
-        shortcut: "N/Esc",
     });
-    lines.push(ApprovalLayoutLine::Hint(
-        "Tab select | Enter confirm | Esc decline | Ctrl+C cancel",
-    ));
+    if width < 80 {
+        // Keep the approval pane within the established narrow-terminal height
+        // budget while retaining the safe selection semantics on screen.
+        lines.push(ApprovalLayoutLine::Hint(APPROVAL_HINT_NARROW));
+    } else {
+        lines.push(ApprovalLayoutLine::Hint(APPROVAL_HINT_PRIMARY));
+        lines.push(ApprovalLayoutLine::Hint(APPROVAL_HINT_SECONDARY));
+    }
 
     ApprovalLayout { lines }
 }
@@ -217,9 +226,11 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert_eq!(labels, vec!["Approve", "Decline (safe default)"]);
-        assert!(layout.lines.contains(&ApprovalLayoutLine::Hint(
-            "Tab select | Enter confirm | Esc decline | Ctrl+C cancel"
-        )));
+        assert!(
+            layout
+                .lines
+                .contains(&ApprovalLayoutLine::Hint(APPROVAL_HINT_NARROW))
+        );
         assert!(layout.desired_height() <= 10);
     }
 
@@ -253,7 +264,7 @@ mod tests {
         assert!(rendered.contains("Approve"));
         assert!(rendered.contains("Decline"));
         assert!(rendered.contains("safe default"));
-        assert!(rendered.contains("Tab select"));
-        assert!(rendered.contains("Esc decline"));
+        assert!(rendered.contains("Tab/Shift+Tab select"));
+        assert!(rendered.contains("Esc/N decline"));
     }
 }
