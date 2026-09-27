@@ -129,6 +129,19 @@ pub(crate) enum LinuxShellCommand {
         /// Run id returned by the daemon in `run_accepted`.
         run_id: String,
     },
+    /// Follow a detached run and stream its bounded JSON event frames.
+    RunFollow {
+        /// Run id returned by the daemon in `run_accepted`.
+        run_id: String,
+        /// Resume after this already-consumed event sequence number.
+        #[arg(long, default_value_t = 0)]
+        after_seq: u64,
+    },
+    /// Request cancellation of an active detached run.
+    RunCancel {
+        /// Run id returned by the daemon in `run_accepted`.
+        run_id: String,
+    },
     /// Print the user-level systemd unit used to host the daemon.
     SystemdUnit,
     /// Run a bounded read-only Linux host probe.
@@ -570,6 +583,8 @@ pub(crate) async fn run_command(command: LinuxShellCommand) -> Result<()> {
             .await
         }
         LinuxShellCommand::RunStatus { run_id } => run_status(run_id).await,
+        LinuxShellCommand::RunFollow { run_id, after_seq } => run_follow(run_id, after_seq).await,
+        LinuxShellCommand::RunCancel { run_id } => run_cancel(run_id).await,
         LinuxShellCommand::SystemdUnit => {
             print!("{SYSTEMD_UNIT}");
             Ok(())
@@ -4123,6 +4138,185 @@ async fn run_status(run_id: String) -> Result<()> {
         let _ = run_id;
         bail!("run-status 仅支持 Unix/Linux")
     }
+}
+
+/// Follow is intentionally a streaming CLI: it never accumulates the replay
+/// ring in memory and writes one protocol frame as one JSON line. The daemon
+/// closes the connection after the terminal `Done` event, so a close before
+/// that event is an actionable failure rather than a successful empty stream.
+async fn run_follow(run_id: String, after_seq: u64) -> Result<()> {
+    #[cfg(unix)]
+    {
+        let socket = ensure_daemon().await?;
+        let stream = UnixStream::connect(&socket)
+            .await
+            .with_context(|| format!("连接 YunXi shell daemon 失败: {}", socket.display()))?;
+        let (mut reader, mut writer) = stream.into_split();
+        send_client_frame(
+            &mut writer,
+            &ClientFrame::Hello {
+                protocol_version: LINUX_IPC_PROTOCOL_VERSION,
+                client: "yunxi-run-follow".to_string(),
+                capabilities: vec!["follow".to_string()],
+            },
+        )
+        .await?;
+        let Some(ServerFrame::HelloAck {
+            protocol_version, ..
+        }) = read_frame_with_timeout(&mut reader, DAEMON_HANDSHAKE_TIMEOUT, "Follow 握手").await?
+        else {
+            bail!("YunXi shell daemon 在 Follow 握手时断开连接");
+        };
+        if protocol_version != LINUX_IPC_PROTOCOL_VERSION {
+            bail!(
+                "YunXi shell IPC 版本不兼容：daemon={} client={}",
+                protocol_version,
+                LINUX_IPC_PROTOCOL_VERSION
+            );
+        }
+        send_client_frame(
+            &mut writer,
+            &ClientFrame::Follow {
+                run_id: Some(run_id.clone()),
+                session_id: None,
+                after_seq,
+            },
+        )
+        .await?;
+
+        loop {
+            let Some(frame) = read_frame::<_, ServerFrame>(&mut reader)
+                .await
+                .context("读取 YunXi run-follow frame 失败")?
+            else {
+                bail!("YunXi shell daemon 在 run {run_id} 的 Follow 完成前断开连接");
+            };
+            let terminal_status = match &frame {
+                ServerFrame::Event {
+                    run_id: event_run_id,
+                    frame,
+                    ..
+                } => {
+                    if event_run_id != &run_id {
+                        bail!(
+                            "YunXi shell daemon 返回了错误的 run_id：收到={} 请求={}",
+                            event_run_id,
+                            run_id
+                        );
+                    }
+                    match frame.as_ref() {
+                        ServerFrame::Done { status } => Some(status.clone()),
+                        _ => None,
+                    }
+                }
+                ServerFrame::ResyncRequired {
+                    run_id: response_run_id,
+                    reason,
+                } => {
+                    bail!("run {response_run_id} 不可 Follow: {reason}");
+                }
+                ServerFrame::Error { message } => bail!("{message}"),
+                _ => None,
+            };
+            print_json_frame(&frame)?;
+            if let Some(status) = terminal_status {
+                if matches!(status.as_str(), "completed" | "interrupted" | "cancelled") {
+                    return Ok(());
+                }
+                bail!("run {run_id} 以非成功状态结束: {status}");
+            }
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (run_id, after_seq);
+        bail!("run-follow 仅支持 Unix/Linux")
+    }
+}
+
+/// Send a detached cancellation request over a fresh authenticated IPC
+/// connection. The daemon acknowledges only an active detached run; unknown
+/// or already terminal ids are returned as a non-zero CLI error.
+async fn run_cancel(run_id: String) -> Result<()> {
+    #[cfg(unix)]
+    {
+        let socket = ensure_daemon().await?;
+        let stream = UnixStream::connect(&socket)
+            .await
+            .with_context(|| format!("连接 YunXi shell daemon 失败: {}", socket.display()))?;
+        let (mut reader, mut writer) = stream.into_split();
+        send_client_frame(
+            &mut writer,
+            &ClientFrame::Hello {
+                protocol_version: LINUX_IPC_PROTOCOL_VERSION,
+                client: "yunxi-run-cancel".to_string(),
+                capabilities: vec!["cancel".to_string()],
+            },
+        )
+        .await?;
+        let Some(ServerFrame::HelloAck {
+            protocol_version, ..
+        }) = read_frame_with_timeout(&mut reader, DAEMON_HANDSHAKE_TIMEOUT, "Cancel 握手").await?
+        else {
+            bail!("YunXi shell daemon 在 Cancel 握手时断开连接");
+        };
+        if protocol_version != LINUX_IPC_PROTOCOL_VERSION {
+            bail!(
+                "YunXi shell IPC 版本不兼容：daemon={} client={}",
+                protocol_version,
+                LINUX_IPC_PROTOCOL_VERSION
+            );
+        }
+        send_client_frame(
+            &mut writer,
+            &ClientFrame::Cancel {
+                request_id: new_request_id(),
+                run_id: Some(run_id.clone()),
+            },
+        )
+        .await?;
+        let Some(frame) =
+            read_frame_with_timeout(&mut reader, DAEMON_HANDSHAKE_TIMEOUT, "Cancel 响应").await?
+        else {
+            bail!("YunXi shell daemon 在 run {run_id} 的 Cancel 响应前断开连接");
+        };
+        match frame {
+            ServerFrame::CancelAccepted {
+                run_id: accepted_run_id,
+            } => {
+                if accepted_run_id != run_id {
+                    bail!(
+                        "YunXi shell daemon 返回了错误的 run_id：收到={} 请求={}",
+                        accepted_run_id,
+                        run_id
+                    );
+                }
+                print_json_frame(&ServerFrame::CancelAccepted {
+                    run_id: accepted_run_id,
+                })?;
+                Ok(())
+            }
+            ServerFrame::Error { message } => bail!("{message}"),
+            other => bail!("YunXi shell daemon 返回了意外的 Cancel 响应: {other:?}"),
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = run_id;
+        bail!("run-cancel 仅支持 Unix/Linux")
+    }
+}
+
+#[cfg(unix)]
+fn print_json_frame(frame: &ServerFrame) -> Result<()> {
+    println!(
+        "{}",
+        serde_json::to_string(frame).context("序列化 YunXi IPC frame 失败")?
+    );
+    io::stdout()
+        .flush()
+        .context("刷新 YunXi IPC frame 输出失败")?;
+    Ok(())
 }
 
 #[cfg(unix)]

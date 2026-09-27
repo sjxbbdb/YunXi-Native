@@ -71,13 +71,15 @@ done
   exit 1
 }
 
-python3 - "$SOCKET" <<'PY'
+python3 - "$SOCKET" "$BINARY" <<'PY'
 import json
 import socket
 import struct
+import subprocess
 import sys
 
 socket_path = sys.argv[1]
+binary_path = sys.argv[2]
 protocol_version = 2
 
 
@@ -287,6 +289,28 @@ with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
         if frame["frame"]["kind"] == "done":
             break
     assert replayed == original_events, (original_events, replayed)
+
+# Exercise the real CLI entry point against the same daemon.  It must stream
+# exactly the bounded event frames and preserve the terminal Done frame.
+cli_follow = subprocess.run(
+    [binary_path, "run-follow", run_id], capture_output=True, text=True
+)
+assert cli_follow.returncode == 0, (cli_follow.stdout, cli_follow.stderr)
+cli_events = [json.loads(line) for line in cli_follow.stdout.splitlines()]
+assert cli_events == original_events, (original_events, cli_events)
+
+# Unknown/terminal ids must remain an actionable non-zero CLI error rather
+# than being mistaken for an empty successful stream.
+cli_cancel = subprocess.run(
+    [binary_path, "run-cancel", run_id], capture_output=True, text=True
+)
+assert cli_cancel.returncode != 0, cli_cancel.stdout
+assert "未知或已结束" in (cli_cancel.stdout + cli_cancel.stderr), cli_cancel
+cli_missing_follow = subprocess.run(
+    [binary_path, "run-follow", "missing-run"], capture_output=True, text=True
+)
+assert cli_missing_follow.returncode != 0, cli_missing_follow.stdout
+assert "missing-run" in (cli_missing_follow.stdout + cli_missing_follow.stderr), cli_missing_follow
 
 
 with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:

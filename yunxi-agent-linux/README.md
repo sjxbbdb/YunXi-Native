@@ -389,6 +389,26 @@ IPC 已提供有界的回合回放：`Turn` 会先返回 `run_accepted`，随后
 
 命令输出单行 JSON，包含 `run_id`、`status`、`next_seq`、`recoverable` 和 `created_at_unix_secs`。`status=interrupted` 且 `recoverable=true` 只表示 daemon 重启前回合被中断，不代表支持 resume；显式 resume 仍未设计。
 
+也可以直接使用 CLI 作为 detached 回合的 Follow/Cancel 客户端。`run-follow` 每次输出一个
+有界的 JSON IPC frame（不会在客户端聚合事件），直到收到 `event.frame.kind=done` 才成功退出；
+`--after-seq` 可从已有游标继续回放。完成回合和 daemon 重启后标记为 `interrupted` 的回合都能
+回放；未知 run、过期游标、协议错误或连接在 `done` 前断开都会输出明确错误并以非零状态退出。
+
+```bash
+# 从头回放；每行是一个 event(run_id, seq, frame) JSON frame
+./target/release/yunxi-linux run-follow <run_id>
+
+# 已经消费到 seq=12 时继续
+./target/release/yunxi-linux run-follow <run_id> --after-seq 12
+
+# 请求活动 detached run 取消；成功输出 cancel_accepted JSON frame
+./target/release/yunxi-linux run-cancel <run_id>
+```
+
+这两个入口沿用 daemon 的版本化 `Hello`、当前用户 Unix socket 权限和 5 秒握手限制，不保存
+prompt，也不实现 resume；`run-cancel` 只发送 `Cancel { run_id }`，取消后的终态仍需用
+`run-follow` 读取 `done(status=cancelled)`。
+
 在进入 Runtime 之前，daemon 还会对 `Turn` 的语义字段做独立上限校验，避免合法的大 frame
 被当作无限大的提示词或路径继续处理：`prompt` ≤ 64 KiB、`cwd` ≤ 4 KiB、`request_id`
 和 `session_id` ≤ 512 字节、`provider` 和 `model` ≤ 256 字节。超限请求只返回结构化
@@ -452,7 +472,8 @@ Cancel、回合失败与超限
 daemon 或影响后续 Ping。脚本还会真实 `SIGKILL` 一个 daemon，再并发启动多个候选进程，
 确认陈旧 socket/lock 可回收、最终只有一个 daemon 持有 lock 并响应 Ping，随后能正常清理。
 它还会用离线静态 Runtime 完成一个真实回合，断开客户端后按 `run_id` 从游标 0 回放，
-逐帧校验事件顺序和 `Done` 终止帧。
+逐帧校验事件顺序和 `Done` 终止帧，并用同一个真实 daemon 调用 `run-follow` 校验 CLI
+JSON 流与回放完全一致、调用 `run-cancel`/`run-follow` 的未知或终态 run 时返回非零错误。
 
 project/private 知识空间的 stdin 导入、owner/visibility 隔离、重复导入和向量闭环可用：
 
