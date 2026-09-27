@@ -117,8 +117,8 @@ sudo pacman -Rns yunxi-native
 卸载不会删除 `~/.local/state/yunxi`、工作区 `.yunxi/`、长期记忆或知识库，也不会删除
 fish hook；如需清理，必须由用户按路径显式处理。升级、降级回滚沿用 pacman 的包事务。
 
-当前 pin 和 `pkgrel=10` 已在 Arch WSL 实机完成静态验证：先运行 preflight/static smoke，
-再用 `makepkg --clean --cleanbuild --noconfirm --syncdeps` 构建并临时安装 `pkgrel=10`，检查
+当前 pin 和 `pkgrel=11` 已在 Arch WSL 实机完成静态验证：先运行 preflight/static smoke，
+再用 `makepkg --clean --cleanbuild --noconfirm --syncdeps` 构建并临时安装 `pkgrel=11`，检查
 `/usr/bin/yunxi-linux --version`、两个 user unit，随后卸载并确认包文件/unit 被移除；此前
 的临时副本构建还用
 `pacman -U` 完成 `7 → 8` 升级、`8 → 7` 回滚，最后用 `pacman -Rns --noconfirm`
