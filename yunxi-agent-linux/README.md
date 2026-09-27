@@ -167,7 +167,7 @@ printf '%s\n' '项目约定：先 dry-run，再申请审批。' | \
   --space-id project-demo --owner local-user --visibility owner --cwd .
 ```
 
-daemon 内单 workspace worker 的黑盒验收：
+daemon 内知识 worker fleet 的黑盒验收：
 
 ```bash
 bash yunxi-agent-linux/tests/daemon_knowledge_worker_smoke.sh \

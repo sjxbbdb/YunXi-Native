@@ -3,6 +3,7 @@ set -euo pipefail
 
 script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 pkgbuild="$script_dir/PKGBUILD"
+repo_root=$(cd -- "$script_dir/../../.." && pwd)
 service="$script_dir/yunxi-linux.service"
 worker_service="$script_dir/yunxi-knowledge-worker@.service"
 preflight="$script_dir/preflight.sh"
@@ -45,6 +46,17 @@ grep -Fq '"${pkgdir}/usr/share/doc/${pkgname}/README.md"' "$pkgbuild" \
   || fail "README install target is missing"
 grep -Fq '"${pkgdir}/usr/share/licenses/${pkgname}/LICENSE"' "$pkgbuild" \
   || fail "LICENSE install target is missing"
+
+# Keep the Arch package version tied to the workspace Cargo version. Cargo
+# uses a hyphen for the hotfix channel while Arch pkgver uses dots, so the
+# conversion is intentionally explicit for the current packaging format.
+cargo_version=$(sed -n '/^\[workspace\.package\]/,/^\[/ { s/^version = "\([^"]*\)".*/\1/p; }' \
+  "$repo_root/Cargo.toml")
+[[ -n "$cargo_version" ]] || fail "workspace Cargo version is missing"
+expected_pkgver=${cargo_version//-/.}
+actual_pkgver=$(sed -n 's/^pkgver=\([^[:space:]]*\)$/\1/p' "$pkgbuild")
+[[ "$actual_pkgver" == "$expected_pkgver" ]] \
+  || fail "PKGBUILD pkgver=$actual_pkgver does not match Cargo pkgver=$expected_pkgver"
 
 grep -Fq 'ExecStart=/usr/bin/yunxi-linux daemon' "$service" \
   || fail "service must use the packaged absolute binary"

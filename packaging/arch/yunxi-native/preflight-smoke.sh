@@ -26,6 +26,7 @@ output=$(bash "$preflight") || {
 }
 grep -Eq '^schema_version=1$' <<<"$output" || fail "schema version missing"
 grep -Eq '^source_commit=[0-9a-f]{40}$' <<<"$output" || fail "source commit missing"
+grep -Eq '^package_version=match$' <<<"$output" || fail "package version consistency missing"
 grep -Eq '^data_preserved=true$' <<<"$output" || fail "data preservation marker missing"
 grep -Eq '^status=(ready|warning)$' <<<"$output" || fail "unexpected preflight status"
 if grep -Eq '^.*=/.+' <<<"$output"; then

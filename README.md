@@ -162,8 +162,9 @@ systemd、supervisor 或终端托管，并绑定一个明确 workspace，不会�
 再用 `yunxi-linux knowledge-worker --max-jobs 1 --cwd .` 处理有限数量的任务。worker
 只使用当前本地 provider，成功后才完成任务；模型不匹配、代际过期或索引失败会记录为
 `failed`，不会覆盖已有向量。该命令默认是一次性、有界执行入口，不会自行扫描工作区，
-也不替代未来的跨 workspace daemon/systemd 调度器；显式 `--watch` 只在传入的 workspace
-内轮询。
+也不扫描其他 workspace；显式 `--watch` 只在传入的 workspace
+内轮询。daemon 现在也支持重复传入 `--knowledge-workspace`，由同一个 daemon
+托管最多 32 个明确工作区；独立的 worker fleet 仍可由 systemd 模板托管。
 领取中的任务带五分钟 lease；worker 崩溃后，下一次领取会回收过期 lease，旧 worker
 的迟到提交会被拒绝。失败任务可用 `yunxi-linux knowledge-retry <job-id> --cwd .`
 显式恢复，最多三次尝试且保留 `last_error`。对于 provider/索引临时失败，worker 会

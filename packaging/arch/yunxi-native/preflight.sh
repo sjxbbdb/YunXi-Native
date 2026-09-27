@@ -70,7 +70,6 @@ if [[ -f "$pkgbuild" ]]; then
   pkgrel=$(sed -n 's/^pkgrel=\([^[:space:]]*\)$/\1/p' "$pkgbuild")
   source_commit=$(sed -n "s/^_commit='\([^']*\)'$/\1/p" "$pkgbuild")
   [[ "$pkgname" == yunxi-native ]] && emit package_name match || block package_name
-  [[ "$pkgver" == 2.3.3.hotfix.32 ]] && emit package_version match || block package_version
   [[ "$pkgrel" =~ ^[0-9]+$ ]] && emit package_release numeric || block package_release
   if [[ "$source_commit" =~ ^[0-9a-f]{40}$ ]]; then
     emit source_commit "$source_commit"
@@ -79,6 +78,25 @@ if [[ -f "$pkgbuild" ]]; then
   fi
 else
   source_commit=''
+fi
+
+# Compare the package version with the Cargo version at the pinned source
+# commit. This prevents a package from advertising a different runtime than
+# the exact source revision it builds. Cargo's hyphen is mapped to Arch's dot
+# form for the current hotfix versioning scheme.
+pinned_cargo_version=''
+if [[ -d "$repo_root/.git" && "$source_commit" =~ ^[0-9a-f]{40}$ ]] \
+  && git -C "$repo_root" cat-file -e "${source_commit}:Cargo.toml" 2>/dev/null; then
+  pinned_cargo_version=$(git -C "$repo_root" show "${source_commit}:Cargo.toml" 2>/dev/null \
+    | sed -n '/^\[workspace\.package\]/,/^\[/ { s/^version = "\([^"]*\)".*/\1/p; }')
+fi
+if [[ -n "$pinned_cargo_version" ]]; then
+  expected_pkgver=${pinned_cargo_version//-/.}
+  [[ "$pkgver" == "$expected_pkgver" ]] \
+    && emit package_version match \
+    || block package_version
+else
+  block package_version_source
 fi
 
 if [[ -d "$repo_root/.git" && "$source_commit" =~ ^[0-9a-f]{40}$ ]]; then
