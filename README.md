@@ -12,8 +12,8 @@ YunXi Native 明确引用了 **Shorin（SHORiN-KiWATA）开发的 [Miyu Agent](h
 
 当前重点参考与适配的部分包括：
 
-- fish 接管、首词分类、普通命令放行与自然语言兜底；
-- `fish_command_not_found` 的第二道转发路径；
+- fish 全量接管、自然语言控制平面与 Runtime 审批执行；
+- fish 的非空提交接管、prompt 生命周期与 PTY 边界；
 - 用户级 daemon、Unix socket、单例生命周期与事件回放模型；
 - XDG runtime/state 路径、权限收紧、断线与会话生命周期设计；
 - 与上述机制直接相关的源码组织方式和行为测试思路。
@@ -42,10 +42,9 @@ Shell / 文件系统 / 进程 / 包管理 / MCP / Skills
 终端中的流式结果、命令摘要与可追踪记录
 ```
 
-默认模式下，已知的 Shell 命令仍然交给 Shell，只有自然语言意图进入 YunXi。需要让
-YunXi 接手每个非空提交时，可显式使用 `fish-init --takeover`；此时命令、自然语言和
-多行输入都先进入 YunXi，再由 Runtime 的工具审批、Sandbox 和工作区策略决定下一步。
-无论哪种模式，系统操作都不会绕过审批，也不会把用户输入盲目拼接成命令。
+fish 是 YunXi 的主交互入口：每个非空提交的输入都会先进入 YunXi，再由 Runtime 的
+工具审批、Sandbox 和工作区策略决定下一步。系统操作不会绕过审批，也不会把用户输入
+盲目拼接成命令；fish 只负责行编辑、历史、补全、空输入和编辑态取消。
 
 ## 新的设计哲学
 
@@ -291,35 +290,28 @@ cargo build --release -p yunxi-agent-linux
 
 ## fish 接管
 
-安装实验性 hook：
+安装全量接管 hook：
 
 ```bash
 ./target/release/yunxi-linux fish-init
 source ~/.config/fish/conf.d/yunxi.fish
 ```
 
-如果需要全量接管非空输入：
-
-```bash
-./target/release/yunxi-linux fish-init --takeover
-source ~/.config/fish/conf.d/yunxi.fish
-```
-
-目标交互：
+`--takeover` 仍可作为旧脚本的兼容参数，但现在是无效别名；`fish-init` 始终启用全量
+接管。目标交互：
 
 ```text
-ls -la                         → 交给 fish
-git status                     → 交给 fish
+ls -la                         → 交给 YunXi，由 Runtime 决定是否执行
+git status                     → 交给 YunXi，由 Runtime 决定是否执行
 帮我找出最近修改的 Rust 文件     → 交给 YunXi
 解释一下这个编译错误             → 交给 YunXi
 ```
 
 当前 hook 仍处于 Linux-native foundation 阶段。接管范围是交互式 fish 的“非空提交”，
 不是每个按键、非交互式脚本或其他 shell；空提交和编辑态 Ctrl+C 仍由 fish 本地处理。
-真实 PTY smoke 已覆盖 takeover 下的普通命令、中文、多行、空提交，以及保守模式下的
-alias/function、命令替换、重定向、管道、`command_not_found`、终端尺寸变化、退出码和取消。
-daemon 或 Runtime 不可用时不会静默把 takeover 输入交回 fish；应先修复 YunXi 运行时或
-切回不带 `--takeover` 的保守 hook。
+真实 PTY smoke 已覆盖 shell-looking 输入、中文、多行、命令替换、重定向、管道、终端
+尺寸变化、输入态取消和无 `shell-classify` 路径。daemon 或 Runtime 不可用时不会静默把
+输入交回 fish；应先修复 YunXi 运行时。
 
 ## systemd 用户服务
 

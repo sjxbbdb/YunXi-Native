@@ -31,7 +31,8 @@ Shell、文件、进程、systemd、包管理、网络与第三方工具
 1. **终端优先**：TUI、fish 和 Unix socket 是 Linux 版第一界面，Web、微信和语音不进入首个 Linux 发布闭环。
 2. **翻译而不是遮蔽**：YunXi 可以替用户规划命令，但必须展示意图、关键命令、影响范围和结果。
 3. **执行前审批**：删除、安装、提权、修改服务、写入系统目录和网络副作用都必须经过显式授权或已声明的策略。
-4. **Shell 仍是真实语义**：普通命令继续由 fish 执行；自然语言只在被识别为意图时进入 YunXi。
+4. **YunXi 是交互控制平面**：fish 保留行编辑与终端能力，但每个非空提交先进入 YunXi；
+   命令是否执行、如何执行和是否需要审批由 Runtime 决定，不在 hook 内本地放行。
 5. **人格服务于工作**：Persona、Soul、记忆和陪伴能力继续保留，但在 Linux 中用于理解上下文、表达风险和维持长期协作，不覆盖系统安全边界。
 6. **本地、可组合、可审计**：优先使用 XDG 路径、本地状态、MCP、Skills、脚本和 Unix 工具；每次执行都能解释和回放。
 
@@ -40,7 +41,7 @@ Shell、文件、进程、systemd、包管理、网络与第三方工具
 ### 本轮纳入
 
 - Linux Host、用户级 daemon、Unix socket 和版本化 IPC；
-- fish 接管、命令/自然语言分类、多行输入和 `command_not_found` 兜底；
+- fish 全量接管非空提交、多行输入、审批取消和会话隔离；
 - YunXi Runtime 的 Persona、Soul、短期状态、长期记忆、向量召回、Provider、Tools、MCP、Skills、多 Agent、审批和沙盒；
 - Linux 文件、进程、systemd、journal、Man、包管理和网络诊断能力；
 - 通用本地知识平台；第一批内容为 Linux 命令与系统文档，后续支持项目资料和私有知识；
@@ -61,8 +62,8 @@ Miyu 是重要的架构和源码参照，但不是第二个 Runtime。所有吸�
 
 | Miyu 能力 | YunXi 化方式 | 归属 | 验收门 |
 |---|---|---|---|
-| fish 首词分类、普通命令放行 | 重写为 `yunxi-agent-linux` 的 fish adapter，保留 Shell 原语义 | Linux Host | 命令替换、glob、alias/function、多行和 127 退出码 PTY 矩阵 |
-| `fish_command_not_found` | 作为第二道自然语言转发路径，统一进入 YunXi session | Linux Host + Runtime | 不重复执行、不吞掉真实错误 |
+| fish 全量提交接管 | 重写为 `yunxi-agent-linux` 的 fish adapter，保留 fish 编辑器并把提交交给 Runtime | Linux Host | shell-looking 输入、自然语言、多行、Ctrl+C 与无本地执行 PTY 矩阵 |
+| Runtime 工具执行 | 由 YunXi Tool/Approval/Sandbox 决定是否调用 Shell 或系统工具 | Runtime + Tools | 不绕过审批、不重复执行、失败可解释 |
 | daemon 单例与用户级生命周期 | 采用 YunXi daemon facade，锁、PID/start-time、socket 权限由 Host 负责 | Linux Host | 重启、并发启动、陈旧锁、权限和崩溃恢复 |
 | Unix socket IPC | 设计 YunXi 版本化协议，复用事件顺序、Follow、Cancel、重同步思想 | Protocol/Host | frame 上限、版本拒绝、游标过期、断线语义 |
 | 会话 origin、可重连客户端 | 映射为 fish origin → YunXi session/thread，保持父子会话和本地存储 | Runtime/Storage | 多终端隔离、断线取消/续接边界 |
@@ -86,7 +87,7 @@ Miyu 是重要的架构和源码参照，但不是第二个 Runtime。所有吸�
 
 ### 4.2 终端接管与交互可靠性
 
-- 只拦截明确的自然语言意图，已知命令、alias、function 和带 shell 语法的输入交给 fish；
+- 交互式 fish 的每个非空提交都交给 YunXi；fish 只负责行编辑、历史、补全、空输入和编辑态取消；
 - 保留原始输入、当前 cwd、终端尺寸、环境摘要和命令历史的边界，不把完整环境变量写入日志；
 - 支持多行、Ctrl+J、粘贴、光标重绘、PTY resize、Ctrl+C 和 Ctrl+D；
 - 通过事件 id、origin、session id 防止重复执行、回显错位和跨终端串线；fish hook 使用当前 fish 进程派生的 session id，不再仅按 cwd 共享上下文；
@@ -285,19 +286,19 @@ daemon 还对 `Hello` 与握手后的首个请求设置 5 秒超时，防止半�
 
 ### Phase 2：fish 原生接管
 
-- 完成首词分类、`type -q`、多行、粘贴、Ctrl+J、command-not-found 和嵌套命令边界；
-- 已建立真实 fish PTY smoke，覆盖 alias/function、中文自然语言、Ctrl+J、多行、命令替换、重定向、管道、窗口 resize、输入态 Ctrl+C 和普通命令退出码；另有 `shell_prompt_cancel_smoke.sh` 使用真实 PTY 与协议假 daemon 验证审批等待期间的 Ctrl+C；继续扩展为完整行为矩阵；
+- 完成全量提交接管、多行、粘贴、Ctrl+J、嵌套输入和 Runtime 执行边界；
+- 已建立真实 fish PTY smoke，覆盖 shell-looking 输入、中文自然语言、Ctrl+J、多行、命令替换、重定向、管道、窗口 resize、输入态 Ctrl+C 和无本地执行路径；另有 `shell_prompt_cancel_smoke.sh` 使用真实 PTY 与协议假 daemon 验证审批等待期间的 Ctrl+C；继续扩展为完整行为矩阵；
 - 记录 cwd/session/origin，保证 Shell 回显和 YunXi 结果不重叠；fish 前台回合收到
   `Ctrl+C` 时向 daemon 发送 `Cancel`，不把中断留在客户端进程层；审批和用户输入等待使用可轮询的 `/dev/tty`，取消后先回收输入任务再发送 `Cancel`，避免后台读取线程吞掉下一条 fish 输入。
 
-当前同时提供显式 `fish-init --takeover`：它保留 fish 的行编辑和 prompt，但把每个非空
-提交直接交给 YunXi Runtime，不再依赖本地首词分类；默认 `fish-init` 仍保持保守模式，
-因此用户可以在两种交互哲学之间切换。真实 `fish_pty_smoke.sh --takeover` 验证命令、
-中文和多行输入均进入 `shell-intercept`，且没有 `shell-classify` 调用；空提交和编辑态
-Ctrl+C 仍由 fish 本地处理。接管范围明确限定为交互式 fish 的非空提交，不包括非交互式
-脚本或其他 shell；daemon/Runtime 不可用时不静默回退执行原始输入。
+当前 `fish-init` 默认就是全量接管：它保留 fish 的行编辑和 prompt，但把每个非空提交
+直接交给 YunXi Runtime，不再依赖本地首词分类，也不再提供保守模式。旧脚本传入
+`--takeover` 仍可兼容，但不会改变行为。真实 `fish_pty_smoke.sh` 验证 shell-looking
+输入、中文和多行输入均进入 `shell-intercept`，且没有 `shell-classify` 调用；空提交和
+编辑态 Ctrl+C 仍由 fish 本地处理。接管范围明确限定为交互式 fish 的非空提交，不包括
+非交互式脚本或其他 shell；daemon/Runtime 不可用时不静默回退执行原始输入。
 
-**门槛**：普通命令零误拦截，自然语言零重复执行，PTY resize/中断/退出码一致。
+**门槛**：所有非空提交零本地执行，Runtime 执行不重复，PTY resize/中断/退出语义一致。
 
 ### Phase 3：Linux 系统工具层
 
@@ -567,7 +568,7 @@ scope、source、预算、丢弃原因和召回数量。两者只共享本轮上
 
 | 风险 | 防线 | 回滚方式 |
 |---|---|---|
-| fish 误拦截普通命令 | 保守分类、`type -q`、PTY 矩阵 | 关闭 hook，恢复纯 fish |
+| Runtime 不可用导致终端无法执行 | 显式错误、无静默回退、Ctrl+D/`remove-shell-hook` 可退出接管 | 修复 Runtime 或移除 YunXi hook |
 | daemon 重复实例或串会话 | 单例锁、origin/session、事件 id | 停止 user service，使用一次性 CLI |
 | RAG 给出过期或错误知识 | P0 优先、版本 metadata、来源和 generation | 切回上一代索引或禁用知识召回 |
 | 知识库建议危险命令 | risk_class + Approval + dry-run | 只读模式，拒绝执行 |
@@ -579,7 +580,7 @@ scope、source、预算、丢弃原因和召回数量。两者只共享本轮上
 
 YunXi Native 达到第一版完成，不以“能启动”作为标准，而必须同时满足：
 
-- 普通 Shell 命令行为与原生 fish 一致；
+- Shell 意图经 YunXi 执行时保持命令语义、审批和结果可解释；fish 编辑体验与原生一致；
 - 自然语言任务可解释、可审批、可取消、可追踪；
 - daemon 常驻稳定，断线和重连语义明确；
 - Persona、Soul、记忆、Provider、Tools、MCP、Skills 和 Sandbox 边界保持 YunXi 一致；

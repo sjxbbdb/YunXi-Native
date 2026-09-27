@@ -1,13 +1,13 @@
 //! Miyu-inspired fish integration for the YunXi Linux native host.
 //!
-//! The hook deliberately makes one conservative decision before fish expands a
-//! command line: a real command remains fish's responsibility, while prose is
-//! handed to the YunXi daemon.  This is the important boundary; the hook never
-//! evaluates command substitutions or globs merely to classify a line.
+//! The hook keeps fish's line editor in place, but YunXi owns every non-empty
+//! submitted interactive buffer.  Fish never evaluates a submitted command
+//! before YunXi receives it; command execution, if appropriate, happens later
+//! through Runtime approval and sandbox policy.
 //!
-//! The classification and fallback behavior are adapted from Miyu Agent's
-//! `crates/miyu-base/src/shell/fish.rs` (MIT License).  This module routes the
-//! accepted prose into YunXi Runtime instead of Miyu's own engine.
+//! The fish hook lifecycle and PTY-facing shape are informed by Miyu Agent's
+//! `crates/miyu-base/src/shell/fish.rs` (MIT License), while routing is fully
+//! owned by YunXi Runtime.
 
 use anyhow::{Context, Result, bail};
 use clap::{ArgAction, Subcommand};
@@ -83,9 +83,8 @@ pub(crate) enum LinuxShellCommand {
         /// Print the hook instead of writing it.
         #[arg(long)]
         print: bool,
-        /// Route every non-empty submitted fish buffer to YunXi instead of
-        /// classifying the first token locally.
-        #[arg(long)]
+        /// Deprecated compatibility flag; fish takeover is always enabled.
+        #[arg(long, hide = true)]
         takeover: bool,
     },
     /// Remove a hook previously installed by `fish-init`.
@@ -1750,12 +1749,12 @@ fn read_shell_input(stdin: bool) -> Result<String> {
     bail!("shell 命令必须使用 --stdin；这样可以避免参数重新解析和命令替换")
 }
 
-fn install_fish_hook(print: bool, takeover: bool) -> Result<()> {
+fn install_fish_hook(print: bool, _takeover: bool) -> Result<()> {
     let binary = std::env::var_os("YUNXI_LINUX_BINARY")
         .map(PathBuf::from)
         .or_else(|| std::env::current_exe().ok())
         .context("无法定位 yunxi-linux 可执行文件")?;
-    let hook = fish_hook(&binary, takeover);
+    let hook = fish_hook(&binary);
     if print {
         print!("{hook}");
         return Ok(());
@@ -1815,68 +1814,13 @@ fn fish_quote_path(path: &Path) -> String {
         .replace('`', "\\`")
 }
 
-fn fish_hook(binary: &Path, takeover: bool) -> String {
+fn fish_hook(binary: &Path) -> String {
     let binary = fish_quote_path(binary);
-    let mode_comment = if takeover {
-        "# 当前为 takeover 模式：每个非空提交的输入都先交给 YunXi。"
-    } else {
-        "# 当前为 conservative 模式：普通 shell 命令交回 fish。"
-    };
-    let takeover_flag = if takeover { "1" } else { "0" };
     format!(
         r#"{HOOK_MARKER}
 # 由 `yunxi-linux fish-init` 生成。
-{mode_comment}
+# YunXi 接管每个非空提交；fish 只保留编辑、历史、补全和空输入。
 set -g __yunxi_binary "{binary}"
-set -g __yunxi_takeover {takeover_flag}
-
-function __yunxi_head_is_plain_word
-    test -n "$argv[1]"; or return 1
-    string match -qr '[\x27\x22$()~{{}}%;&|<>#^!\x5c[:space:]]' -- "$argv[1]"; and return 1
-    return 0
-end
-
-function __yunxi_line_is_plain_prose
-    test -n "$argv[1]"; or return 1
-    string match -qr '[\x27\x22$()~{{}}%;&|<>#^!\x5c]' -- "$argv[1]"; and return 1
-    return 0
-end
-
-function __yunxi_line_has_cjk
-    string match -qr '[\x{{4e00}}-\x{{9fff}}]' -- "$argv[1]"
-end
-
-function __yunxi_fish_knows_head
-    __yunxi_head_is_plain_word "$argv[1]"; or return 1
-    functions -q -- "$argv[1]"; and return 0
-    type -q -- "$argv[1]"
-end
-
-function __yunxi_first_token_raw
-    set -l tokens (commandline --input="$argv[1]" --tokens-raw 2>/dev/null)
-    while test (count $tokens) -gt 0
-        set -l token $tokens[1]
-        if string match -qr '^[A-Za-z_][A-Za-z0-9_]*=' -- "$token"
-            set -e tokens[1]
-            continue
-        end
-        printf '%s' "$token"
-        return 0
-    end
-    # Fish's token parser can return no token for a runtime-defined alias or
-    # function in an interactive commandline. Fall back to the first lexical
-    # word without evaluating expansions so those commands still stay in fish.
-    set -l fallback (string replace -r '^[[:space:]]*([^[:space:]]+).*' '$1' -- "$argv[1]")
-    if test -n "$fallback"
-        printf '%s' "$fallback"
-        return 0
-    end
-    return 1
-end
-
-function __yunxi_buffer_is_multiline
-    test (string split \n -- "$argv[1]" | count) -gt 1
-end
 
 function __yunxi_hand_to_ai
     set -g __yunxi_pending_buffer "$argv[1]"
@@ -1909,47 +1853,7 @@ function __yunxi_accept_line
         __yunxi_execute_or_continue
         return
     end
-    if test "$__yunxi_takeover" = 1
-        __yunxi_hand_to_ai "$buffer"
-        return
-    end
-    if not __yunxi_buffer_is_multiline "$buffer"
-        set -l head (__yunxi_first_token_raw "$buffer")
-        if test (count $head) -eq 0
-            if __yunxi_line_is_plain_prose "$buffer"
-                __yunxi_hand_to_ai "$buffer"
-                return
-            end
-        end
-        if __yunxi_fish_knows_head "$head"
-            __yunxi_execute_or_continue
-            return
-        end
-        if __yunxi_line_has_cjk "$buffer"; and __yunxi_line_is_plain_prose "$buffer"
-            __yunxi_hand_to_ai "$buffer"
-            return
-        end
-        if __yunxi_head_is_plain_word "$head"
-            printf '%s' "$buffer" | "$__yunxi_binary" shell-classify --shell fish --stdin >/dev/null 2>/dev/null
-            if test $status -eq 1
-                __yunxi_hand_to_ai "$buffer"
-                return
-            end
-        end
-        __yunxi_execute_or_continue
-        return
-    end
-    set -l head (__yunxi_first_token_raw "$buffer")
-    if __yunxi_fish_knows_head "$head"
-        __yunxi_execute_or_continue
-        return
-    end
-    printf '%s' "$buffer" | "$__yunxi_binary" shell-classify --shell fish --stdin >/dev/null 2>/dev/null
-    if test $status -eq 1
-        __yunxi_hand_to_ai "$buffer"
-    else
-        __yunxi_execute_or_continue
-    end
+    __yunxi_hand_to_ai "$buffer"
 end
 
 bind enter __yunxi_accept_line
@@ -1969,24 +1873,6 @@ function __yunxi_on_prompt --on-event fish_prompt
     printf '%s' "$buffer" | "$__yunxi_binary" shell-intercept --shell fish --session-id "fish-"$fish_pid --cwd "$PWD" --stdin
 end
 
-function fish_command_not_found
-    status is-interactive; or return 127
-    set -l current_line (status current-commandline 2>/dev/null | string collect)
-    test -n "$current_line"; or return 127
-    __yunxi_buffer_is_multiline "$current_line"; and return 127
-    set -l head (__yunxi_first_token_raw "$current_line")
-    if test (count $head) -eq 0
-        __yunxi_line_is_plain_prose "$current_line"; or return 127
-        printf '\n'
-        printf '%s' "$current_line" | "$__yunxi_binary" shell-intercept --shell fish --session-id "fish-"$fish_pid --cwd "$PWD" --stdin
-        return 127
-    end
-    __yunxi_fish_knows_head "$head"; and return 127
-    __yunxi_head_is_plain_word "$head"; or return 127
-    printf '\n'
-    printf '%s' "$current_line" | "$__yunxi_binary" shell-intercept --shell fish --session-id "fish-"$fish_pid --cwd "$PWD" --stdin
-    return 127
-end
 "#
     )
 }
@@ -3771,27 +3657,18 @@ mod tests {
     }
 
     #[test]
-    fn hook_keeps_the_real_miyu_boundaries() {
-        let hook = fish_hook(Path::new("/home/user/.local/bin/yunxi-linux"), false);
-        assert!(hook.contains("commandline --input=\"$argv[1]\" --tokens-raw"));
-        assert!(hook.contains("shell-classify --shell fish --stdin"));
-        assert!(hook.contains("type -q -- \"$argv[1]\""));
-        assert!(hook.contains("functions -q -- \"$argv[1]\""));
-        assert!(hook.contains("string replace -r '^[[:space:]]*([^[:space:]]+).*'"));
+    fn hook_routes_every_non_empty_submission() {
+        let hook = fish_hook(Path::new("/home/user/.local/bin/yunxi-linux"));
+        assert!(hook.contains("__yunxi_hand_to_ai \"$buffer\""));
+        assert!(hook.contains("set -g __yunxi_binary"));
+        assert!(!hook.contains("shell-classify --shell fish --stdin"));
+        assert!(!hook.contains("__yunxi_takeover"));
+        assert!(!hook.contains("conservative"));
         assert!(hook.contains(
             "shell-intercept --shell fish --session-id \"fish-\"$fish_pid --cwd \"$PWD\" --stdin"
         ));
-        assert!(hook.contains("fish_command_not_found"));
         assert!(hook.contains("bind enter __yunxi_accept_line"));
         assert!(hook.contains("bind ctrl-j __yunxi_insert_newline"));
-    }
-
-    #[test]
-    fn takeover_hook_routes_non_empty_buffers_without_classification() {
-        let hook = fish_hook(Path::new("/home/user/.local/bin/yunxi-linux"), true);
-        assert!(hook.contains("set -g __yunxi_takeover 1"));
-        assert!(hook.contains("if test \"$__yunxi_takeover\" = 1"));
-        assert!(hook.contains("当前为 takeover 模式"));
     }
 
     #[cfg(unix)]

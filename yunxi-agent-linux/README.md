@@ -3,13 +3,13 @@
 这是 YunXi Native 的 Linux 原生宿主。Arch Linux 是第一目标环境；它复用共享 Runtime 的人格、灵魂、记忆、Provider、工具审批和本地会话存储，提供两种终端入口：
 
 1. 独立的 TUI 对话界面；
-2. 参考 [Miyu Agent](https://github.com/SHORiN-KiWATA/miyu-agent) 的 fish 接管模式：普通命令仍由 fish 执行，自然语言直接交给 YunXi。
+2. 参考 [Miyu Agent](https://github.com/SHORiN-KiWATA/miyu-agent) 的 fish 接管模式：每个非空提交都先交给 YunXi，再由 Runtime 决定执行路径。
 
 fish 接管会启动一个每用户、按需拉起的 Unix socket daemon。daemon 在第一次自然语言输入时启动，随后持续运行并复用会话，不需要 root，也不把输入发送到云端 shell。
 
 ## 产品定位
 
-Linux 版不是 Windows/Web 版的裁剪包，而是“自然语言 → Linux 意图”的翻译层：fish/TUI 接收输入，YunXi 负责理解、规划、审批和执行，Shell 仍然保留最终语义。完整设计哲学见仓库根目录 [`README.md`](../README.md)。
+Linux 版不是 Windows/Web 版的裁剪包，而是“自然语言 → Linux 意图”的翻译层：fish/TUI 接收输入，YunXi 负责理解、规划、审批和执行，fish 保留编辑体验，Runtime 保留最终执行策略。完整设计哲学见仓库根目录 [`README.md`](../README.md)。
 
 ## 当前边界
 
@@ -194,7 +194,7 @@ active/staging 队列的计数和同一时钟快照；`status` 为 `idle`、`rea
 `knowledge-space-list` 只列出空间元数据，不读取文档正文、chunk 或向量；它用于确认
 当前 workspace 的 system/project/private 边界，输出按 `space_id` 稳定排序。
 
-## fish 接管（Miyu 风格）
+## fish 全量接管（Miyu 风格）
 
 安装 fish hook：
 
@@ -203,11 +203,11 @@ active/staging 队列的计数和同一时钟快照；`status` 为 `idle`、`rea
 source ~/.config/fish/conf.d/yunxi.fish
 ```
 
-之后在 fish 中：
+之后在 fish 中，所有非空提交（包括 `ls -la`、`cd /tmp`、`git status`、自然语言、多行
+内容和 fish 语法）都先交给 YunXi；是否执行命令由 Runtime 的工具审批、Sandbox 和工作区
+策略决定。fish 只保留行编辑、历史、补全、空输入和编辑态取消。
 
-- `ls -la`、`cd /tmp`、`git status` 等可识别的命令保持原有 fish 行为；
-- `帮我找一下最近修改的 Rust 文件`、`解释一下这个错误` 等自然语言由 YunXi 处理；
-- 多行输入和 fish 语法结构会先经过保守分类，无法确定时不执行；
+- 不再存在 fish 的保守分类模式；hook 不调用 `shell-classify`，也不在本地执行提交内容；
 - 工具调用仍会弹出审批，不会因为通过 shell 接管而自动放行；
 - 输入编辑态的 `Ctrl+C` 由 fish 本地取消；已送入 YunXi 的回合会向 daemon 发送
   `Cancel`，等待 `cancelled` 终态后返回，关闭 fish 后 daemon 也不会继续接收新输入。
@@ -216,25 +216,19 @@ source ~/.config/fish/conf.d/yunxi.fish
   下一条 fish 输入。真实 PTY 验收脚本为
   `tests/shell_prompt_cancel_smoke.sh`。
 
-如果希望让 YunXi 接手每一个非空提交的输入，可显式安装 takeover hook：
-
-```bash
-./target/release/yunxi-linux fish-init --takeover
-```
-
-takeover 模式仍由 fish 提供行编辑、历史和 prompt，但不会再在本地判断首词；`ls`、
-`git status`、自然语言和多行内容都会作为一个 YunXi 回合交给 Runtime，由工具审批和
-Sandbox 决定是否执行。空输入仍保留给 fish，输入编辑态的 `Ctrl+C` 也仍由 fish 本地
-处理。接管范围是交互式 fish 的非空提交，不包括每个按键、非交互式脚本或其他 shell；
-daemon/Runtime 不可用时不会静默回退到 fish。需要回到保守模式时重新运行不带
-`--takeover` 的 `fish-init` 即可。
-
-hook 的设计目标参考 Miyu：回车时使用 `commandline --tokens-raw` 读取首词，尽量避免在分类阶段触发命令替换、通配符或其他副作用；解析器无 token 时再使用不求值的首词回退。真正的命令交回 fish，自然语言才送入 `shell-intercept`。对 alias/function 等 fish 运行时定义的命令，hook 会先用 `functions -q`/`type -q` 判断，不把它们误送给 YunXi。`fish_command_not_found` 是第二道兜底；含 shell 语法或多行的未知命令不会被重复转发。每个交互式 fish 进程会携带独立的 `fish-<pid>` session id，因此两个终端即使位于同一目录，也不会误用同一个 YunXi Runtime 会话；手动调用 `shell-intercept` 时仍可用 `YUNXI_SHELL_SESSION` 提供兼容 session id。真实 fish + PTY smoke 已覆盖 alias/function、中文自然语言、Ctrl+J、多行、命令替换、重定向、管道、窗口 resize、输入态 Ctrl+C 和普通命令退出码；`tests/shell_prompt_cancel_smoke.sh` 另行覆盖审批等待态取消；复杂嵌套命令和提示符重绘矩阵仍未完成，不能把这段设计说明当成已验收的全部行为保证。
+`--takeover` 仍被接受为旧脚本的兼容参数，但没有第二种模式。每个交互式 fish 进程
+携带独立的 `fish-<pid>` session id，因此两个终端即使位于同一目录，也不会误用同一个
+YunXi Runtime 会话；手动调用 `shell-intercept` 时仍可用 `YUNXI_SHELL_SESSION` 提供兼容
+session id。真实 fish + PTY smoke 已覆盖 shell-looking 输入、中文自然语言、Ctrl+J、多行、
+命令替换、重定向、管道、窗口 resize 和输入态 Ctrl+C；`tests/shell_prompt_cancel_smoke.sh`
+另行覆盖审批等待态取消；复杂嵌套命令和提示符重绘矩阵仍未完成，不能把这段设计说明当成
+已验收的全部行为保证。
 
 真实 PTY 回归可运行：
 
 ```bash
 bash yunxi-agent-linux/tests/fish_pty_smoke.sh ./target/release/yunxi-linux
+# 旧脚本的兼容参数不会改变行为
 bash yunxi-agent-linux/tests/fish_pty_smoke.sh ./target/release/yunxi-linux --takeover
 bash yunxi-agent-linux/tests/shell_prompt_cancel_smoke.sh ./target/release/yunxi-linux
 ```
@@ -250,10 +244,12 @@ bash yunxi-agent-linux/tests/shell_prompt_cancel_smoke.sh ./target/release/yunxi
 ```bash
 ./target/release/yunxi-linux fish-init --print
 ./target/release/yunxi-linux fish-init --print --takeover
-printf '%s' '解释一下 Cargo.lock' | ./target/release/yunxi-linux shell-classify --shell fish --stdin
 ```
 
-`shell-classify` 返回码为 0 表示交给 fish，1 表示交给 YunXi。daemon socket 优先放在 `$XDG_RUNTIME_DIR/yunxi/yunxi.sock`，否则放在 `$XDG_STATE_HOME/yunxi/run/yunxi.sock`，目录为 0700、socket 为 0600。daemon 只允许当前用户通过本地 socket 访问。
+`--takeover` 只是旧脚本兼容参数，两个 `fish-init --print` 输出相同的全量接管 hook。
+历史遗留的 `shell-classify` CLI 仅作为离线诊断保留，不被 fish hook 调用。daemon socket
+优先放在 `$XDG_RUNTIME_DIR/yunxi/yunxi.sock`，否则放在 `$XDG_STATE_HOME/yunxi/run/yunxi.sock`，
+目录为 0700、socket 为 0600。daemon 只允许当前用户通过本地 socket 访问。
 
 IPC 已提供有界的完成回合回放：`Turn` 会先返回 `run_accepted`，随后可见输出以 `event(run_id, seq, frame)` 发送；客户端重连后使用 `follow(run_id, after_seq)` 获取缺失事件。回放按回合数、事件数和事件总字节数限制，只保留 daemon 生命周期内最近的有限回合；活动回合、daemon 重启后的 run 或已淘汰游标会明确返回 `resync_required`，不伪装成断线续跑。
 

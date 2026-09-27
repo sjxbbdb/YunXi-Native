@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Real fish + pseudo-terminal regression test for the generated hook.
-# The fake binary only replaces the provider/daemon side; fish itself and the
-# generated hook run for real, so this catches prompt/event/Enter regressions.
+# Real fish + pseudo-terminal regression test for the generated all-takeover
+# hook. The fake binary only replaces the provider/daemon side; fish itself
+# and the generated hook run for real, so this catches prompt/event/Enter
+# regressions.
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 BINARY="${1:-${ROOT_DIR}/target/release/yunxi-linux}"
@@ -32,19 +33,6 @@ cat >"$FAKE_BIN" <<'FAKE'
 #!/usr/bin/env bash
 set -euo pipefail
 case "${1:-}" in
-  shell-classify)
-    input="$(cat)"
-    logged_input="${input//$'\n'/\\n}"
-    printf 'classify:%s\n' "$logged_input" >> "${YUNXI_FAKE_LOG:?}"
-    case "$input" in
-      printf\ *|echo\ *|cd\ *|pwd|true|false|exit|sleep\ *|function\ *) exit 0 ;;
-      # Force this otherwise-missing command through fish once so the PTY
-      # matrix exercises fish_command_not_found itself. Production classify
-      # still rejects unknown commands; this fixture isolates the callback.
-      command_not_found_probe) exit 0 ;;
-      *) exit 1 ;;
-    esac
-    ;;
   shell-intercept)
     shift
     input="$(cat)"
@@ -74,6 +62,7 @@ chmod +x "$FAKE_BIN"
 HOOK="$HOME_DIR/.config/fish/conf.d/yunxi.fish"
 HOOK_ARGS=(fish-init --print)
 if [[ "$MODE" == "--takeover" ]]; then
+  # Kept as a compatibility invocation; fish-init is already all-takeover.
   HOOK_ARGS+=(--takeover)
 fi
 "$BINARY" "${HOOK_ARGS[@]}" | sed "s#$(printf '%s' "$BINARY" | sed 's/[.[\*^$()+?{|\\]/\\&/g')#$FAKE_BIN#g" >"$HOOK"
@@ -82,7 +71,6 @@ export HOME="$HOME_DIR"
 export XDG_CONFIG_HOME="$HOME_DIR/.config"
 export YUNXI_FAKE_LOG="$FAKE_LOG"
 export YUNXI_TEST_FILE="$TMP_ROOT/redirection.txt"
-export YUNXI_TEST_FISH_TAKEOVER="$MODE"
 
 if ! fish -i -c 'functions __yunxi_accept_line' >/dev/null 2>&1; then
   echo "generated fish hook was not loaded" >&2
@@ -137,120 +125,38 @@ def read_until(needle: bytes, timeout: float = 4.0) -> bytes:
 
 read_until(b"> ")
 
-if os.environ.get("YUNXI_TEST_FISH_TAKEOVER") == "--takeover":
-    # Takeover mode deliberately sends shell-looking input to YunXi too. The
-    # fish process remains the line editor and prompt host; YunXi owns routing.
-    # Empty submits and Ctrl+C while editing stay local to fish; takeover
-    # applies to submitted buffers, not every keypress.
-    os.write(fd, b"\r")
-    read_until(b"> ")
-    os.write(fd, b"draft")
-    time.sleep(0.1)
-    os.write(fd, b"\x03")
-    read_until(b"> ")
-    os.write(fd, b"ls -la\r")
-    read_until(b"[yunxi intercepted] ls -la")
-    read_until(b"> ")
-    os.write(fd, "你好，帮我整理一下".encode() + b"\r")
-    read_until("[yunxi intercepted]".encode())
-    read_until(b"> ")
-    os.write(fd, "第一行".encode())
-    time.sleep(0.1)
-    os.write(fd, "\x0a第二行".encode() + b"\r")
-    read_until("[yunxi intercepted]".encode())
-    read_until(b"> ")
-    os.write(fd, b"\x04")
-    _, status = os.waitpid(pid, 0)
-    if status != 0:
-        raise AssertionError(f"fish exited with status {status}")
-    with open(log_path, encoding="utf-8") as handle:
-        lines = [line.strip() for line in handle if line.strip()]
-    assert any(line.endswith(":ls -la") for line in lines if line.startswith("intercept:")), lines
-    assert any(line.endswith(":你好，帮我整理一下") for line in lines if line.startswith("intercept:")), lines
-    assert any(line.endswith(":第一行\\n第二行") for line in lines if line.startswith("intercept:")), lines
-    intercepted = [line for line in lines if line.startswith("intercept:")]
-    assert len(intercepted) == 3, lines
-    assert not any(line.endswith(":draft") or line.endswith(":") for line in intercepted), lines
-    assert not any(line.startswith("classify:") for line in lines), lines
-    print("fish-takeover-pty-smoke=ok")
-    raise SystemExit(0)
-
-# Ctrl+C at the editable prompt must cancel the pending natural-language
-# buffer locally; it must not invoke shell-intercept or leave stale input for
-# the next prompt.
-os.write(fd, "这条请求会被取消".encode())
+# YunXi owns every submitted buffer, including shell-looking text and fish
+# syntax. Fish remains the line editor and prompt host. Empty submits and
+# Ctrl+C while editing stay local to fish, and a resize must not change routing.
+os.write(fd, b"\r")
+read_until(b"> ")
+os.write(fd, b"draft")
 time.sleep(0.1)
 os.write(fd, b"\x03")
 read_until(b"> ")
-
-# A terminal resize is a normal PTY lifecycle event. Fish should repaint and
-# remain usable without changing the hook's routing decision.
 fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", 48, 140, 0, 0))
-os.write(fd, b"printf 'resized-ok\\n'\r")
-read_until(b"resized-ok")
+os.write(fd, b"ls -la\r")
+read_until(b"[yunxi intercepted] ls -la")
 read_until(b"> ")
-
-os.write(fd, b"set h (__yunxi_first_token_raw \"printf 'fish-command\\n'\"); echo h:$h; __yunxi_fish_knows_head $h; echo knows:$status\r")
-read_until(b"knows:")
-read_until(b"> ")
-os.write(fd, b"printf 'fish-command\\n'\r")
-read_until(b"fish-command")
-read_until(b"> ")
-
-# Fish-defined aliases/functions must stay on the shell side even though the
-# Rust PATH probe cannot see them.
-os.write(fd, b"alias yunxi_alias 'printf alias-ok\\n'\r")
-read_until(b"> ")
-os.write(fd, b"yunxi_alias\r")
-read_until(b"alias-ok")
-read_until(b"> ")
-os.write(fd, b"function yunxi_fn; printf function-ok\\n; end\r")
-read_until(b"> ")
-os.write(fd, b"yunxi_fn\r")
-read_until(b"function-ok")
-read_until(b"> ")
-
-# Fish syntax must stay on the fish side: command substitutions, redirections,
-# and pipelines execute for real and never reach shell-intercept.
 os.write(fd, b"printf 'sub:%s\\n' (printf nested)\r")
-read_until(b"sub:nested")
+read_until(b"[yunxi intercepted] printf 'sub:%s\\n' (printf nested)")
 read_until(b"> ")
 os.write(fd, b"printf 'redirect-ok\\n' > \"$YUNXI_TEST_FILE\"; cat \"$YUNXI_TEST_FILE\"\r")
-read_until(b"redirect-ok")
+read_until(b"[yunxi intercepted] printf 'redirect-ok\\n'")
 read_until(b"> ")
 os.write(fd, b"printf 'pipe-ok\\n' | cat\r")
-read_until(b"pipe-ok")
+read_until(b"[yunxi intercepted] printf 'pipe-ok\\n' | cat")
 read_until(b"> ")
-
-# An unknown first command is intercepted before fish executes it. A second
-# fixture forces classification success so fish invokes command_not_found and
-# the generated callback is exercised without relying on PATH races.
-os.write(fd, b"missing_yunxi_command\r")
-read_until(b"[yunxi intercepted] missing_yunxi_command")
+os.write(fd, b"alias yunxi_alias 'printf alias-ok\\n'\r")
+read_until(b"[yunxi intercepted] alias yunxi_alias")
 read_until(b"> ")
-os.write(fd, b"command_not_found_probe\r")
-read_until(b"[yunxi intercepted] command_not_found_probe")
-read_until(b"> ")
-os.write(fd, b"echo missing-status:$status\r")
-read_until(b"missing-status:127")
-read_until(b"> ")
-
-# A normal shell command still owns its exit code; interception must not
-# rewrite fish's `$status` semantics.
-os.write(fd, b"false; echo false-status:$status\r")
-read_until(b"false-status:1")
-read_until(b"> ")
-
 os.write(fd, "你好，帮我看看项目".encode() + b"\r")
 read_until(b"[yunxi intercepted]")
 read_until(b"> ")
-
-# Ctrl+J inserts a newline; the completed two-line natural-language buffer is
-# still intercepted once when Enter is pressed.
 os.write(fd, "第一行".encode())
 time.sleep(0.1)
 os.write(fd, "\x0a第二行".encode() + b"\r")
-read_until("[yunxi intercepted]".encode())
+read_until(b"[yunxi intercepted]")
 read_until(b"> ")
 
 os.write(fd, b"\x04")
@@ -266,16 +172,15 @@ if status != 0:
 with open(log_path, encoding="utf-8") as handle:
     lines = [line.strip() for line in handle if line.strip()]
 
+assert any(line.startswith("intercept:fish-") and line.endswith(":ls -la") for line in lines), lines
+assert any(line.startswith("intercept:fish-") and line.endswith(":printf 'sub:%s\\n' (printf nested)") for line in lines), lines
+assert any(line.startswith("intercept:fish-") and line.endswith(":printf 'redirect-ok\\n' > \"$YUNXI_TEST_FILE\"; cat \"$YUNXI_TEST_FILE\"") for line in lines), lines
+assert any(line.startswith("intercept:fish-") and line.endswith(":printf 'pipe-ok\\n' | cat") for line in lines), lines
+assert any(line.startswith("intercept:fish-") and line.endswith(":alias yunxi_alias 'printf alias-ok\\n'") for line in lines), lines
 assert any(line.startswith("intercept:fish-") and line.endswith(":你好，帮我看看项目") for line in lines), lines
 assert any(line.startswith("intercept:fish-") and line.endswith(":第一行\\n第二行") for line in lines), lines
-assert any(line.startswith("intercept:fish-") and line.endswith(":missing_yunxi_command") for line in lines), lines
-assert any(line.startswith("intercept:fish-") and line.endswith(":command_not_found_probe") for line in lines), lines
 assert not any("这条请求会被取消" in line for line in lines if line.startswith("intercept:")), lines
-assert not any(
-    line.startswith("intercept:")
-    and any(token in line for token in ("sub:%s", "redirect-ok", "pipe-ok"))
-    for line in lines
-), lines
-assert not any(":printf" in line for line in lines if line.startswith("intercept:")), lines
+assert len([line for line in lines if line.startswith("intercept:")]) == 7, lines
+assert not any(line.startswith("classify:") for line in lines), lines
 print("fish-pty-smoke=ok")
 PY
