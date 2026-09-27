@@ -153,6 +153,8 @@ printf '%s\n' '项目约定：先 dry-run，再申请审批。' | \
 ./target/release/yunxi-linux knowledge-worker --watch --interval-secs 5 --max-jobs 10 --cwd .
 # 只读查看 active/staging 队列，不领取任务也不触发重试
 ./target/release/yunxi-linux knowledge-worker-status --cwd .
+# 只读查看 worker 调度状态；不创建目录、不打开知识库或记忆库
+./target/release/yunxi-linux knowledge-worker-health
 # 多工作区：重复 --workspace，最多 32 个；不扫描其他目录
 ./target/release/yunxi-linux knowledge-worker --max-jobs 4 \
   --workspace ~/src/project-a --workspace ~/src/project-b
@@ -197,6 +199,10 @@ JSON 默认只返回 `workspace_index`，不泄露绝对路径。按 `Ctrl+C` �
 或迁移旧 schema，不会领取任务、回收 lease、提升 retry 或读取长期记忆。输出同时给出
 active/staging 队列的计数和同一时钟快照；`status` 为 `idle`、`ready`、`complete` 或
 `degraded`，只用于观察，不替代 worker 或 daemon 调度器。
+
+`knowledge-worker-health` 只读取 XDG state 下的脱敏调度快照，输出 `missing`、`ok` 或
+`error` 状态，不会创建状态目录、领取任务、触发 retry，也不会打开 `knowledge.sqlite3`
+或长期记忆数据库。需要查看自定义 worker 时传入 `--worker-id`。
 
 如果希望让同一个 YunXi daemon 顺带托管一个明确的知识工作区，可以显式启动：
 

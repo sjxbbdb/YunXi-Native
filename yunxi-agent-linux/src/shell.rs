@@ -214,6 +214,13 @@ pub(crate) enum LinuxShellCommand {
         #[arg(long = "workspace", action = ArgAction::Append, conflicts_with = "cwd")]
         workspaces: Vec<PathBuf>,
     },
+    /// Read the scheduler state written by a knowledge worker without opening
+    /// any knowledge or memory database.
+    KnowledgeWorkerHealth {
+        /// Stable worker identity; defaults to the daemon-owned worker.
+        #[arg(long)]
+        worker_id: Option<String>,
+    },
     /// Process one pending local knowledge embedding job and exit.
     KnowledgeWorker {
         /// Stable worker identity used for the SQLite lease.
@@ -574,6 +581,9 @@ pub(crate) async fn run_command(command: LinuxShellCommand) -> Result<()> {
             } else {
                 knowledge_worker::run_status(workspaces)
             }
+        }
+        LinuxShellCommand::KnowledgeWorkerHealth { worker_id } => {
+            knowledge_worker::run_health(worker_id)
         }
         LinuxShellCommand::KnowledgeWorker {
             worker_id,

@@ -158,4 +158,6 @@ assert files, files
 values = [json.loads(path.read_text()) for path in files]
 assert any(value.get("last_status") == "stopped" for value in values), values
 PY
+"$BINARY" knowledge-worker-health |
+  python3 -c 'import json,sys; value=json.load(sys.stdin); assert value["status"] == "ok", value; assert value["last_status"] == "stopped", value'
 echo "daemon-knowledge-worker-smoke=ok"

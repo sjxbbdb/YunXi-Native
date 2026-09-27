@@ -18,7 +18,6 @@ use tokio::sync::watch;
 
 const STATE_SCHEMA_VERSION: u32 = 1;
 const DEFAULT_FLEET_WORKER_ID: &str = "yunxi-linux-embedding-fleet";
-#[cfg(unix)]
 pub(super) const DEFAULT_DAEMON_WORKER_ID: &str = "yunxi-linux-daemon-knowledge";
 const MAX_STATUS_WORKSPACES: usize = 32;
 
@@ -263,16 +262,85 @@ fn workspace_fingerprint(path: &Path) -> String {
 }
 
 fn scheduler_state_path(worker_id: &str) -> Result<PathBuf> {
+    let root = scheduler_state_root();
+    fs::create_dir_all(&root).with_context(|| "无法创建知识 worker 调度状态目录".to_string())?;
+    restrict_state_directory(&root)?;
+    Ok(root.join(format!("{}.json", stable_fingerprint(worker_id))))
+}
+
+fn scheduler_state_root() -> PathBuf {
     let home = std::env::var_os("HOME").map(PathBuf::from);
-    let root = std::env::var_os("XDG_STATE_HOME")
+    std::env::var_os("XDG_STATE_HOME")
         .map(PathBuf::from)
         .or_else(|| home.map(|path| path.join(".local").join("state")))
         .unwrap_or_else(|| PathBuf::from(".yunxi-state"))
         .join("yunxi")
-        .join("knowledge-worker");
-    fs::create_dir_all(&root).with_context(|| "无法创建知识 worker 调度状态目录".to_string())?;
-    restrict_state_directory(&root)?;
-    Ok(root.join(format!("{}.json", stable_fingerprint(worker_id))))
+        .join("knowledge-worker")
+}
+
+fn scheduler_state_read_path(worker_id: &str) -> PathBuf {
+    scheduler_state_root().join(format!("{}.json", stable_fingerprint(worker_id)))
+}
+
+/// Read scheduler state only. This deliberately does not create the state
+/// directory and never opens either SQLite database.
+pub(super) fn run_health(worker_id: Option<String>) -> Result<()> {
+    let worker_id = worker_id.unwrap_or_else(|| DEFAULT_DAEMON_WORKER_ID.to_string());
+    if worker_id.trim().is_empty() || worker_id.len() > 256 {
+        bail!("--worker-id 必须为 1 到 256 字节的非空标识");
+    }
+    let path = scheduler_state_read_path(&worker_id);
+    let output = match fs::metadata(&path) {
+        Err(error) if error.kind() == io::ErrorKind::NotFound => json!({
+            "schema_version": 1,
+            "scheduler": "read_only_state",
+            "status": "missing",
+            "worker_id": worker_id,
+        }),
+        Err(_) => json!({
+            "schema_version": 1,
+            "scheduler": "read_only_state",
+            "status": "error",
+            "error_code": "scheduler_state_unavailable",
+            "worker_id": worker_id,
+        }),
+        Ok(metadata) if metadata.len() > 64 * 1024 => json!({
+            "schema_version": 1,
+            "scheduler": "read_only_state",
+            "status": "error",
+            "error_code": "scheduler_state_oversized",
+            "worker_id": worker_id,
+        }),
+        Ok(_) => match fs::read_to_string(&path)
+            .ok()
+            .and_then(|value| serde_json::from_str::<SchedulerState>(&value).ok())
+        {
+            Some(state)
+                if state.schema_version == STATE_SCHEMA_VERSION && state.worker_id == worker_id =>
+            {
+                json!({
+                    "schema_version": 1,
+                    "scheduler": "read_only_state",
+                    "status": "ok",
+                    "worker_id": worker_id,
+                    "last_status": state.last_status,
+                    "rounds": state.rounds,
+                    "jobs_processed": state.jobs_processed,
+                    "last_time_millis": state.last_time_millis,
+                    "workspace_count": state.workspace_fingerprints.len(),
+                    "next_workspace_index": state.next_workspace_index,
+                })
+            }
+            _ => json!({
+                "schema_version": 1,
+                "scheduler": "read_only_state",
+                "status": "error",
+                "error_code": "scheduler_state_invalid",
+                "worker_id": worker_id,
+            }),
+        },
+    };
+    print_record(&output)
 }
 
 fn restore_state(
