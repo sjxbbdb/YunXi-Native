@@ -68,6 +68,8 @@ const KNOWLEDGE_IMPORT_DIRECTORY_MAX_DEPTH: usize = 8;
 const KNOWLEDGE_IMPORT_DIRECTORY_MAX_FILES: usize = 512;
 const KNOWLEDGE_IMPORT_DIRECTORY_MAX_TOTAL_BYTES: u64 = 64 * 1024 * 1024;
 const KNOWLEDGE_IMPORT_DIRECTORY_MAX_FILE_BYTES: u64 = 8 * 1024 * 1024;
+#[cfg(unix)]
+const TEST_DAEMON_EVENT_DELAY_ENV: &str = "YUNXI_TEST_DAEMON_EVENT_DELAY_MS";
 
 #[cfg(unix)]
 const MAX_TURN_PROMPT_BYTES: usize = 64 * 1024;
@@ -5237,6 +5239,14 @@ async fn record_detached_agent_event(
             record_replay_frame(replays, run_id, ServerFrame::Message { content }).await;
         }
         _ => {}
+    }
+    // The recovery smoke can ask the daemon to yield after an event has been
+    // durably recorded, creating a deterministic SIGKILL window. This is a
+    // bounded test-only hook; normal runs never set the environment variable.
+    if let Ok(delay_ms) = std::env::var(TEST_DAEMON_EVENT_DELAY_ENV)
+        && let Ok(delay_ms) = delay_ms.parse::<u64>()
+    {
+        sleep(Duration::from_millis(delay_ms.min(5_000))).await;
     }
     Ok(())
 }
