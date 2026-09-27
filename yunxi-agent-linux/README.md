@@ -383,6 +383,7 @@ source ~/.config/fish/conf.d/yunxi.fish
 策略决定。fish 只保留行编辑、历史、补全、空输入和编辑态取消。
 
 - 不再存在 fish 的保守分类模式；hook 不调用 `shell-classify`，也不在本地执行提交内容；
+- 提交非空 buffer 时 hook 会暂时隐藏光标，在 YunXi 回合前按原始内容重放输入；多行续行会保留并增加缩进，回合结束或收到 `SIGINT`、`SIGTERM`、`EXIT` 都会恢复光标；
 - 工具调用仍会弹出审批，不会因为通过 shell 接管而自动放行；
 - 输入编辑态的 `Ctrl+C` 由 fish 本地取消；已送入 YunXi 的回合会向 daemon 发送
   `Cancel`，等待 `cancelled` 终态后返回，关闭 fish 后 daemon 也不会继续接收新输入。
@@ -395,9 +396,9 @@ source ~/.config/fish/conf.d/yunxi.fish
 携带独立的 `fish-<pid>` session id，因此两个终端即使位于同一目录，也不会误用同一个
 YunXi Runtime 会话；手动调用 `shell-intercept` 时仍可用 `YUNXI_SHELL_SESSION` 提供兼容
 session id。真实 fish + PTY smoke 已覆盖 shell-looking 输入、中文自然语言、Ctrl+J、多行、
-命令替换、重定向、管道、窗口 resize 和输入态 Ctrl+C；`tests/shell_prompt_cancel_smoke.sh`
-另行覆盖审批等待态取消；复杂嵌套命令和提示符重绘矩阵仍未完成，不能把这段设计说明当成
-已验收的全部行为保证。
+命令替换、重定向、管道、窗口 resize、输入态 Ctrl+C、光标隐藏/恢复、提示符重绘和多行输入
+重放；脚本的重绘断言只检查控制序列与文本，不依赖终端颜色。`tests/shell_prompt_cancel_smoke.sh`
+另行覆盖审批等待态取消。
 
 真实 PTY 回归可运行：
 

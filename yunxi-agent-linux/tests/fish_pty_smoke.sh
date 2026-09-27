@@ -89,6 +89,7 @@ import termios
 import time
 
 log_path = sys.argv[1]
+transcript = bytearray()
 pid, fd = pty.fork()
 if pid == 0:
     os.environ["TERM"] = "dumb"
@@ -109,6 +110,7 @@ def read_until(needle: bytes, timeout: float = 4.0) -> bytes:
         if not chunk:
             break
         data.extend(chunk)
+        transcript.extend(chunk)
         if needle in data:
             # Fish may repaint the prompt in several writes.  Let the final
             # repaint and the hook's prompt event settle before the next
@@ -135,9 +137,14 @@ time.sleep(0.1)
 os.write(fd, b"\x03")
 read_until(b"> ")
 fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", 48, 140, 0, 0))
+before = len(transcript)
 os.write(fd, b"ls -la\r")
 read_until(b"[yunxi intercepted] ls -la")
 read_until(b"> ")
+redraw = bytes(transcript[before:])
+assert b"\x1b[?25l" in redraw and b"\x1b[?25h" in redraw, redraw
+assert redraw.index(b"\x1b[?25l") < redraw.index(b"\x1b[?25h"), redraw
+assert b"\x1b[1A\x1b[" in redraw, redraw
 os.write(fd, b"printf 'sub:%s\\n' (printf nested)\r")
 read_until(b"[yunxi intercepted] printf 'sub:%s\\n' (printf nested)")
 read_until(b"> ")
@@ -153,11 +160,16 @@ read_until(b"> ")
 os.write(fd, "你好，帮我看看项目".encode() + b"\r")
 read_until(b"[yunxi intercepted]")
 read_until(b"> ")
+before = len(transcript)
 os.write(fd, "第一行".encode())
 time.sleep(0.1)
 os.write(fd, "\x0a第二行".encode() + b"\r")
 read_until(b"[yunxi intercepted]")
 read_until(b"> ")
+multiline = bytes(transcript[before:])
+assert b"\x1b[?25l" in multiline and b"\x1b[?25h" in multiline, multiline
+assert "第一行".encode() in multiline, multiline
+assert "  第二行".encode() in multiline, multiline
 
 os.write(fd, b"\x04")
 _, status = os.waitpid(pid, 0)

@@ -2592,8 +2592,46 @@ set -g __yunxi_binary "{binary}"
 
 function __yunxi_hand_to_ai
     set -g __yunxi_pending_buffer "$argv[1]"
+    __yunxi_wrap_fish_prompt
     commandline -b -- ""
+    set -g __yunxi_cursor_hidden 1
+    printf '\e[?25l'
     commandline -f execute
+end
+
+function __yunxi_wrap_fish_prompt
+    functions -q __yunxi_original_fish_prompt; and return
+    functions -q fish_prompt; or fish_prompt >/dev/null 2>/dev/null
+    functions -q fish_prompt; or return
+
+    functions -c fish_prompt __yunxi_original_fish_prompt
+    function fish_prompt
+        if set -q __yunxi_pending_buffer
+            printf '\e[?25l'
+        end
+        __yunxi_original_fish_prompt
+    end
+end
+
+function __yunxi_replay_buffer
+    set -l buffer $argv[1]
+    set -l lines (string split \n -- "$buffer")
+    if test (count $lines) -gt 0
+        set -l prompt (fish_prompt | string collect -N)
+        set -l prompt_lines (string split \n -- "$prompt")
+        set -l prompt_col (math (string length --visible -- "$prompt_lines[-1]") + 1)
+        printf '\e[?25l'
+        printf '\e[1A\e[%sG' $prompt_col
+        printf '%s\n' "$lines[1]"
+        for line in $lines[2..-1]
+            printf '  %s\n' "$line"
+        end
+    end
+end
+
+function __yunxi_restore_cursor
+    printf '\e[?25h'
+    set -e __yunxi_cursor_hidden
 end
 
 function __yunxi_execute_or_continue
@@ -2637,8 +2675,14 @@ function __yunxi_on_prompt --on-event fish_prompt
     set -q __yunxi_pending_buffer; or return
     set -l buffer $__yunxi_pending_buffer
     set -e __yunxi_pending_buffer
+    trap __yunxi_restore_cursor INT TERM EXIT
+    __yunxi_replay_buffer "$buffer"
     printf '\n'
     printf '%s' "$buffer" | "$__yunxi_binary" shell-intercept --shell fish --session-id "fish-"$fish_pid --cwd "$PWD" --stdin
+    set -l yunxi_status $status
+    trap - INT TERM EXIT
+    __yunxi_restore_cursor
+    return $yunxi_status
 end
 
 "#
@@ -5582,6 +5626,14 @@ mod tests {
     fn hook_routes_every_non_empty_submission() {
         let hook = fish_hook(Path::new("/home/user/.local/bin/yunxi-linux"));
         assert!(hook.contains("__yunxi_hand_to_ai \"$buffer\""));
+        assert!(hook.contains("__yunxi_wrap_fish_prompt"));
+        assert!(hook.contains("functions -c fish_prompt __yunxi_original_fish_prompt"));
+        assert!(hook.contains("printf '\\e[?25l'"));
+        assert!(hook.contains("printf '\\e[?25h'"));
+        assert!(hook.contains("string split \\n -- \"$buffer\""));
+        assert!(hook.contains("printf '  %s\\n' \"$line\""));
+        assert!(hook.contains("trap __yunxi_restore_cursor INT TERM EXIT"));
+        assert!(hook.contains("trap - INT TERM EXIT"));
         assert!(hook.contains("set -g __yunxi_binary"));
         assert!(!hook.contains("shell-classify --shell fish --stdin"));
         assert!(!hook.contains("__yunxi_takeover"));
