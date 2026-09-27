@@ -237,10 +237,12 @@ workspace，也不会自动激活 generation。除原有的 `--cwd` 单 workspac
 共享的预算。单个 SQLite 损坏、权限或索引失败只会标记该工作区并继续处理其他工作区，
 JSON 默认只返回 `workspace_index`，不泄露绝对路径。按 `Ctrl+C` 或 `SIGTERM` 停止时
 会输出结构化 stopped 记录。fleet 仍是显式 CLI 边界，不会自行发现新目录，也不会替代
-未来需要跨 workspace 告警和统一策略的调度器。其 round-robin 游标与累计统计写入
+跨 workspace 的工作区级 store 故障采用确定性指数退避（失败次数最多 6 次，等待最多
+60 秒）；退避计数与下一次尝试时间按工作区指纹和 round-robin 游标、累计统计一起写入
 `$XDG_STATE_HOME/yunxi/knowledge-worker/`（未设置时为 `~/.local/state/yunxi/knowledge-worker/`）
 的独立状态文件；文件原子替换且用户私有，损坏或版本不兼容时只重置游标并返回
-结构化 warning，不接触长期记忆或 `knowledge.sqlite3`。
+结构化 warning，不接触长期记忆或 `knowledge.sqlite3`。provider embedding job 的重试
+仍由 SQLite 队列自己的 `next_attempt_at_millis` 管理，两者不会混用。
 
 `knowledge-worker-status` 是独立的只读诊断入口：它不会创建缺失的知识数据库，不会初始化
 或迁移旧 schema，不会领取任务、回收 lease、提升 retry 或读取长期记忆。输出同时给出
@@ -249,7 +251,8 @@ active/staging 队列的计数和同一时钟快照；`status` 为 `idle`、`rea
 
 `knowledge-worker-health` 只读取 XDG state 下的脱敏调度快照，输出 `missing`、`ok` 或
 `error` 状态，不会创建状态目录、领取任务、触发 retry，也不会打开 `knowledge.sqlite3`
-或长期记忆数据库。需要查看自定义 worker 时传入 `--worker-id`。
+或长期记忆数据库。`ok` 快照还包含当前仍在退避中的工作区数量和最长等待秒数；需要
+查看自定义 worker 时传入 `--worker-id`。
 
 如果希望让同一个 YunXi daemon 顺带托管明确的知识工作区，可以显式启动；参数可重复
 传入最多 32 个工作区：

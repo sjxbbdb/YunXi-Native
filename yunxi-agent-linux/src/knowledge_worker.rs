@@ -370,13 +370,23 @@ pub(super) fn run_health(worker_id: Option<String>) -> Result<()> {
                 let retrying = state
                     .workspace_backoff
                     .iter()
-                    .filter(|item| item.retry_at_millis.is_some_and(|when| when > now))
+                    .take(MAX_STATUS_WORKSPACES)
+                    .filter(|item| {
+                        bounded_retry_at_millis(item.retry_at_millis, now)
+                            .is_some_and(|when| when > now)
+                    })
                     .count();
                 let max_retry_after_secs = state
                     .workspace_backoff
                     .iter()
+                    .take(MAX_STATUS_WORKSPACES)
                     .filter_map(|item| item.retry_at_millis)
-                    .map(|when| when.saturating_sub(now).div_ceil(1_000))
+                    .map(|when| {
+                        bounded_retry_at_millis(Some(when), now)
+                            .unwrap_or(now)
+                            .saturating_sub(now)
+                            .div_ceil(1_000)
+                    })
                     .max()
                     .unwrap_or(0);
                 json!({
@@ -481,9 +491,12 @@ fn restore_state(
     let backoff = state
         .workspace_backoff
         .into_iter()
+        .take(MAX_STATUS_WORKSPACES)
         .filter(|item| !item.fingerprint.trim().is_empty())
         .map(|mut item| {
             item.failures = item.failures.min(MAX_RETRY_FAILURES);
+            item.retry_at_millis =
+                bounded_retry_at_millis(item.retry_at_millis, unix_time_millis());
             item
         })
         .collect();
@@ -506,6 +519,11 @@ fn restore_state(
 fn retry_delay_secs(failures: u32) -> u64 {
     let exponent = failures.saturating_sub(1).min(5);
     (1_u64 << exponent).min(MAX_RETRY_DELAY_SECS)
+}
+
+fn bounded_retry_at_millis(retry_at: Option<u64>, now_millis: u64) -> Option<u64> {
+    retry_at
+        .map(|when| when.min(now_millis.saturating_add(MAX_RETRY_DELAY_SECS.saturating_mul(1_000))))
 }
 
 fn write_scheduler_state(path: &Path, state: &SchedulerState) -> Result<()> {
