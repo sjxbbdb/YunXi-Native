@@ -313,6 +313,21 @@ fn validate_token(value: &str, label: &str) -> AgentResult<()> {
 
 fn fixed_environment() -> BTreeMap<String, String> {
     BTreeMap::from([
+        // Command resolution must not depend on a user-writable PATH entry.
+        // The collector only targets the standard system locations used by
+        // the supported Linux distributions.
+        (
+            "PATH".to_string(),
+            "/usr/sbin:/usr/bin:/sbin:/bin".to_string(),
+        ),
+        // Keep shell-like and git help commands from loading user startup or
+        // configuration files while the collector is running read-only.
+        ("BASH_ENV".to_string(), "/dev/null".to_string()),
+        ("ENV".to_string(), "/dev/null".to_string()),
+        ("GIT_CONFIG_NOSYSTEM".to_string(), "1".to_string()),
+        ("GIT_CONFIG_GLOBAL".to_string(), "/dev/null".to_string()),
+        ("GIT_CONFIG_SYSTEM".to_string(), "/dev/null".to_string()),
+        ("GIT_CONFIG_COUNT".to_string(), "0".to_string()),
         ("MANPAGER".to_string(), "cat".to_string()),
         ("PAGER".to_string(), "cat".to_string()),
         ("TERM".to_string(), "dumb".to_string()),
@@ -545,6 +560,39 @@ mod tests {
         assert!(truncated);
         assert!(output.len() <= MAX_OUTPUT_BYTES);
         assert!(output.is_char_boundary(output.len()));
+    }
+
+    #[test]
+    fn collector_environment_is_system_scoped_and_non_interactive() {
+        let environment = fixed_environment();
+        assert_eq!(
+            environment.get("PATH").map(String::as_str),
+            Some("/usr/sbin:/usr/bin:/sbin:/bin")
+        );
+        assert_eq!(
+            environment.get("BASH_ENV").map(String::as_str),
+            Some("/dev/null")
+        );
+        assert_eq!(
+            environment.get("ENV").map(String::as_str),
+            Some("/dev/null")
+        );
+        assert_eq!(
+            environment.get("GIT_CONFIG_NOSYSTEM").map(String::as_str),
+            Some("1")
+        );
+        assert_eq!(
+            environment.get("GIT_CONFIG_GLOBAL").map(String::as_str),
+            Some("/dev/null")
+        );
+        assert_eq!(
+            environment.get("GIT_CONFIG_SYSTEM").map(String::as_str),
+            Some("/dev/null")
+        );
+        assert_eq!(
+            environment.get("GIT_CONFIG_COUNT").map(String::as_str),
+            Some("0")
+        );
     }
 
     #[test]
