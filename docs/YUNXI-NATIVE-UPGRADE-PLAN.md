@@ -275,9 +275,11 @@ daemon 发送 `SIGKILL`，并发启动多个候选进程，验证陈旧 socket/l
 `run_id` 从游标 0 回放并逐帧校验顺序与 `Done` 终止帧；另覆盖
 `detached_output_only` 断开后 active Follow 的 backlog+live 顺序，以及 detached run 的独立
 Cancel。只有显式 detached delivery 才允许活动回合 Follow；attached 回合仍保持断线
-cancel+discard。`yunxi-agent-linux/tests/daemon_restart_recovery_smoke.sh` 额外覆盖以用户级
-XDG state manifest 模拟 daemon 崩溃后的重启：Status 返回 `interrupted/recoverable`，Follow
-返回已有事件和结构化 `Done(interrupted)`，不触发 provider 重跑。
+cancel+discard。`yunxi-agent-linux/tests/daemon_restart_recovery_smoke.sh` 现在启动真实
+release daemon，等待它持久化回合事件后执行 `SIGSTOP`/`SIGKILL`，再用同一用户级
+XDG state 重启 daemon：Status 返回 `interrupted/recoverable`，Follow 返回已有事件和结构化
+`Done(interrupted)`，并验证不会触发 provider 重跑。测试专用的有界事件延迟只由
+`YUNXI_TEST_DAEMON_EVENT_DELAY_MS` 显式注入，不进入正常运行路径。
 
 当前 `Turn` 语义边界为：`prompt` ≤ 64 KiB、`cwd` ≤ 4 KiB、`request_id`/`session_id` ≤
 512 字节、`provider`/`model` ≤ 256 字节。它们独立于 24 MiB frame 传输上限，目的是在
