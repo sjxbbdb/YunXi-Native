@@ -56,9 +56,8 @@ makepkg -si --syncdeps
 bundled SQLite 与 ring 的 native static link；不会改变运行时的 SQLite 数据库边界，
 也不需要用户手动设置环境变量。
 
-PKGBUILD 当前固定 `_commit=3ae1f55ad01b053047ce5245dd1a432bd5f1cbfb`（基于包含混合召回
-确定性排序的 `af6dc1198e79df0e16636874ee4d04af13c1fbad`，并包含后续 fish 接管修复），
-`pkgver` 保持不变、`pkgrel=8`。构建只产出 `yunxi-linux`，安装到
+PKGBUILD 当前固定到最新已推送修复提交，`pkgver` 保持不变、`pkgrel=10`。构建只产出
+`yunxi-linux`，安装到
 `/usr/bin/yunxi-linux`，并把
 用户级服务安装到 `/usr/lib/systemd/user/yunxi-linux.service`。服务以当前登录用户运行，
 不创建 root daemon、不开放 TCP 端口，也不会在安装时自动启用：
@@ -67,6 +66,19 @@ PKGBUILD 当前固定 `_commit=3ae1f55ad01b053047ce5245dd1a432bd5f1cbfb`（基�
 systemctl --user daemon-reload
 systemctl --user enable --now yunxi-linux.service
 ```
+
+如果要启用空闲记忆反思，请在 systemd user service 的 `EnvironmentFile`（或当前 shell）中
+设置：
+
+```bash
+YUNXI_MEMORY_ENABLED=true
+YUNXI_MEMORY_REFLECTION_ENABLED=true
+YUNXI_MEMORY_REFLECTION_IDLE_SECONDS=1800
+```
+
+两个开关统一接受 `1/true/yes/on` 与 `0/false/no/off`；调试诊断可设置
+`YUNXI_MEMORY_REFLECTION_DEBUG=true`。反思只更新工作区长期记忆和独立向量索引，不会把聊天
+内容写入 `knowledge.sqlite3`。
 
 首次使用 fish 接管时，由用户显式安装 hook：
 
@@ -105,8 +117,8 @@ sudo pacman -Rns yunxi-native
 卸载不会删除 `~/.local/state/yunxi`、工作区 `.yunxi/`、长期记忆或知识库，也不会删除
 fish hook；如需清理，必须由用户按路径显式处理。升级、降级回滚沿用 pacman 的包事务。
 
-当前 pin 和 `pkgrel=8` 已在 Arch WSL 实机完成验证：先运行 preflight/static smoke，
-再用 `makepkg --clean --cleanbuild --noconfirm --syncdeps` 构建并临时安装 `pkgrel=8`，检查
+当前 pin 和 `pkgrel=10` 已在 Arch WSL 实机完成静态验证：先运行 preflight/static smoke，
+再用 `makepkg --clean --cleanbuild --noconfirm --syncdeps` 构建并临时安装 `pkgrel=10`，检查
 `/usr/bin/yunxi-linux --version`、两个 user unit，随后卸载并确认包文件/unit 被移除；此前
 的临时副本构建还用
 `pacman -U` 完成 `7 → 8` 升级、`8 → 7` 回滚，最后用 `pacman -Rns --noconfirm`

@@ -54,6 +54,21 @@ export DEEPSEEK_API_KEY='你的密钥'
 
 没有凭证时程序会自动进入离线 Runtime；也可以显式使用 `--offline`。
 
+### 自动记忆反思
+
+自动总结默认需要显式打开记忆和反思两个开关。建议在启动 daemon 的环境中设置：
+
+```bash
+export YUNXI_MEMORY_ENABLED=true
+export YUNXI_MEMORY_REFLECTION_ENABLED=true
+export YUNXI_MEMORY_REFLECTION_IDLE_SECONDS=1800
+```
+
+两个布尔开关统一接受 `1/true/yes/on` 与 `0/false/no/off`；不合法值使用默认值。
+`YUNXI_MEMORY_REFLECTION_DEBUG=true` 可输出“未启用记忆、反思开关关闭或缺少 Provider/模型”
+等前置条件诊断。默认空闲阈值为 30 分钟，范围为 60 秒至 24 小时。反思结果写入工作区
+`.yunxi/memory/` 与长期记忆向量库，不会写入 `knowledge.sqlite3`。
+
 ## 构建与启动
 
 在主仓库根目录执行：

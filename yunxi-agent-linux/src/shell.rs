@@ -5253,7 +5253,10 @@ async fn run_detached_turn(
     )
     .await;
     if let Err(error) = &result {
-        let reason = sanitize_failure_reason(&error.to_string());
+        // Preserve the anyhow error chain so upstream/provider diagnostics are
+        // visible in the replay frame and daemon log, while the sanitizer
+        // still removes credential-shaped values before they leave the host.
+        let reason = sanitize_failure_reason(&format!("{error:#}"));
         eprintln!("yunxi detached run {run_id} failed: {reason}");
         record_replay_frame(
             &replays,
@@ -5878,6 +5881,16 @@ mod tests {
         assert_eq!(value.as_object().expect("object").len(), 5);
         assert!(!output.contains("prompt"));
         assert!(!output.contains("cwd"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn detached_failure_reason_preserves_anyhow_error_chain() {
+        let error =
+            anyhow::Error::msg("上游原始错误：模型名称不能为空").context("YunXi Runtime 执行失败");
+        let reason = sanitize_failure_reason(&format!("{error:#}"));
+        assert!(reason.contains("YunXi Runtime 执行失败"));
+        assert!(reason.contains("上游原始错误：模型名称不能为空"));
     }
 
     #[cfg(unix)]

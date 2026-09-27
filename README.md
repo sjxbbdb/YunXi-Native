@@ -84,10 +84,19 @@ shell 文本，也不会把 systemd、package 或 network 的高风险操作偷�
 
 ### 记忆反思与自动总结（Phase 5）
 
-YunXi 现在可以在一段时间没有新对话后，对最近完成的会话做一次后台“记忆反思”。默认空闲阈值为
-30 分钟，可通过 `YUNXI_MEMORY_REFLECTION_IDLE_SECONDS` 调整（最小 60 秒，最大 24 小时）；
-可用 `YUNXI_MEMORY_REFLECTION_ENABLED=false` 关闭。反思任务只在记忆功能已启用、Provider 和
-模型配置完整时运行，不阻塞当前对话，也不会主动向用户发送消息。
+YunXi 现在可以在一段时间没有新对话后，对最近完成的会话做一次后台“记忆反思”。必须先启用
+记忆功能，再启用反思任务：
+
+```bash
+export YUNXI_MEMORY_ENABLED=true
+export YUNXI_MEMORY_REFLECTION_ENABLED=true
+export YUNXI_MEMORY_REFLECTION_IDLE_SECONDS=1800   # 默认 30 分钟
+```
+
+其中两个开关都接受 `1/true/yes/on` 和 `0/false/no/off`（不合法值使用默认值）；也可以在
+`$YUNXI_HOME/persona/config.toml` 中设置 `memory_enabled = true`。空闲阈值最小 60 秒、最大
+24 小时；调试前置条件可额外设置 `YUNXI_MEMORY_REFLECTION_DEBUG=true`。反思任务只在记忆功能、
+反思开关、Provider 和模型配置都满足时运行，不阻塞当前对话，也不会主动向用户发送消息。
 
 反思不是把聊天记录灌入 Linux 知识库，而是复用现有 MemoryPipeline 和隐私策略，将有限数量的
 新会话生成结构化候选：

@@ -39,6 +39,10 @@ commands = [
 
 with tempfile.TemporaryDirectory(prefix="yunxi-help-smoke-") as directory:
     workspace = pathlib.Path(directory)
+    # This smoke uses an explicit synthetic source-version label so the same
+    # assertions run on Arch, Ubuntu, and minimal CI images. It is a dataset
+    # isolation label, not a claim about the host distribution; the production
+    # collector can still receive the host-resolved version via `auto`.
     # The collector must not resolve an allowlisted command through a
     # user-controlled PATH or source a user-controlled BASH_ENV file.
     poison_dir = workspace / "poison-bin"
@@ -165,7 +169,11 @@ with tempfile.TemporaryDirectory(prefix="yunxi-help-smoke-") as directory:
             "--cwd",
             str(workspace),
             "--limit",
-            "5",
+            # The local chargram provider is a retrieval smoke-test backend,
+            # not a semantic-ranking guarantee.  Several command-help chunks
+            # can share this character n-gram, so keep the assertion about
+            # document identity while allowing the full bounded result set.
+            "50",
         ],
         check=True,
         capture_output=True,

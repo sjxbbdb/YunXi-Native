@@ -44,7 +44,12 @@ pub fn schedule_idle_memory_reflection(
     storage: Arc<dyn SessionStore>,
 ) {
     let settings = PersonaSettings::load();
-    if !settings.memory_enabled || !reflection_enabled() {
+    if !settings.memory_enabled {
+        reflection_debug("disabled: YUNXI_MEMORY_ENABLED is false");
+        return;
+    }
+    if !reflection_enabled() {
+        reflection_debug("disabled: YUNXI_MEMORY_REFLECTION_ENABLED is false");
         return;
     }
     if config
@@ -56,6 +61,7 @@ pub fn schedule_idle_memory_reflection(
             .as_deref()
             .is_none_or(|value| value.trim().is_empty())
     {
+        reflection_debug("waiting: provider and model must both be configured");
         return;
     }
     let delay = Duration::from_secs(reflection_idle_seconds());
@@ -237,13 +243,26 @@ fn save_checkpoint(path: &Path, checkpoint: &ReflectionCheckpoint) -> AgentResul
 fn reflection_enabled() -> bool {
     std::env::var("YUNXI_MEMORY_REFLECTION_ENABLED")
         .ok()
-        .map(|value| {
-            matches!(
-                value.trim().to_ascii_lowercase().as_str(),
-                "1" | "true" | "yes" | "on"
-            )
-        })
+        .map(|value| parse_env_bool(&value, true))
         .unwrap_or(true)
+}
+
+fn reflection_debug(message: &str) {
+    if std::env::var("YUNXI_MEMORY_REFLECTION_DEBUG")
+        .ok()
+        .map(|value| parse_env_bool(&value, false))
+        .unwrap_or(false)
+    {
+        eprintln!("yunxi memory reflection: {message}");
+    }
+}
+
+fn parse_env_bool(value: &str, default: bool) -> bool {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "1" | "true" | "yes" | "on" => true,
+        "0" | "false" | "no" | "off" => false,
+        _ => default,
+    }
 }
 
 fn reflection_idle_seconds() -> u64 {
@@ -289,5 +308,14 @@ mod tests {
         let mut value = session("one", 1);
         value.prompt = "x".repeat(MAX_SOURCE_CHARS);
         assert!(render_source(&[value]).len() <= MAX_SOURCE_CHARS);
+    }
+
+    #[test]
+    fn reflection_boolean_parser_matches_persona_settings() {
+        assert!(parse_env_bool("true", false));
+        assert!(parse_env_bool("YES", false));
+        assert!(!parse_env_bool("off", true));
+        assert!(parse_env_bool("invalid", true));
+        assert!(!parse_env_bool("invalid", false));
     }
 }
