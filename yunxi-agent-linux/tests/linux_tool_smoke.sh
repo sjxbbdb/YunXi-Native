@@ -27,6 +27,8 @@ assert {item["name"] for item in specs} == {
     "linux.processes",
     "linux.network",
     "linux.pacman",
+    "linux.filesystem_summary",
+    "linux.filesystem_list",
 }, specs
 assert all(
     item["risk_class"] == "read_only"
@@ -60,12 +62,40 @@ assert len(result["stderr"].encode()) <= 64 * 1024, result
 PY
 }
 
+run_filesystem_probe() {
+  local output="$1"
+  local expected_tool="$2"
+  shift 2
+  "$BINARY" linux-tool "$@" >"$output"
+  python3 - "$output" "$expected_tool" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as handle:
+    result = json.load(handle)
+assert result["tool"] == sys.argv[2], result
+assert result["status"] == "ok", result
+assert result["risk_class"] == "read_only", result
+assert result["requires_root"] is False, result
+assert result["mutates_system"] is False, result
+assert result["available"] is True, result
+assert isinstance(result["path"], str) and result["path"], result
+assert isinstance(result["limit"], int) and result["limit"] > 0, result
+assert isinstance(result["scanned_entries"], int), result
+assert isinstance(result["truncated"], bool), result
+assert isinstance(result["entries"], list), result
+assert result["summary"] is None or isinstance(result["summary"], dict), result
+PY
+}
+
 run_probe "$TMP_ROOT/processes.json" linux.processes processes --limit 0
 run_probe "$TMP_ROOT/network.json" linux.network network
 run_probe "$TMP_ROOT/systemd.json" linux.systemd_status systemd-status --unit yunxi-linux.service
 run_probe "$TMP_ROOT/man.json" linux.man man fish
 run_probe "$TMP_ROOT/pacman-info.json" linux.pacman pacman --info yunxi-agent
 run_probe "$TMP_ROOT/pacman-search.json" linux.pacman pacman --search yunxi
+run_filesystem_probe "$TMP_ROOT/filesystem-summary.json" linux.filesystem_summary filesystem-summary --path "$TMP_ROOT" --limit 4
+run_filesystem_probe "$TMP_ROOT/filesystem-list.json" linux.filesystem_list filesystem-list --path "$TMP_ROOT" --limit 4
 
 if "$BINARY" linux-tool systemd-status --unit 'yunxi.service; touch /tmp/yunxi-smoke' >/dev/null 2>&1; then
   echo "systemd token injection unexpectedly accepted" >&2
@@ -77,6 +107,10 @@ if "$BINARY" linux-tool man 'fish --pager' >/dev/null 2>&1; then
 fi
 if "$BINARY" linux-tool pacman --info 'yunxi-agent; touch /tmp/yunxi-smoke' >/dev/null 2>&1; then
   echo "pacman token injection unexpectedly accepted" >&2
+  exit 1
+fi
+if "$BINARY" linux-tool filesystem-list --path "$(printf 'x%.0s' {1..4100})" >/dev/null 2>&1; then
+  echo "filesystem path length injection unexpectedly accepted" >&2
   exit 1
 fi
 

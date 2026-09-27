@@ -9,11 +9,17 @@
 use anyhow::{Result, bail};
 use clap::Subcommand;
 use serde::Serialize;
+use std::fs;
+use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 
 const MAX_OUTPUT_BYTES: usize = 64 * 1024;
 const DEFAULT_PROCESS_LIMIT: usize = 40;
 const MAX_PROCESS_LIMIT: usize = 200;
+const DEFAULT_FILESYSTEM_ENTRY_LIMIT: usize = 100;
+const MAX_FILESYSTEM_ENTRY_LIMIT: usize = 200;
+const MAX_FILESYSTEM_PATH_BYTES: usize = 4096;
+const MAX_FILESYSTEM_ENTRY_NAME_BYTES: usize = 256;
 
 #[derive(Debug, Clone, Subcommand)]
 pub(crate) enum LinuxToolCommand {
@@ -51,6 +57,24 @@ pub(crate) enum LinuxToolCommand {
         #[arg(long, conflicts_with = "info", required_unless_present = "info")]
         search: Option<String>,
     },
+    /// Read a bounded, non-recursive summary of one directory.
+    FilesystemSummary {
+        /// Directory to inspect. No shell expansion is performed.
+        #[arg(long, default_value = ".")]
+        path: PathBuf,
+        /// Maximum number of directory entries to inspect.
+        #[arg(long, default_value_t = DEFAULT_FILESYSTEM_ENTRY_LIMIT)]
+        limit: usize,
+    },
+    /// Read a bounded, non-recursive list of one directory's entries.
+    FilesystemList {
+        /// Directory to inspect. No shell expansion is performed.
+        #[arg(long, default_value = ".")]
+        path: PathBuf,
+        /// Maximum number of directory entries to return.
+        #[arg(long, default_value_t = DEFAULT_FILESYSTEM_ENTRY_LIMIT)]
+        limit: usize,
+    },
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -74,6 +98,48 @@ struct LinuxToolResult {
     command: Vec<String>,
     stdout: String,
     stderr: String,
+}
+
+#[derive(Debug, Serialize)]
+struct LinuxFilesystemSummary {
+    visible_entries: usize,
+    directories: usize,
+    files: usize,
+    symlinks: usize,
+    other: usize,
+    file_bytes: u64,
+}
+
+#[derive(Debug, Serialize)]
+struct LinuxFilesystemEntry {
+    name: String,
+    kind: &'static str,
+    size_bytes: Option<u64>,
+    error: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct LinuxFilesystemResult {
+    tool: &'static str,
+    operation: &'static str,
+    status: &'static str,
+    risk_class: &'static str,
+    requires_root: bool,
+    mutates_system: bool,
+    available: bool,
+    path: String,
+    limit: usize,
+    scanned_entries: usize,
+    truncated: bool,
+    summary: Option<LinuxFilesystemSummary>,
+    entries: Vec<LinuxFilesystemEntry>,
+    error: Option<String>,
+}
+
+struct BoundedDirectoryEntries {
+    entries: Vec<(String, PathBuf)>,
+    truncated: bool,
+    error: Option<String>,
 }
 
 pub(crate) fn run(command: LinuxToolCommand) -> Result<()> {
@@ -104,6 +170,20 @@ pub(crate) fn run(command: LinuxToolCommand) -> Result<()> {
             } else {
                 bail!("pacman requires exactly one of --info or --search")
             }
+        }
+        LinuxToolCommand::FilesystemSummary { path, limit } => {
+            validate_filesystem_path(&path)?;
+            serde_json::to_value(run_filesystem_summary(
+                &path,
+                limit.clamp(1, MAX_FILESYSTEM_ENTRY_LIMIT),
+            ))?
+        }
+        LinuxToolCommand::FilesystemList { path, limit } => {
+            validate_filesystem_path(&path)?;
+            serde_json::to_value(run_filesystem_list(
+                &path,
+                limit.clamp(1, MAX_FILESYSTEM_ENTRY_LIMIT),
+            ))?
         }
     };
     println!("{}", serde_json::to_string_pretty(&value)?);
@@ -147,7 +227,206 @@ fn specs() -> Vec<LinuxToolSpec> {
             requires_root: false,
             mutates_system: false,
         },
+        LinuxToolSpec {
+            name: "linux.filesystem_summary",
+            description: "Read a bounded, non-recursive summary of one directory.",
+            risk_class: "read_only",
+            requires_root: false,
+            mutates_system: false,
+        },
+        LinuxToolSpec {
+            name: "linux.filesystem_list",
+            description: "Read a bounded, non-recursive list of one directory's entries.",
+            risk_class: "read_only",
+            requires_root: false,
+            mutates_system: false,
+        },
     ]
+}
+
+fn run_filesystem_summary(path: &Path, limit: usize) -> LinuxFilesystemResult {
+    let operation = "directory_summary";
+    let tool = "linux.filesystem_summary";
+    let path_text = path.to_string_lossy().into_owned();
+    let directory = bounded_directory_entries(path, limit);
+    let BoundedDirectoryEntries {
+        entries,
+        truncated,
+        error,
+    } = directory;
+    if let Some(error) = error {
+        return filesystem_failure(tool, operation, path_text, limit, error);
+    }
+
+    let mut summary = LinuxFilesystemSummary {
+        visible_entries: entries.len(),
+        directories: 0,
+        files: 0,
+        symlinks: 0,
+        other: 0,
+        file_bytes: 0,
+    };
+    for (_, entry_path) in &entries {
+        match fs::symlink_metadata(entry_path) {
+            Ok(metadata) => {
+                let file_type = metadata.file_type();
+                if file_type.is_dir() {
+                    summary.directories += 1;
+                } else if file_type.is_file() {
+                    summary.files += 1;
+                    summary.file_bytes = summary.file_bytes.saturating_add(metadata.len());
+                } else if file_type.is_symlink() {
+                    summary.symlinks += 1;
+                } else {
+                    summary.other += 1;
+                }
+            }
+            Err(_) => summary.other += 1,
+        }
+    }
+    LinuxFilesystemResult {
+        tool,
+        operation,
+        status: "ok",
+        risk_class: "read_only",
+        requires_root: false,
+        mutates_system: false,
+        available: true,
+        path: path_text,
+        limit,
+        scanned_entries: summary.visible_entries,
+        truncated,
+        summary: Some(summary),
+        entries: Vec::new(),
+        error: None,
+    }
+}
+
+fn run_filesystem_list(path: &Path, limit: usize) -> LinuxFilesystemResult {
+    let operation = "directory_list";
+    let tool = "linux.filesystem_list";
+    let path_text = path.to_string_lossy().into_owned();
+    let directory = bounded_directory_entries(path, limit);
+    let BoundedDirectoryEntries {
+        entries,
+        truncated,
+        error,
+    } = directory;
+    if let Some(error) = error {
+        return filesystem_failure(tool, operation, path_text, limit, error);
+    }
+    let entries = entries
+        .iter()
+        .map(|(name, entry_path)| filesystem_entry(name, entry_path))
+        .collect::<Vec<_>>();
+    LinuxFilesystemResult {
+        tool,
+        operation,
+        status: "ok",
+        risk_class: "read_only",
+        requires_root: false,
+        mutates_system: false,
+        available: true,
+        path: path_text,
+        limit,
+        scanned_entries: entries.len(),
+        truncated,
+        summary: None,
+        entries,
+        error: None,
+    }
+}
+
+fn bounded_directory_entries(path: &Path, limit: usize) -> BoundedDirectoryEntries {
+    let read_dir = match fs::read_dir(path) {
+        Ok(read_dir) => read_dir,
+        Err(error) => {
+            return BoundedDirectoryEntries {
+                entries: Vec::new(),
+                truncated: false,
+                error: Some(format!("unable to read directory: {error}")),
+            };
+        }
+    };
+    let mut entries = Vec::new();
+    let mut error = None;
+    for item in read_dir.take(limit.saturating_add(1)) {
+        match item {
+            Ok(entry) => {
+                let name = bounded_string(
+                    &entry.file_name().to_string_lossy(),
+                    MAX_FILESYSTEM_ENTRY_NAME_BYTES,
+                );
+                entries.push((name, entry.path()));
+            }
+            Err(item_error) => {
+                error = Some(format!("unable to read directory entry: {item_error}"));
+                break;
+            }
+        }
+    }
+    entries.sort_by(|left, right| left.0.cmp(&right.0));
+    let truncated = entries.len() > limit;
+    entries.truncate(limit);
+    BoundedDirectoryEntries {
+        entries,
+        truncated,
+        error,
+    }
+}
+
+fn filesystem_entry(name: &str, path: &Path) -> LinuxFilesystemEntry {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) => {
+            let file_type = metadata.file_type();
+            let (kind, size_bytes) = if file_type.is_dir() {
+                ("directory", None)
+            } else if file_type.is_file() {
+                ("file", Some(metadata.len()))
+            } else if file_type.is_symlink() {
+                ("symlink", None)
+            } else {
+                ("other", None)
+            };
+            LinuxFilesystemEntry {
+                name: name.to_string(),
+                kind,
+                size_bytes,
+                error: None,
+            }
+        }
+        Err(error) => LinuxFilesystemEntry {
+            name: name.to_string(),
+            kind: "unknown",
+            size_bytes: None,
+            error: Some(bounded_string(&error.to_string(), 256)),
+        },
+    }
+}
+
+fn filesystem_failure(
+    tool: &'static str,
+    operation: &'static str,
+    path: String,
+    limit: usize,
+    error: String,
+) -> LinuxFilesystemResult {
+    LinuxFilesystemResult {
+        tool,
+        operation,
+        status: "failed",
+        risk_class: "read_only",
+        requires_root: false,
+        mutates_system: false,
+        available: true,
+        path,
+        limit,
+        scanned_entries: 0,
+        truncated: false,
+        summary: None,
+        entries: Vec::new(),
+        error: Some(bounded_string(&error, 1024)),
+    }
 }
 
 fn run_systemd_status(unit: Option<&str>) -> LinuxToolResult {
@@ -321,6 +600,35 @@ fn validate_pacman_token(value: &str, label: &str) -> Result<()> {
     Ok(())
 }
 
+fn validate_filesystem_path(path: &Path) -> Result<()> {
+    let text = path.to_string_lossy();
+    if text.is_empty() || text.contains('\0') {
+        bail!("filesystem path is empty or contains NUL")
+    }
+    if text.len() > MAX_FILESYSTEM_PATH_BYTES {
+        bail!("filesystem path exceeds {MAX_FILESYSTEM_PATH_BYTES} bytes")
+    }
+    for component in path.components() {
+        if let Component::Normal(value) = component
+            && value.to_string_lossy().len() > MAX_FILESYSTEM_ENTRY_NAME_BYTES
+        {
+            bail!("filesystem path component exceeds {MAX_FILESYSTEM_ENTRY_NAME_BYTES} bytes")
+        }
+    }
+    Ok(())
+}
+
+fn bounded_string(value: &str, max_bytes: usize) -> String {
+    if value.len() <= max_bytes {
+        return value.to_string();
+    }
+    let mut end = max_bytes;
+    while end > 0 && !value.is_char_boundary(end) {
+        end -= 1;
+    }
+    value[..end].to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -328,7 +636,7 @@ mod tests {
     #[test]
     fn catalog_is_read_only_and_non_root() {
         let specs = specs();
-        assert_eq!(specs.len(), 5);
+        assert_eq!(specs.len(), 7);
         assert!(specs.iter().all(|spec| {
             spec.risk_class == "read_only" && !spec.requires_root && !spec.mutates_system
         }));
@@ -360,5 +668,39 @@ mod tests {
     fn output_is_bounded() {
         let output = bounded_text(&vec![b'a'; MAX_OUTPUT_BYTES + 10]);
         assert_eq!(output.len(), MAX_OUTPUT_BYTES);
+    }
+
+    #[test]
+    fn filesystem_snapshot_is_bounded_and_deterministic() {
+        let root = std::env::temp_dir().join(format!(
+            "yunxi-linux-filesystem-test-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("tempdir");
+        std::fs::write(root.join("note.txt"), "hello").expect("file");
+        std::fs::create_dir(root.join("nested")).expect("directory");
+        let result = run_filesystem_list(&root, 1);
+        assert_eq!(result.tool, "linux.filesystem_list");
+        assert_eq!(result.status, "ok");
+        assert_eq!(result.scanned_entries, 1);
+        assert!(result.truncated);
+        assert_eq!(result.entries[0].name, "nested");
+        assert!(serde_json::to_vec(&result).expect("json").len() <= MAX_OUTPUT_BYTES);
+
+        let summary = run_filesystem_summary(&root, 8);
+        let summary = summary.summary.expect("summary");
+        assert_eq!(summary.directories, 1);
+        assert_eq!(summary.files, 1);
+        assert_eq!(summary.file_bytes, 5);
+        std::fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn filesystem_paths_reject_nul_and_oversized_components() {
+        assert!(validate_filesystem_path(Path::new("./safe")).is_ok());
+        assert!(validate_filesystem_path(Path::new("bad\0path")).is_err());
+        let oversized = "x".repeat(MAX_FILESYSTEM_ENTRY_NAME_BYTES + 1);
+        assert!(validate_filesystem_path(Path::new(&oversized)).is_err());
     }
 }
