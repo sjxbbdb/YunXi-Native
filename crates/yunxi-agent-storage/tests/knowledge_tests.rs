@@ -454,7 +454,7 @@ fn knowledge_schema_migrates_retry_schedule_and_generation_manifest_idempotently
             row.get::<_, i64>(0)
         })
         .expect("schema version");
-    assert_eq!(version, 7);
+    assert_eq!(version, 8);
     let has_retry_schedule = connection
         .prepare("PRAGMA table_info(knowledge_embedding_jobs)")
         .expect("job table info")
@@ -501,6 +501,15 @@ fn knowledge_schema_migrates_retry_schedule_and_generation_manifest_idempotently
         )
         .expect("staging job table");
     assert_eq!(staging_job_table_count, 1);
+    let tombstone_table_count = connection
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master
+             WHERE type = 'table' AND name = 'knowledge_document_tombstones'",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .expect("tombstone table");
+    assert_eq!(tombstone_table_count, 1);
 }
 
 #[test]
@@ -1686,6 +1695,137 @@ fn knowledge_retraction_is_scoped_atomic_and_removes_derived_rows() {
         !store
             .retract_document(&document.document_id, &scope)
             .expect("missing retraction")
+    );
+}
+
+#[test]
+fn retraction_tombstone_blocks_stale_staging_worker_and_activation() {
+    let (_dir, store, active_document) = queue_fixture();
+    let provider = LocalChargramEmbedding::default();
+    let building = store
+        .begin_generation_build(
+            "system-linux",
+            "system",
+            KnowledgeVisibility::Public,
+            Some(provider.model_id()),
+            Some(provider.dimensions()),
+        )
+        .expect("begin generation");
+    let mut staging_document = active_document.clone();
+    staging_document.generation = building.generation;
+    store
+        .stage_text_document(
+            &staging_document,
+            "stale candidate that must not be resurrected",
+            &KnowledgeChunkingOptions::default(),
+        )
+        .expect("stage candidate");
+    store
+        .enqueue_staging_embedding_job(
+            &staging_document.space_id,
+            &staging_document.document_id,
+            provider.model_id(),
+            building.generation,
+        )
+        .expect("enqueue candidate");
+    store
+        .process_next_staging_embedding_job("tombstone-worker", &provider)
+        .expect("process candidate")
+        .expect("candidate result");
+    let candidate_scope = KnowledgeSearchScope {
+        space_id: staging_document.space_id.clone(),
+        owner: staging_document.owner.clone(),
+        generation: building.generation,
+        visibility: staging_document.visibility,
+    };
+    store
+        .seal_generation_ready(&candidate_scope, provider.model_id(), provider.dimensions())
+        .expect("seal candidate");
+
+    let active_scope = KnowledgeSearchScope {
+        space_id: active_document.space_id.clone(),
+        owner: active_document.owner.clone(),
+        generation: active_document.generation,
+        visibility: active_document.visibility,
+    };
+    assert!(
+        store
+            .retract_document(&active_document.document_id, &active_scope)
+            .expect("retract active document")
+    );
+
+    let connection = Connection::open(store.database()).expect("database");
+    let tombstones = connection
+        .query_row(
+            "SELECT COUNT(*) FROM knowledge_document_tombstones
+             WHERE space_id = ?1 AND document_id = ?2",
+            rusqlite::params![active_document.space_id, active_document.document_id],
+            |row| row.get::<_, i64>(0),
+        )
+        .expect("tombstone count");
+    let staging_rows = connection
+        .query_row(
+            "SELECT COUNT(*) FROM knowledge_staging_documents
+             WHERE space_id = ?1 AND document_id = ?2",
+            rusqlite::params![active_document.space_id, active_document.document_id],
+            |row| row.get::<_, i64>(0),
+        )
+        .expect("staging cleanup");
+    assert_eq!(tombstones, 1);
+    assert_eq!(staging_rows, 0);
+
+    // Simulate an older worker restoring a stale row after retraction. The
+    // activation guard must reject it before any count/copy operation.
+    connection
+        .execute(
+            "INSERT INTO knowledge_staging_documents
+                (space_id, generation, document_id, title, source, version,
+                 owner, visibility, metadata_json, content_hash,
+                 created_at_millis, updated_at_millis)
+             VALUES (?1, ?2, ?3, 'stale', 'fixture', '2026.09',
+                     'system', 'public', '{}', 'stale-hash', 1, 1)",
+            rusqlite::params![
+                active_document.space_id,
+                building.generation,
+                active_document.document_id,
+            ],
+        )
+        .expect("restore stale staging row");
+    let activation_error = store
+        .activate_generation(&candidate_scope, provider.model_id(), provider.dimensions())
+        .expect_err("retracted staging candidate must not activate");
+    assert!(activation_error.to_string().contains("retracted"));
+
+    let mut reintroduced = active_document.clone();
+    reintroduced.generation = 1;
+    assert!(
+        store
+            .upsert_document(&reintroduced)
+            .expect_err("tombstoned document must not be upserted")
+            .to_string()
+            .contains("retracted")
+    );
+    let later_build = store
+        .begin_generation_build(
+            "system-linux",
+            "system",
+            KnowledgeVisibility::Public,
+            Some(provider.model_id()),
+            Some(provider.dimensions()),
+        )
+        .expect("begin later generation");
+    let mut attempted_stage = staging_document;
+    attempted_stage.generation = later_build.generation;
+    assert!(
+        store
+            .stage_text_document(
+                &attempted_stage,
+                "attempted resurrection",
+                &KnowledgeChunkingOptions::default(),
+            )
+            .expect_err("tombstoned document must not be staged")
+            .to_string()
+            .contains("retracted")
     );
 }
 

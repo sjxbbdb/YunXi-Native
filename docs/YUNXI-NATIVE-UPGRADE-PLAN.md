@@ -365,6 +365,14 @@ system public 空间继续使用内部 `system` principal。长期记忆 JSONL/�
 修改。存储层仍保留显式 context API，后续可在此基础上增加更细的 Read/Write/Retract
 能力与撤回 tombstone；本增量不改变 Planner 对 project/private 的自动召回边界。
 
+本增量已完成撤回 tombstone 与候选代际防复活：撤回在同一事务中记录
+`space_id + document_id` 的永久 tombstone，同时清理 active 与所有 staging generation
+的 chunks、vectors 和 embedding jobs。后续 `stage_text_document`、staging worker、向量
+写入、普通 upsert 和 `activate_generation` 都检查 tombstone；即使旧 worker 恢复了过期
+staging 行，激活也会在复制前拒绝。schema 从 7 升到 8，旧知识库只增加独立 tombstone
+表，不迁移或触碰长期记忆。真实集成测试覆盖 active + staging + retract + stale row
+恢复 + activation 拒绝。
+
 当前已经提供同步的单文档 `knowledge-index` 原语和 `knowledge-vector-search` CLI，
 使用本地字符 n-gram provider 建立独立向量并支持增量跳过、快照一致性校验和原子
 替换；generation 的 staging 文档、独立向量/任务队列和原子切换已经落地，system 空间

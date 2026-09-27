@@ -2144,6 +2144,33 @@ impl SqliteKnowledgeStore {
             ));
         }
 
+        // A retract is durable across generations.  A stale staging copy must
+        // never be allowed to resurrect the same document identity during a
+        // later seal/activate cycle, even if it was written before the
+        // tombstone existed or was restored by an older worker.
+        let retracted_staging_documents = transaction
+            .query_row(
+                "SELECT COUNT(*)
+                 FROM knowledge_staging_documents d
+                 JOIN knowledge_document_tombstones t
+                   ON t.space_id = d.space_id AND t.document_id = d.document_id
+                 WHERE d.space_id = ?1 AND d.generation = ?2",
+                params![scope.space_id, scope.generation],
+                |row| row.get::<_, i64>(0),
+            )
+            .map_err(|error| {
+                sqlite_error(
+                    &self.database,
+                    "check activation document tombstones",
+                    error,
+                )
+            })?;
+        if retracted_staging_documents > 0 {
+            return Err(storage_error(
+                "knowledge activation contains a retracted document",
+            ));
+        }
+
         let staged_documents = transaction
             .query_row(
                 "SELECT COUNT(*) FROM knowledge_staging_documents
@@ -2479,6 +2506,22 @@ impl SqliteKnowledgeStore {
                 "staging document metadata does not match its space",
             ));
         }
+        let retracted = transaction
+            .query_row(
+                "SELECT 1 FROM knowledge_document_tombstones
+                 WHERE space_id = ?1 AND document_id = ?2",
+                params![document.space_id, document.document_id],
+                |_| Ok(()),
+            )
+            .optional()
+            .map_err(|error| {
+                sqlite_error(&self.database, "read staging document tombstone", error)
+            })?;
+        if retracted.is_some() {
+            return Err(storage_error(
+                "staging document was retracted and cannot be reintroduced",
+            ));
+        }
         let existing_chunks = transaction
             .query_row(
                 "SELECT COUNT(*) FROM knowledge_staging_chunks
@@ -2641,6 +2684,22 @@ impl SqliteKnowledgeStore {
         .optional()
         .map_err(|error| sqlite_error(&self.database, "read staging embedding document", error))?
         .ok_or_else(|| storage_error("staging embedding references an unknown document"))?;
+        let retracted = connection
+            .query_row(
+                "SELECT 1 FROM knowledge_document_tombstones
+                 WHERE space_id = ?1 AND document_id = ?2",
+                params![document.0, document_id],
+                |_| Ok(()),
+            )
+            .optional()
+            .map_err(|error| {
+                sqlite_error(&self.database, "read staging embedding tombstone", error)
+            })?;
+        if retracted.is_some() {
+            return Err(storage_error(
+                "staging embedding references a retracted document",
+            ));
+        }
         let manifest_state = connection
             .query_row(
                 "SELECT state FROM knowledge_generation_manifests
@@ -2777,6 +2836,22 @@ impl SqliteKnowledgeStore {
                 "staging vector batch references an unknown document",
             ));
         }
+        let retracted = transaction
+            .query_row(
+                "SELECT 1 FROM knowledge_document_tombstones
+                 WHERE space_id = ?1 AND document_id = ?2",
+                params![space_id, document_id],
+                |_| Ok(()),
+            )
+            .optional()
+            .map_err(|error| {
+                sqlite_error(&self.database, "read staging vector tombstone", error)
+            })?;
+        if retracted.is_some() {
+            return Err(storage_error(
+                "staging vector batch references a retracted document",
+            ));
+        }
         let mut seen_chunks = HashSet::with_capacity(vectors.len());
         for vector in vectors {
             validate_vector(vector)?;
@@ -2864,6 +2939,22 @@ impl SqliteKnowledgeStore {
             .transaction()
             .map_err(|error| sqlite_error(&self.database, "begin knowledge document", error))?;
         ensure_space_metadata(&transaction, document)?;
+        let retracted = transaction
+            .query_row(
+                "SELECT 1 FROM knowledge_document_tombstones
+                 WHERE space_id = ?1 AND document_id = ?2",
+                params![document.space_id, document.document_id],
+                |_| Ok(()),
+            )
+            .optional()
+            .map_err(|error| {
+                sqlite_error(&self.database, "read knowledge document tombstone", error)
+            })?;
+        if retracted.is_some() {
+            return Err(storage_error(
+                "knowledge document was retracted and cannot be reintroduced",
+            ));
+        }
         let now = now_millis();
         transaction
             .execute(
@@ -2916,7 +3007,7 @@ impl SqliteKnowledgeStore {
         let mut connection = self.open_connection()?;
         initialize_schema(&connection, &self.database)?;
         let transaction = connection
-            .transaction()
+            .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(|error| sqlite_error(&self.database, "begin knowledge retraction", error))?;
         let document = transaction
             .query_row(
@@ -2951,6 +3042,28 @@ impl SqliteKnowledgeStore {
         }
         transaction
             .execute(
+                "INSERT INTO knowledge_document_tombstones
+                    (space_id, document_id, owner, visibility, generation, retracted_at_millis)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                 ON CONFLICT(space_id, document_id) DO UPDATE SET
+                    owner = excluded.owner,
+                    visibility = excluded.visibility,
+                    generation = excluded.generation,
+                    retracted_at_millis = excluded.retracted_at_millis",
+                params![
+                    scope.space_id,
+                    document_id,
+                    scope.owner,
+                    scope.visibility.as_str(),
+                    scope.generation,
+                    now_millis(),
+                ],
+            )
+            .map_err(|error| {
+                sqlite_error(&self.database, "write knowledge document tombstone", error)
+            })?;
+        transaction
+            .execute(
                 "DELETE FROM knowledge_embedding_jobs WHERE document_id = ?1",
                 params![document_id],
             )
@@ -2976,6 +3089,40 @@ impl SqliteKnowledgeStore {
                 params![document_id],
             )
             .map_err(|error| sqlite_error(&self.database, "delete knowledge document", error))?;
+        // The active document may have an older candidate copy waiting in a
+        // building generation. Purge every staging generation for this
+        // identity in the same transaction; the durable tombstone also
+        // protects against stale workers or manually restored rows.
+        transaction
+            .execute(
+                "DELETE FROM knowledge_staging_embedding_jobs
+                 WHERE space_id = ?1 AND document_id = ?2",
+                params![scope.space_id, document_id],
+            )
+            .map_err(|error| {
+                sqlite_error(&self.database, "delete staging embedding jobs", error)
+            })?;
+        transaction
+            .execute(
+                "DELETE FROM knowledge_staging_vectors
+                 WHERE space_id = ?1 AND document_id = ?2",
+                params![scope.space_id, document_id],
+            )
+            .map_err(|error| sqlite_error(&self.database, "delete staging vectors", error))?;
+        transaction
+            .execute(
+                "DELETE FROM knowledge_staging_chunks
+                 WHERE space_id = ?1 AND document_id = ?2",
+                params![scope.space_id, document_id],
+            )
+            .map_err(|error| sqlite_error(&self.database, "delete staging chunks", error))?;
+        transaction
+            .execute(
+                "DELETE FROM knowledge_staging_documents
+                 WHERE space_id = ?1 AND document_id = ?2",
+                params![scope.space_id, document_id],
+            )
+            .map_err(|error| sqlite_error(&self.database, "delete staging documents", error))?;
         transaction
             .commit()
             .map_err(|error| sqlite_error(&self.database, "commit knowledge retraction", error))?;
@@ -3438,6 +3585,22 @@ impl SqliteKnowledgeStore {
             .transaction()
             .map_err(|error| sqlite_error(&self.database, "begin knowledge ingest", error))?;
         ensure_space_metadata(&transaction, document)?;
+        let retracted = transaction
+            .query_row(
+                "SELECT 1 FROM knowledge_document_tombstones
+                 WHERE space_id = ?1 AND document_id = ?2",
+                params![document.space_id, document.document_id],
+                |_| Ok(()),
+            )
+            .optional()
+            .map_err(|error| {
+                sqlite_error(&self.database, "read knowledge ingest tombstone", error)
+            })?;
+        if retracted.is_some() {
+            return Err(storage_error(
+                "knowledge document was retracted and cannot be reintroduced",
+            ));
+        }
         let now = now_millis();
         transaction
             .execute(
@@ -4135,7 +4298,7 @@ fn initialize_schema(connection: &Connection, path: &Path) -> AgentResult<()> {
              );
              INSERT INTO knowledge_schema(schema_version)
                 SELECT 1 WHERE NOT EXISTS (SELECT 1 FROM knowledge_schema);
-             UPDATE knowledge_schema SET schema_version = 7 WHERE schema_version < 7;
+             UPDATE knowledge_schema SET schema_version = 8 WHERE schema_version < 8;
              CREATE TABLE IF NOT EXISTS knowledge_spaces (
                 space_id TEXT PRIMARY KEY,
                 kind TEXT NOT NULL CHECK(kind IN ('system', 'project', 'private')),
@@ -4162,6 +4325,17 @@ fn initialize_schema(connection: &Connection, path: &Path) -> AgentResult<()> {
              );
              CREATE INDEX IF NOT EXISTS idx_knowledge_generation_manifests_state
                 ON knowledge_generation_manifests(space_id, state, generation);
+             CREATE TABLE IF NOT EXISTS knowledge_document_tombstones (
+                space_id TEXT NOT NULL REFERENCES knowledge_spaces(space_id),
+                document_id TEXT NOT NULL,
+                owner TEXT NOT NULL,
+                visibility TEXT NOT NULL CHECK(visibility IN ('public', 'owner', 'private')),
+                generation INTEGER NOT NULL CHECK(generation >= 0),
+                retracted_at_millis INTEGER NOT NULL,
+                PRIMARY KEY(space_id, document_id)
+             );
+             CREATE INDEX IF NOT EXISTS idx_knowledge_document_tombstones_document
+                ON knowledge_document_tombstones(document_id);
              CREATE TABLE IF NOT EXISTS knowledge_staging_documents (
                 space_id TEXT NOT NULL,
                 generation INTEGER NOT NULL,

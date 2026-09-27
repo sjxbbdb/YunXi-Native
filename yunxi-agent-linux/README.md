@@ -203,7 +203,9 @@ bash yunxi-agent-linux/tests/daemon_knowledge_worker_smoke.sh \
 与空间的 source/version 一致；重复 document id
 会在事务内替换旧 chunks、向量和 embedding job，不留下孤立索引。长期记忆数据库与
 `knowledge.sqlite3` 始终保持物理分离。`knowledge-retract` 也要求显式匹配 space、owner
-和 visibility，撤回后 FTS、向量和 embedding job 一起失效。
+和 visibility，撤回后 FTS、向量和 embedding job 一起失效；同时写入 document tombstone，
+阻止旧 worker 或候选 generation 在未来重新激活同一文档。system public 空间仍可用默认
+`owner=system` 做显式撤回，用户空间必须使用 `knowledge-principal` 返回的当前主体。
 
 `knowledge-worker --watch` 是显式 workspace 范围内的常驻轮询器：它复用同一套
 lease、退避、重试和 generation 校验，按间隔处理有限数量任务；不会扫描其他
