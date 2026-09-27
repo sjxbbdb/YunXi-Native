@@ -3769,6 +3769,8 @@ fn open_daemon_log() -> Result<fs::File> {
 #[cfg(unix)]
 struct DaemonLock {
     path: PathBuf,
+    pid: u32,
+    start_time_ticks: Option<u64>,
     _file: fs::File,
 }
 
@@ -3785,7 +3787,15 @@ static DAEMON_LOCK_TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 #[cfg(unix)]
 impl Drop for DaemonLock {
     fn drop(&mut self) {
-        let _ = fs::remove_file(&self.path);
+        let Ok(value) = fs::read_to_string(&self.path) else {
+            return;
+        };
+        let Some((pid, start_time_ticks)) = parse_daemon_lock_owner(&value) else {
+            return;
+        };
+        if pid == self.pid && start_time_ticks == self.start_time_ticks {
+            let _ = fs::remove_file(&self.path);
+        }
     }
 }
 
@@ -3832,6 +3842,7 @@ fn try_create_daemon_lock(path: &Path) -> io::Result<DaemonLock> {
             pid: std::process::id(),
             start_time_ticks: process_start_time(std::process::id()),
         };
+        let owner = (metadata.pid, metadata.start_time_ticks);
         serde_json::to_writer(&mut file, &metadata).map_err(|error| {
             io::Error::other(format!("写入 daemon lock metadata 失败: {error}"))
         })?;
@@ -3847,6 +3858,8 @@ fn try_create_daemon_lock(path: &Path) -> io::Result<DaemonLock> {
         let _ = fs::remove_file(&temp_path);
         Ok(DaemonLock {
             path: path.to_path_buf(),
+            pid: owner.0,
+            start_time_ticks: owner.1,
             _file: file,
         })
     })();
@@ -6268,6 +6281,30 @@ mod tests {
         assert!(result.is_err());
         assert!(path.exists(), "invalid metadata must not be deleted");
         fs::remove_file(path).expect("remove test lock");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn daemon_lock_drop_only_removes_matching_owner() {
+        let path = std::env::temp_dir().join(format!(
+            "yunxi-daemon-lock-owner-test-{}-{}",
+            std::process::id(),
+            DAEMON_LOCK_TEMP_COUNTER.fetch_add(1, Ordering::Relaxed)
+        ));
+
+        let lock = acquire_daemon_lock(&path).expect("create test lock");
+        assert!(path.exists());
+        drop(lock);
+        assert!(!path.exists(), "the owner should clean up its lock");
+
+        let lock = acquire_daemon_lock(&path).expect("recreate test lock");
+        fs::write(&path, br#"{"pid":999999,"start_time_ticks":1}"#).expect("replace lock metadata");
+        drop(lock);
+        assert!(
+            path.exists(),
+            "a lock replaced by another owner must not be removed by the old owner"
+        );
+        fs::remove_file(path).expect("remove replaced test lock");
     }
 
     #[cfg(unix)]
