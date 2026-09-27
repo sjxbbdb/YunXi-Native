@@ -690,6 +690,10 @@ Memory 与 Knowledge retrieval 的 `elapsed_ms`、选择/丢弃或证据数量�
 `MemoryHigh=1536M`、`MemoryMax=2G`、`TasksMax=128`、`LimitNOFILE=4096` 和
 `OOMPolicy=stop`，不自动启用服务、不创建 root daemon、不删除用户数据。配套的
 `package-smoke.sh` 可在无 Arch 环境中静态验证这些安装、安全和生命周期边界。
+已在并行 Arch Linux WSL 发行版中完成真实 `makepkg --syncdeps` 构建验收；因 Arch
+makepkg 的 native `-flto=auto`/release LTO/LLD 与 bundled SQLite、ring native static
+link 冲突，PKGBUILD 移除该 native LTO、显式关闭 Rust release LTO 并固定 bfd linker；
+Windows/Ubuntu 构建路径不受影响。
 `packaging/README.md` 明确了 Arch 构建、fish hook、卸载和数据边界；安装/升级/回滚的
 完整可重复流水线仍未宣称完成。另有
 `yunxi-agent-linux/tests/performance_smoke.sh`，对 release 进程启动、临时 daemon

@@ -20,11 +20,21 @@ sha256sums=('SKIP')
 
 build() {
   cd "${srcdir}/${pkgname}"
+  # Arch makepkg may inject release LTO/LLD flags.  Bundled SQLite and ring
+  # must stay explicit native static links for the Rust 1.98 toolchain.
+  export CARGO_PROFILE_RELEASE_LTO=off
+  export RUSTFLAGS="${RUSTFLAGS:-} -C link-arg=-fuse-ld=bfd"
+  export CFLAGS="${CFLAGS//-flto=auto/}"
+  export CXXFLAGS="${CXXFLAGS//-flto=auto/}"
   cargo build --release --locked -p yunxi-agent-linux
 }
 
 check() {
   cd "${srcdir}/${pkgname}"
+  export CARGO_PROFILE_RELEASE_LTO=off
+  export RUSTFLAGS="${RUSTFLAGS:-} -C link-arg=-fuse-ld=bfd"
+  export CFLAGS="${CFLAGS//-flto=auto/}"
+  export CXXFLAGS="${CXXFLAGS//-flto=auto/}"
   cargo test --release --locked -p yunxi-agent-linux
 }
 

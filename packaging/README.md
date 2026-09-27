@@ -45,6 +45,11 @@ cd packaging/arch/yunxi-native
 makepkg -si --syncdeps
 ```
 
+`PKGBUILD` 会在 `build()`/`check()` 中移除 makepkg 注入的 native `-flto=auto`，显式
+关闭 release LTO，并固定使用 GNU ld（bfd）。这是为了让当前 Rust 工具链正确保留
+bundled SQLite 与 ring 的 native static link；不会改变运行时的 SQLite 数据库边界，
+也不需要用户手动设置环境变量。
+
 PKGBUILD 固定 `_commit`，构建只产出 `yunxi-linux`，安装到 `/usr/bin/yunxi-linux`，并把
 用户级服务安装到 `/usr/lib/systemd/user/yunxi-linux.service`。服务以当前登录用户运行，
 不创建 root daemon、不开放 TCP 端口，也不会在安装时自动启用：
