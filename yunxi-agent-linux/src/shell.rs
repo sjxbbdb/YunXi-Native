@@ -744,6 +744,7 @@ fn run_knowledge_search(
         "query": query,
         "source_version": source_version,
         "space_id": space_id,
+        "active_generation": scope.generation,
         "results": results,
     });
     if diagnostics {
@@ -1796,6 +1797,7 @@ fn run_knowledge_vector_search(
         "source_version": source_version,
         "embedding_model": provider.model_id(),
         "space_id": space_id,
+        "active_generation": scope.generation,
         "results": results,
     });
     if diagnostics {

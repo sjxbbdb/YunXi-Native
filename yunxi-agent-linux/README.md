@@ -236,6 +236,8 @@ bash yunxi-agent-linux/tests/knowledge_catalog_smoke.sh ./target/release/yunxi-l
 
 `knowledge-space-list` 只列出空间元数据，不读取文档正文、chunk 或向量；它用于确认
 当前 workspace 的 system/project/private 边界，输出按 `space_id` 稳定排序。
+`knowledge-search` 与 `knowledge-vector-search` 的 JSON 顶层还会返回本次读取的
+`active_generation`，无命中时也能确认查询所处的代际。
 
 ## fish 全量接管（Miyu 风格）
 

@@ -95,6 +95,7 @@ with tempfile.TemporaryDirectory(prefix="yunxi-generation-smoke-") as directory:
             "--limit",
             "20",
         )
+        assert result["active_generation"] == active_generation, result
         assert all(item["document_id"] != document_id for item in result["results"]), result
 
     # Activation before processing/sealing must fail without moving the active pointer.
@@ -189,6 +190,7 @@ with tempfile.TemporaryDirectory(prefix="yunxi-generation-smoke-") as directory:
     keyword_match = next(
         item for item in keyword["results"] if item["document_id"] == document_id
     )
+    assert keyword["active_generation"] == generation, keyword
     assert keyword_match["generation"] == generation, keyword_match
     assert keyword_match["version"] == "ubuntu-24.04", keyword_match
 
@@ -205,6 +207,7 @@ with tempfile.TemporaryDirectory(prefix="yunxi-generation-smoke-") as directory:
     vector_match = next(
         item for item in vector["results"] if item["document_id"] == document_id
     )
+    assert vector["active_generation"] == generation, vector
     assert vector_match["generation"] == generation, vector_match
     assert vector_match["embedding_model"], vector_match
 

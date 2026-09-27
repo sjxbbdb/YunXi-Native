@@ -532,6 +532,8 @@ Windows Runtime 不启用该分支。
 并将其作为证据头部的可审计标签输出；原始 metadata/argv 不会直接注入 prompt。
 当同一 chunk 同时出现在 FTS 与向量结果中时，运行时保留 FTS 证据、过滤重复向量项，
 避免 prompt 预算被同一份知识重复占用。
+两个 CLI 查询现在也在顶层返回 `active_generation`，即使结果为空也能明确诊断本轮读取的
+代际；结果项继续保留自己的 generation，便于检查跨代污染和候选激活是否生效。
 
 CLI 还提供 `knowledge-index` 和 `knowledge-vector-search`：前者使用当前本地
 字符 n-gram provider 为已登记文档建立独立向量，后者在相同 system 空间内进行
