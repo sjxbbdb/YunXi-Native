@@ -73,6 +73,15 @@ fish / TUI / future terminal clients
 
 Linux Host 负责终端接入、daemon 生命周期、IPC、事件回放和 Linux 路径；Runtime 负责真正的 Agent 能力。二者不能互相复制人格、记忆或权限逻辑。
 
+### TUI 交互基线（已实现）
+
+TUI 的顶部状态行面向使用者展示当前模式、Provider 与就绪/运行状态，内部的
+`cells`、`backend`、`source`、`debug` 等诊断字段统一留在 `/status` 和调试详情中。
+首次进入且还没有真实对话回合时，Transcript 区会显示居中的 YunXi 欢迎卡片，提供
+`/help`、`/capabilities`、`/status` 三个可用入口；启动时的离线提示不会把欢迎卡片误判为
+已有对话，发送第一条消息后欢迎卡片自动让位给真实记录。状态行和欢迎卡片均覆盖窄终端，
+并由 TUI 快照测试与 Arch Linux 工作区测试验证。
+
 ### Linux 系统工具层（当前增量）
 
 Linux 版已经开始把系统能力接入为固定的 `linux_readonly` ToolSpec：`systemd_status`、`man_page`、`process_list`、`network_snapshot`、`filesystem_summary`、`filesystem_list`、`disk_usage` 和 `pacman_query`。它们只读本机状态，使用严格的 JSON schema、参数白名单和固定 argv 直接进程执行，不经过 `sh -c`，并沿用 YunXi 既有的 ToolRouter、ToolPolicy、审批、沙盒诊断和审计事件。缺少发行版工具时返回结构化 `unavailable`，不会自动改用任意 shell 命令。
