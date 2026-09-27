@@ -183,7 +183,10 @@ space；topic/section 不允许 shell 语法或路径，缺少 man、非零退�
 空间版本严格一致，避免私有资料发生静默串版本。
 
 采集后的 system 知识可以用 `yunxi-linux knowledge-search <query> --cwd .` 只读检查；
-在混合空间中可用 `--source-version ubuntu-24.04` 做精确版本过滤。
+在混合空间中可用 `--source-version ubuntu-24.04` 做精确版本过滤。验收脚本还会把一条
+真实的 `knowledge-help` 结果走完持久化队列、FTS 与本地向量检索，并反向校验
+`document_id`、版本过滤和 `metadata_json` 中的 collector、固定 argv、风险级别与来源
+类型，确保 provenance 不只停留在采集命令的即时 JSON 中。
 Linux Runtime 通过只读的 `LinuxPlanContext` 有限召回同一空间的 FTS 与本地向量证据，
 并把它们标记为不可信参考；这个边界只负责 active generation、版本过滤、去重、来源标注
 和固定字符预算，不执行命令，也不创建 `ToolRequest`。它不会替代人格、记忆、审批或沙盒，

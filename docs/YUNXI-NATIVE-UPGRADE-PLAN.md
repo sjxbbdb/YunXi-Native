@@ -369,6 +369,12 @@ failed、到期/等待中的 retry、耗尽预算和过期 lease，并用 `idle`
 `degraded` 给出运维级状态标签。它是后续 systemd 告警与 daemon 调度的观察面，不改变当前
 显式 worker 的调度语义。
 
+本增量同时强化了 `knowledge-help` 的 provenance 验收：真实的成功采集结果必须经过持久化
+embedding 队列、FTS 与本地向量检索，且检索结果继续保留 document/version 以及
+`metadata_json` 中的 collector、固定 argv、风险级别和 source type；使用另一发行版版本
+过滤时不得召回该文档。该验收只读取临时 workspace，不改变采集 allowlist，也不触及长期
+记忆数据库。
+
 为避免 daemon 或终端进程崩溃后留下永久 `running` 任务，领取事务还会回收超过五分钟
 未更新的 worker lease，并把它重新置为 `pending`；旧 worker 随后提交 complete/fail
 会因 lease 身份不匹配而被拒绝。这里仅处理崩溃恢复，不把 `failed` 任务自动重试，
