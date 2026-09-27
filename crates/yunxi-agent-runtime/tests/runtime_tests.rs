@@ -12,6 +12,8 @@ use yunxi_agent_core::{
     AgentRunStatus, AgentRunUserInputResponse, ApprovalMode, CommandStatus, CompanionSettings,
     FileChangeKind, MemoryExtractionMode, PatchStatus, SandboxMode,
 };
+#[cfg(target_os = "linux")]
+use yunxi_agent_persona::{LocalChargramEmbedding, MemoryEmbeddingProvider};
 use yunxi_agent_persona::{MemoryKind, MemoryRecord, MemoryScope, MemoryStatus};
 use yunxi_agent_protocol::{
     ProtocolRole, ResponseItem, ResponseStatus, StreamEvent, ThreadId, ToolCall, TurnId,
@@ -26,6 +28,11 @@ use yunxi_agent_runtime::{
 use yunxi_agent_storage::{
     FileControlStore, FilePersonaMemoryStore, InMemorySessionStore, PersonaMemoryScope, SessionId,
     SessionRecord, SessionStore,
+};
+#[cfg(target_os = "linux")]
+use yunxi_agent_storage::{
+    KnowledgeChunk, KnowledgeDocument, KnowledgeSpaceKind, KnowledgeSpaceSpec, KnowledgeVector,
+    KnowledgeVisibility, SqliteKnowledgeStore, SqliteMemoryVectorStore,
 };
 use yunxi_agent_tools::{CompositeToolRuntime, NoopToolRuntime, ShellToolRuntime};
 
@@ -427,6 +434,186 @@ async fn runtime_emits_boot_and_dynamic_recall_summaries() {
         event,
         AgentEvent::MemoryRecall { scope, .. } if scope == "dynamic"
     )));
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test(flavor = "current_thread")]
+async fn runtime_keeps_memory_and_knowledge_recall_separate_in_one_context_assembly() {
+    const MEMORY_ONLY_MARKER: &str = "MEMORY_ONLY_MARKER";
+    const KNOWLEDGE_ONLY_MARKER: &str = "KNOWLEDGE_ONLY_MARKER";
+
+    let home = TempDir::new().expect("yunxi home");
+    let workspace = TempDir::new().expect("workspace");
+    let workspace_path = workspace.path().to_path_buf();
+    let result = with_memory_enabled_home(home.path(), async move {
+        let memory_store = FilePersonaMemoryStore::for_workspace(&workspace_path);
+        let memory = MemoryRecord::new(
+            "memory-only-fixture",
+            MemoryScope::Workspace {
+                root_fingerprint: memory_store.workspace_fingerprint().to_string(),
+            },
+            MemoryKind::Preference,
+            format!("{MEMORY_ONLY_MARKER}: prefer concise release notes"),
+            1,
+        )
+        .with_status(MemoryStatus::Active);
+        memory_store.append(&memory).expect("append memory fixture");
+
+        let knowledge_store = SqliteKnowledgeStore::for_workspace(&workspace_path);
+        let knowledge_space = KnowledgeSpaceSpec {
+            space_id: "system-linux".to_string(),
+            kind: KnowledgeSpaceKind::System,
+            owner: "system".to_string(),
+            visibility: KnowledgeVisibility::Public,
+            source: "local-linux".to_string(),
+            version: "mixed".to_string(),
+            generation: 1,
+        };
+        knowledge_store
+            .upsert_space(&knowledge_space)
+            .expect("create knowledge space");
+        let source_version = yunxi_agent_runtime::detect_linux_source_version()
+            .unwrap_or_else(|| "unknown".to_string());
+        let document = KnowledgeDocument {
+            document_id: "knowledge-only-fixture".to_string(),
+            space_id: knowledge_space.space_id.clone(),
+            title: "Linux fixture reference".to_string(),
+            source: knowledge_space.source.clone(),
+            version: source_version.clone(),
+            generation: 1,
+            owner: knowledge_space.owner.clone(),
+            visibility: knowledge_space.visibility,
+            metadata_json:
+                r#"{"collector":"linux.fixture","risk_level":"read_only_reference","risk_class":"read_only"}"#
+                    .to_string(),
+        };
+        knowledge_store
+            .upsert_document(&document)
+            .expect("insert knowledge document");
+        let chunk = KnowledgeChunk {
+            chunk_id: "knowledge-only-fixture#chunk-0".to_string(),
+            document_id: document.document_id.clone(),
+            ordinal: 0,
+            content: format!("{KNOWLEDGE_ONLY_MARKER}: use the read-only Linux status probe"),
+            source: document.source.clone(),
+            version: document.version.clone(),
+            generation: document.generation,
+            owner: document.owner.clone(),
+            visibility: document.visibility,
+            metadata_json: document.metadata_json.clone(),
+        };
+        knowledge_store
+            .upsert_chunk(&chunk)
+            .expect("insert knowledge chunk");
+        let embedding = LocalChargramEmbedding::default()
+            .embed(&chunk.content)
+            .expect("embed knowledge fixture");
+        knowledge_store
+            .upsert_vector(&KnowledgeVector {
+                chunk_id: chunk.chunk_id.clone(),
+                space_id: document.space_id.clone(),
+                embedding_model: embedding.model,
+                generation: document.generation,
+                vector: embedding.values,
+            })
+            .expect("insert knowledge vector");
+
+        let backend = YunXiRuntimeBackend::with_parts(
+            StaticProvider::default(),
+            NoopToolRuntime,
+            InMemorySessionStore::default(),
+        );
+        Agent::new(AgentConfig::new(&workspace_path))
+            .run_with_backend(
+                &backend,
+                AgentInput::text(format!(
+                    "请结合 {MEMORY_ONLY_MARKER} 和 {KNOWLEDGE_ONLY_MARKER} 给出状态说明"
+                )),
+            )
+            .await
+    })
+    .await
+    .expect("runtime should complete");
+
+    let memory_recall_count = result
+        .events
+        .iter()
+        .filter_map(|event| match event {
+            AgentEvent::MemoryRecall { count, .. } => Some(*count),
+            _ => None,
+        })
+        .sum::<usize>();
+    assert!(
+        memory_recall_count >= 1,
+        "memory was not recalled: {:?}",
+        result.events
+    );
+
+    let context_metadata = result
+        .events
+        .iter()
+        .find_map(|event| match event {
+            AgentEvent::TurnMetadata { metadata }
+                if metadata.context_phase.as_deref() == Some("context_assembled") =>
+            {
+                Some(metadata)
+            }
+            _ => None,
+        })
+        .expect("context assembled metadata");
+    assert_eq!(
+        context_metadata.data.get("knowledge_context"),
+        Some(&"present".to_string())
+    );
+    assert_eq!(
+        context_metadata.data.get("knowledge_recall_status"),
+        Some(&"evidence".to_string())
+    );
+    let memory_boot_selected = context_metadata
+        .data
+        .get("memory_boot_selected")
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or_default();
+    let memory_dynamic_selected = context_metadata
+        .data
+        .get("memory_dynamic_selected")
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or_default();
+    assert!(
+        memory_boot_selected + memory_dynamic_selected >= 1,
+        "memory was not selected in context metadata: {:?}",
+        context_metadata.data
+    );
+    let provenance = context_metadata
+        .data
+        .get("knowledge_provenance")
+        .expect("knowledge provenance");
+    assert!(provenance.contains("knowledge-only-fixture"));
+    assert!(!provenance.contains(KNOWLEDGE_ONLY_MARKER));
+    assert!(!provenance.contains(MEMORY_ONLY_MARKER));
+
+    let knowledge_db = workspace.path().join(".yunxi/knowledge/knowledge.sqlite3");
+    let memory_db = workspace
+        .path()
+        .join(".yunxi/memory/long-term-vectors.sqlite3");
+    let memory_file = workspace
+        .path()
+        .join(".yunxi/memory/workspace-memory.jsonl");
+    let knowledge_bytes = std::fs::read(&knowledge_db).expect("knowledge db");
+    let memory_bytes = std::fs::read(&memory_db).expect("memory db");
+    let memory_file_text = std::fs::read_to_string(&memory_file).expect("memory file");
+    assert!(
+        String::from_utf8_lossy(&knowledge_bytes).contains(KNOWLEDGE_ONLY_MARKER),
+        "knowledge body did not remain in knowledge db"
+    );
+    assert!(!String::from_utf8_lossy(&knowledge_bytes).contains(MEMORY_ONLY_MARKER));
+    assert!(memory_file_text.contains(MEMORY_ONLY_MARKER));
+    assert!(!String::from_utf8_lossy(&memory_bytes).contains(KNOWLEDGE_ONLY_MARKER));
+    assert_eq!(
+        SqliteMemoryVectorStore::for_workspace(workspace.path()).workspace_database(),
+        memory_db
+    );
+    assert_ne!(knowledge_db, memory_db);
 }
 
 fn restore_env_var(name: &str, value: Option<OsString>) {
