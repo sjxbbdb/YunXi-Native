@@ -14,7 +14,7 @@ depends=('gcc-libs' 'glibc')
 makedepends=('cargo' 'git')
 optdepends=('fish: Miyu-style natural-language shell interception')
 
-_commit='95f52b5bc4e419a20d099f49cd7f99d4f2168dfc'
+_commit='a38dac41ac156f51cd994315af5eee5f6d674c40'
 source=("${pkgname}::git+${url}.git#commit=${_commit}")
 sha256sums=('SKIP')
 
