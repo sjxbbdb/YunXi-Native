@@ -13,15 +13,18 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 #[cfg(unix)]
 use tokio::sync::watch;
 
-const STATE_SCHEMA_VERSION: u32 = 1;
+const STATE_SCHEMA_VERSION: u32 = 2;
+const LEGACY_STATE_SCHEMA_VERSION: u32 = 1;
 const DEFAULT_FLEET_WORKER_ID: &str = "yunxi-linux-embedding-fleet";
 pub(super) const DEFAULT_DAEMON_WORKER_ID: &str = "yunxi-linux-daemon-knowledge";
 const MAX_STATUS_WORKSPACES: usize = 32;
 const MAX_AGGREGATE_WARNINGS: usize = 8;
+const MAX_RETRY_FAILURES: u32 = 6;
+const MAX_RETRY_DELAY_SECS: u64 = 60;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct SchedulerState {
@@ -34,6 +37,18 @@ struct SchedulerState {
     jobs_processed: u64,
     last_status: String,
     last_time_millis: u64,
+    /// Per-workspace scheduler failures are persisted separately from the
+    /// SQLite embedding job attempts. This is only for store-level failures
+    /// (for example a corrupt/busy database), not provider job retries.
+    #[serde(default)]
+    workspace_backoff: Vec<WorkspaceBackoffState>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct WorkspaceBackoffState {
+    fingerprint: String,
+    failures: u32,
+    retry_at_millis: Option<u64>,
 }
 
 #[derive(Debug, Clone)]
@@ -52,7 +67,7 @@ struct Workspace {
     path: PathBuf,
     fingerprint: String,
     failures: u32,
-    retry_at: Option<Instant>,
+    retry_at_millis: Option<u64>,
 }
 
 struct Fleet {
@@ -86,7 +101,7 @@ impl Fleet {
                     fingerprint: workspace_fingerprint(&path),
                     path,
                     failures: 0,
-                    retry_at: None,
+                    retry_at_millis: None,
                 });
             }
         }
@@ -95,8 +110,17 @@ impl Fleet {
             .map(|workspace| workspace.fingerprint.clone())
             .collect::<Vec<_>>();
         let state_path = scheduler_state_path(&worker_id)?;
-        let (next, rounds, jobs_processed, state_warnings) =
+        let (next, rounds, jobs_processed, backoff, state_warnings) =
             restore_state(&state_path, &worker_id, &selected);
+        for workspace in &mut selected {
+            if let Some(saved) = backoff
+                .iter()
+                .find(|saved| saved.fingerprint == workspace.fingerprint)
+            {
+                workspace.failures = saved.failures.min(MAX_RETRY_FAILURES);
+                workspace.retry_at_millis = saved.retry_at_millis;
+            }
+        }
         Ok(Self {
             workspaces: selected,
             worker_id,
@@ -125,7 +149,11 @@ impl Fleet {
                 continue;
             }
             let workspace = &mut self.workspaces[index];
-            if workspace.retry_at.is_some_and(|when| when > Instant::now()) {
+            let now_millis = unix_time_millis();
+            if workspace
+                .retry_at_millis
+                .is_some_and(|when| when > now_millis)
+            {
                 errors[index] = true;
                 eligible[index] = false;
                 continue;
@@ -136,7 +164,7 @@ impl Fleet {
             match super::process_knowledge_workspace(&self.worker_id, 1, &workspace.path) {
                 Ok(values) => {
                     workspace.failures = 0;
-                    workspace.retry_at = None;
+                    workspace.retry_at_millis = None;
                     if let Some(mut job) = values.into_iter().next() {
                         let error = !job["last_error"].is_null();
                         if let Some(fields) = job.as_object_mut() {
@@ -155,9 +183,11 @@ impl Fleet {
                 Err(_) => {
                     errors[index] = true;
                     eligible[index] = false;
-                    workspace.failures = workspace.failures.saturating_add(1);
-                    let delay = (1u64 << workspace.failures.min(6)).min(60);
-                    workspace.retry_at = Some(Instant::now() + Duration::from_secs(delay));
+                    workspace.failures =
+                        workspace.failures.saturating_add(1).min(MAX_RETRY_FAILURES);
+                    let delay = retry_delay_secs(workspace.failures);
+                    workspace.retry_at_millis =
+                        Some(now_millis.saturating_add(delay.saturating_mul(1_000)));
                 }
             }
         }
@@ -169,10 +199,12 @@ impl Fleet {
             });
             if errors[index] {
                 result["error_code"] = json!("knowledge_store_unavailable");
-                let remaining = self.workspaces[index].retry_at
-                    .map(|when| when.saturating_duration_since(Instant::now()).as_millis())
+                let remaining = self.workspaces[index]
+                    .retry_at_millis
+                    .map(|when| when.saturating_sub(unix_time_millis()))
                     .unwrap_or(0);
-                result["retry_after_secs"] = json!(remaining.div_ceil(1000));
+                result["retry_after_secs"] = json!(remaining.div_ceil(1_000));
+                result["retry_failures"] = json!(self.workspaces[index].failures);
             }
             result
         }).collect();
@@ -221,6 +253,15 @@ impl Fleet {
             jobs_processed: self.jobs_processed,
             last_status: status.to_string(),
             last_time_millis: unix_time_millis(),
+            workspace_backoff: self
+                .workspaces
+                .iter()
+                .map(|workspace| WorkspaceBackoffState {
+                    fingerprint: workspace.fingerprint.clone(),
+                    failures: workspace.failures.min(MAX_RETRY_FAILURES),
+                    retry_at_millis: workspace.retry_at_millis,
+                })
+                .collect(),
         };
         if write_scheduler_state(&self.state_path, &state).is_err() {
             self.state_warnings.push(StateWarning {
@@ -321,8 +362,23 @@ pub(super) fn run_health(worker_id: Option<String>) -> Result<()> {
             .and_then(|value| serde_json::from_str::<SchedulerState>(&value).ok())
         {
             Some(state)
-                if state.schema_version == STATE_SCHEMA_VERSION && state.worker_id == worker_id =>
+                if (state.schema_version == STATE_SCHEMA_VERSION
+                    || state.schema_version == LEGACY_STATE_SCHEMA_VERSION)
+                    && state.worker_id == worker_id =>
             {
+                let now = unix_time_millis();
+                let retrying = state
+                    .workspace_backoff
+                    .iter()
+                    .filter(|item| item.retry_at_millis.is_some_and(|when| when > now))
+                    .count();
+                let max_retry_after_secs = state
+                    .workspace_backoff
+                    .iter()
+                    .filter_map(|item| item.retry_at_millis)
+                    .map(|when| when.saturating_sub(now).div_ceil(1_000))
+                    .max()
+                    .unwrap_or(0);
                 json!({
                     "schema_version": 1,
                     "scheduler": "read_only_state",
@@ -334,6 +390,8 @@ pub(super) fn run_health(worker_id: Option<String>) -> Result<()> {
                     "last_time_millis": state.last_time_millis,
                     "workspace_count": state.workspace_fingerprints.len(),
                     "next_workspace_index": state.next_workspace_index,
+                    "retrying_workspace_count": retrying,
+                    "max_retry_after_secs": max_retry_after_secs,
                 })
             }
             _ => json!({
@@ -352,7 +410,13 @@ fn restore_state(
     path: &Path,
     worker_id: &str,
     workspaces: &[Workspace],
-) -> (usize, u64, u64, Vec<StateWarning>) {
+) -> (
+    usize,
+    u64,
+    u64,
+    Vec<WorkspaceBackoffState>,
+    Vec<StateWarning>,
+) {
     let fingerprints = workspaces
         .iter()
         .map(|workspace| workspace.fingerprint.as_str())
@@ -362,6 +426,7 @@ fn restore_state(
             0,
             0,
             0,
+            Vec::new(),
             vec![StateWarning {
                 code,
                 message: message.to_string(),
@@ -369,7 +434,7 @@ fn restore_state(
         )
     };
     if !path.exists() {
-        return (0, 0, 0, Vec::new());
+        return (0, 0, 0, Vec::new(), Vec::new());
     }
     let Ok(metadata) = fs::metadata(path) else {
         return reset(
@@ -395,7 +460,10 @@ fn restore_state(
             "调度状态不是有效 JSON，已重置轮询游标",
         );
     };
-    if state.schema_version != STATE_SCHEMA_VERSION || state.worker_id != worker_id {
+    if (state.schema_version != STATE_SCHEMA_VERSION
+        && state.schema_version != LEGACY_STATE_SCHEMA_VERSION)
+        || state.worker_id != worker_id
+    {
         return reset(
             "scheduler_state_reset_incompatible",
             "调度状态版本或 worker 身份不匹配，已重置轮询游标",
@@ -410,7 +478,34 @@ fn restore_state(
             .and_then(|fingerprint| fingerprints.iter().position(|item| item == fingerprint))
             .unwrap_or(0)
     };
-    (next, state.rounds, state.jobs_processed, Vec::new())
+    let backoff = state
+        .workspace_backoff
+        .into_iter()
+        .filter(|item| !item.fingerprint.trim().is_empty())
+        .map(|mut item| {
+            item.failures = item.failures.min(MAX_RETRY_FAILURES);
+            item
+        })
+        .collect();
+    (
+        next,
+        state.rounds,
+        state.jobs_processed,
+        backoff,
+        Vec::new(),
+    )
+}
+
+/// Deterministic fleet-level backoff for workspace/store failures.
+///
+/// Provider embedding failures already have their own durable queue retry
+/// schedule. This separate bounded schedule prevents one unavailable
+/// workspace database from being hammered while leaving other workspaces
+/// eligible. No random jitter is used so the result is reproducible across
+/// daemon restarts and diagnostics remain easy to reason about.
+fn retry_delay_secs(failures: u32) -> u64 {
+    let exponent = failures.saturating_sub(1).min(5);
+    (1_u64 << exponent).min(MAX_RETRY_DELAY_SECS)
 }
 
 fn write_scheduler_state(path: &Path, state: &SchedulerState) -> Result<()> {

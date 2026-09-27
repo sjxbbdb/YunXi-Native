@@ -154,6 +154,7 @@ def assert_fleet_shape(value: dict[str, Any], count: int, max_jobs: int) -> None
                 "status",
                 "error_code",
                 "retry_after_secs",
+                "retry_failures",
                 "jobs",
             }, value
             assert isinstance(item["error_code"], str) and item["error_code"], value
@@ -282,6 +283,8 @@ def main() -> None:
         bad_fleet = run_ok(
             binary,
             "knowledge-worker",
+            "--worker-id",
+            "fleet-store-backoff",
             "--workspace",
             str(bad),
             "--workspace",
@@ -294,6 +297,44 @@ def main() -> None:
         assert bad_fleet["workspaces"][1]["status"] == "processed", bad_fleet
         assert str(bad) not in json.dumps(bad_fleet), bad_fleet
         assert_vector_hit(binary, good, "shared-private", "good database knowledge")
+
+        # Store-level failures use a separate, deterministic fleet backoff and
+        # survive a process restart. Provider job retries remain in SQLite and
+        # are intentionally not conflated with this scheduler state.
+        backoff_state = (
+            root
+            / "xdg-state"
+            / "yunxi"
+            / "knowledge-worker"
+            / f"{stable_fingerprint('fleet-store-backoff')}.json"
+        )
+        state = json.loads(backoff_state.read_text(encoding="utf-8"))
+        assert state["schema_version"] == 2, state
+        bad_fingerprint = stable_fingerprint(str(bad.resolve()))
+        backoff = next(
+            item for item in state["workspace_backoff"]
+            if item["fingerprint"] == bad_fingerprint
+        )
+        assert backoff["failures"] == 1, state
+        assert backoff["retry_at_millis"] is not None, state
+        second_bad_fleet = run_ok(
+            binary,
+            "knowledge-worker",
+            "--worker-id",
+            "fleet-store-backoff",
+            "--workspace",
+            str(bad),
+            "--workspace",
+            str(good),
+            "--max-jobs",
+            "1",
+        )
+        assert second_bad_fleet["workspaces"][0]["status"] == "error", second_bad_fleet
+        assert second_bad_fleet["workspaces"][0]["retry_failures"] == 1, second_bad_fleet
+        health = run_ok(binary, "knowledge-worker-health", "--worker-id", "fleet-store-backoff")
+        assert health["status"] == "ok", health
+        assert health["retrying_workspace_count"] >= 1, health
+        assert health["max_retry_after_secs"] >= 1, health
 
         # The scheduler cursor survives a process restart without entering
         # either knowledge.sqlite3 or the long-term memory store.

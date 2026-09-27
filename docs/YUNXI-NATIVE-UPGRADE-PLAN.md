@@ -444,11 +444,16 @@ workspace，按间隔以有限 batch 领取到期任务，复用已有 lease/退
 workspace、不自动激活 generation，并可由 systemd 或 supervisor 托管。现在也支持重复
 传入 `--workspace` 创建最多 32 个工作区的显式 fleet：路径 canonicalize 后去重，跨轮
 round-robin 游标保证共享预算下的基本公平；单个工作区的 SQLite/索引故障会被隔离，
-不会中止同轮其他工作区，且默认输出不含绝对路径。只读 `knowledge-worker-status` 额外
+不会中止同轮其他工作区，且默认输出不含绝对路径。现在工作区级 store 故障还使用
+独立于 SQLite provider job retry 的确定性指数退避：失败次数和下一次尝试时间按工作区
+指纹写入同一个独立 XDG state 文件，失败计数最多 6 次、等待最多 60 秒；daemon 或
+进程重启后仍会尊重这段退避，成功访问工作区后清零。它不加入随机抖动，不会把一个
+工作区的故障传播到其他工作区。只读 `knowledge-worker-status` 额外
 输出跨 workspace 的 `aggregate` 摘要：健康/降级状态、状态计数、pending/running/failed/
 retry 总量和最多 8 条脱敏告警；它不改变调度、权限或执行策略，也不自动发现目录。当前游标和累计统计已写入独立的 XDG state
 文件，采用临时文件加 rename 的原子更新；损坏或版本不兼容只会重置调度游标并输出
-结构化 warning，不进入记忆或知识数据库。当前 worker 已能在 Ctrl+C 或 SIGTERM 下
+结构化 warning，不进入记忆或知识数据库；`knowledge-worker-health` 会只读报告当前
+仍处于工作区级退避中的数量和最长等待秒数。当前 worker 已能在 Ctrl+C 或 SIGTERM 下
 优雅退出并输出 stopped 记录。
 
 随后增加了 daemon 内的常驻调度闭环：`yunxi-linux daemon --knowledge-workspace <DIR>`
