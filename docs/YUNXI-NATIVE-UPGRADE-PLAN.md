@@ -405,6 +405,13 @@ round-robin 游标保证共享预算下的基本公平；单个工作区的 SQLi
 结构化 warning，不进入记忆或知识数据库。当前 worker 已能在 Ctrl+C 或 SIGTERM 下
 优雅退出并输出 stopped 记录。
 
+在此基础上新增了 `knowledge-worker-status --workspace <DIR>` 的只读 fleet 快照：它
+复用同一存储层的 deferred read transaction，先 canonicalize/去重最多 32 个显式工作区，
+再逐项读取 active/staging 队列；缺失数据库返回空快照，损坏数据库返回脱敏错误码，
+不会创建 schema、领取/回收 lease、推进 retry、激活 generation 或读取长期记忆。真实
+回归脚本 `knowledge_worker_status_fleet_smoke.py` 同时检查重复路径、缺失/损坏隔离、
+队列状态不变和 memory 文件字节不变。
+
 显式空间还提供只读的 `knowledge-space-list` 元数据入口，按稳定的 `space_id` 排序，
 不读取文档正文、chunk 或向量，便于本地诊断空间隔离而不扩大知识内容暴露面。
 
@@ -559,7 +566,8 @@ scope、source、预算、丢弃原因和召回数量。两者只共享本轮上
 - 兼容第二个发行版前先冻结 Host/Tool adapter 接口。
 
 当前增量：已新增 `packaging/arch/yunxi-native/PKGBUILD` 与配套用户级 systemd unit，
-固定源码 commit 后从 workspace 构建 `/usr/bin/yunxi-linux`；service 对 daemon 设置
+并将包源固定到当前已验证的 `f58af4fe25ec065beec379ec2bac31278901e6c7` commit，
+从 workspace 构建 `/usr/bin/yunxi-linux`；service 对 daemon 设置
 `MemoryHigh=1536M`、`MemoryMax=2G`、`TasksMax=128`、`LimitNOFILE=4096` 和
 `OOMPolicy=stop`，不自动启用服务、不创建 root daemon、不删除用户数据。配套的
 `package-smoke.sh` 可在无 Arch 环境中静态验证这些安装、安全和生命周期边界。

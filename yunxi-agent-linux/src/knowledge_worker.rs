@@ -16,6 +16,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const STATE_SCHEMA_VERSION: u32 = 1;
 const DEFAULT_FLEET_WORKER_ID: &str = "yunxi-linux-embedding-fleet";
+const MAX_STATUS_WORKSPACES: usize = 32;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct SchedulerState {
@@ -486,4 +487,66 @@ pub(super) async fn run(
             _ = tokio::time::sleep(Duration::from_secs(interval_secs)) => {},
         }
     }
+}
+
+/// Emit a read-only queue snapshot for a caller-selected fleet of workspaces.
+///
+/// This deliberately does not share the worker's scheduling state: it never
+/// claims jobs, reclaims leases, advances retries, initializes databases, or
+/// discovers directories. Each workspace is isolated so a corrupt database
+/// produces a redacted item-level error without hiding healthy snapshots.
+pub(super) fn run_status(workspaces: Vec<PathBuf>) -> Result<()> {
+    if workspaces.is_empty() || workspaces.len() > MAX_STATUS_WORKSPACES {
+        bail!("--workspace 必须显式指定 1 到 32 个工作区");
+    }
+    let mut selected: Vec<PathBuf> = Vec::new();
+    for (index, path) in workspaces.iter().enumerate() {
+        let path = super::canonicalize_worker_workspace(path)
+            .map_err(|_| anyhow::anyhow!("工作区参数 #{index} 无法访问或不是目录"))?;
+        if !selected.iter().any(|selected| selected == &path) {
+            selected.push(path);
+        }
+    }
+
+    let mut results = Vec::with_capacity(selected.len());
+    for (workspace_index, path) in selected.iter().enumerate() {
+        let store = yunxi_agent_storage::SqliteKnowledgeStore::for_workspace(path);
+        match store.embedding_queue_status() {
+            Ok(snapshot) => {
+                let status = super::knowledge_queue_status_label(&snapshot);
+                results.push(json!({
+                    "workspace_index": workspace_index,
+                    "database_present": snapshot.database_present,
+                    "observed_at_millis": snapshot.observed_at_millis,
+                    "active": snapshot.active,
+                    "staging": snapshot.staging,
+                    "status": status,
+                }));
+            }
+            Err(_) => results.push(json!({
+                "workspace_index": workspace_index,
+                "database_present": true,
+                "status": "error",
+                "error_code": "knowledge_store_unavailable",
+            })),
+        }
+    }
+
+    let status = if results.iter().any(|item| item["status"] == "error") {
+        "degraded"
+    } else if results.iter().any(|item| item["status"] == "ready") {
+        "ready"
+    } else if results.iter().any(|item| item["status"] == "complete") {
+        "complete"
+    } else {
+        "idle"
+    };
+    print_record(&json!({
+        "schema_version": 1,
+        "scheduler": "read_only_snapshot",
+        "status": status,
+        "workspace_count": results.len(),
+        "embedding_model": yunxi_agent_persona::LOCAL_MEMORY_EMBEDDING_MODEL,
+        "workspaces": results,
+    }))
 }

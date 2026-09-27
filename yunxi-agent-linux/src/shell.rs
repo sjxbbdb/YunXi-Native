@@ -207,6 +207,10 @@ pub(crate) enum LinuxShellCommand {
         /// Workspace whose `.yunxi/knowledge/knowledge.sqlite3` is observed.
         #[arg(long, default_value = ".")]
         cwd: PathBuf,
+        /// Explicit workspaces for a bounded, read-only fleet snapshot.
+        /// No directory discovery or recursive scanning is performed.
+        #[arg(long = "workspace", action = ArgAction::Append, conflicts_with = "cwd")]
+        workspaces: Vec<PathBuf>,
     },
     /// Process one pending local knowledge embedding job and exit.
     KnowledgeWorker {
@@ -513,7 +517,13 @@ pub(crate) async fn run_command(command: LinuxShellCommand) -> Result<()> {
             cwd,
         } => run_knowledge_enqueue(document_id, embedding_model, cwd),
         LinuxShellCommand::KnowledgeRetry { job_id, cwd } => run_knowledge_retry(job_id, cwd),
-        LinuxShellCommand::KnowledgeWorkerStatus { cwd } => run_knowledge_worker_status(cwd),
+        LinuxShellCommand::KnowledgeWorkerStatus { cwd, workspaces } => {
+            if workspaces.is_empty() {
+                run_knowledge_worker_status(cwd)
+            } else {
+                knowledge_worker::run_status(workspaces)
+            }
+        }
         LinuxShellCommand::KnowledgeWorker {
             worker_id,
             max_jobs,

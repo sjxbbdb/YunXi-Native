@@ -191,6 +191,16 @@ JSON 默认只返回 `workspace_index`，不泄露绝对路径。按 `Ctrl+C` �
 active/staging 队列的计数和同一时钟快照；`status` 为 `idle`、`ready`、`complete` 或
 `degraded`，只用于观察，不替代 worker 或 daemon 调度器。
 
+也可以重复传入 `--workspace` 获取最多 32 个明确工作区的 fleet 快照。路径会先
+canonicalize 后去重，结果只返回 `workspace_index`、队列计数和脱敏错误码；缺失数据库
+返回 `database_present=false`，损坏数据库只影响对应项。该模式不创建目录、不改变
+lease/retry/generation，也不触碰长期记忆。真实验收脚本为：
+
+```bash
+python3 yunxi-agent-linux/tests/knowledge_worker_status_fleet_smoke.py \
+  ./target/release/yunxi-linux
+```
+
 `knowledge-space-list` 只列出空间元数据，不读取文档正文、chunk 或向量；它用于确认
 当前 workspace 的 system/project/private 边界，输出按 `space_id` 稳定排序。
 

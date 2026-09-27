@@ -104,6 +104,17 @@ fleet 的 round-robin 游标和累计统计写入独立的
 pending/running/completed/failed、到期重试、退避等待、耗尽重试预算和过期 lease，便于判断
 worker 是否需要启动或人工恢复。
 
+需要同时观察多个明确工作区时，可重复传入 `--workspace`：
+
+```bash
+./target/release/yunxi-linux knowledge-worker-status \
+  --workspace ./project-a --workspace ./project-b
+```
+
+这是独立的 `read_only_snapshot` 诊断边界：路径会 canonicalize 后去重，最多 32 个，
+不扫描目录、不创建缺失数据库、不领取或回收任务；单个损坏数据库只产生脱敏的
+`knowledge_store_unavailable` 项，不阻断其他工作区。它也不会读取长期记忆文件。
+
 Linux 查询入口和 Runtime 会读取知识空间的当前 active generation，并校验 owner 与
 visibility；不会把 generation `1` 当作永久默认值。首次使用由 `knowledge-help` 或
 `knowledge-man` 受控初始化 system 空间，后续采集会绑定当时的 active generation，
