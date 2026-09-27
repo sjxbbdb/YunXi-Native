@@ -203,6 +203,12 @@ pub(crate) enum LinuxShellCommand {
         #[arg(long, default_value = ".")]
         cwd: PathBuf,
     },
+    /// Read-only diagnostic snapshot of active and staging embedding queues.
+    KnowledgeWorkerStatus {
+        /// Workspace whose `.yunxi/knowledge/knowledge.sqlite3` is observed.
+        #[arg(long, default_value = ".")]
+        cwd: PathBuf,
+    },
     /// Process one pending local knowledge embedding job and exit.
     KnowledgeWorker {
         /// Stable worker identity used for the SQLite lease.
@@ -508,6 +514,7 @@ pub(crate) async fn run_command(command: LinuxShellCommand) -> Result<()> {
             cwd,
         } => run_knowledge_enqueue(document_id, embedding_model, cwd),
         LinuxShellCommand::KnowledgeRetry { job_id, cwd } => run_knowledge_retry(job_id, cwd),
+        LinuxShellCommand::KnowledgeWorkerStatus { cwd } => run_knowledge_worker_status(cwd),
         LinuxShellCommand::KnowledgeWorker {
             worker_id,
             max_jobs,
@@ -1313,6 +1320,49 @@ fn run_knowledge_retry(job_id: i64, cwd: PathBuf) -> Result<()> {
         }))?
     );
     Ok(())
+}
+
+fn run_knowledge_worker_status(cwd: PathBuf) -> Result<()> {
+    let cwd = canonical_knowledge_cwd(cwd)?;
+    let store = yunxi_agent_storage::SqliteKnowledgeStore::for_workspace(&cwd);
+    let snapshot = store.embedding_queue_status()?;
+    let status = knowledge_queue_status_label(&snapshot);
+    let mut output = serde_json::to_value(&snapshot)?;
+    let object = output
+        .as_object_mut()
+        .context("知识队列状态输出不是 JSON 对象")?;
+    object.insert("schema_version".to_string(), serde_json::json!(1));
+    object.insert("status".to_string(), serde_json::json!(status));
+    object.insert(
+        "embedding_model".to_string(),
+        serde_json::json!(yunxi_agent_persona::LOCAL_MEMORY_EMBEDDING_MODEL),
+    );
+    println!("{}", serde_json::to_string_pretty(&output)?);
+    Ok(())
+}
+
+fn knowledge_queue_status_label(
+    snapshot: &yunxi_agent_storage::KnowledgeEmbeddingQueueStatus,
+) -> &'static str {
+    let queues = [&snapshot.active, &snapshot.staging];
+    let has_failed = queues
+        .iter()
+        .any(|queue| queue.failed > 0 || queue.expired_leases > 0 || queue.terminal_failed > 0);
+    let has_ready = queues
+        .iter()
+        .any(|queue| queue.pending_ready > 0 || queue.retry_due > 0);
+    let has_unfinished = queues
+        .iter()
+        .any(|queue| queue.pending > 0 || queue.running > 0 || queue.failed > 0);
+    if has_failed {
+        "degraded"
+    } else if has_ready {
+        "ready"
+    } else if !has_unfinished && queues.iter().any(|queue| queue.completed > 0) {
+        "complete"
+    } else {
+        "idle"
+    }
 }
 
 fn run_knowledge_worker(worker_id: Option<String>, max_jobs: usize, cwd: PathBuf) -> Result<()> {

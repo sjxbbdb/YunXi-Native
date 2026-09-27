@@ -99,6 +99,12 @@ fleet 的 round-robin 游标和累计统计写入独立的
 状态文件采用临时文件加 rename 更新并限制为用户可读；损坏或版本不兼容时只重置调度
 游标并返回结构化 warning，不影响知识 job lease 的唯一所有权。
 
+可用 `knowledge-worker-status --cwd .` 查看当前 workspace 的 active/staging embedding
+队列快照。它只读打开已有的 `knowledge.sqlite3`，不会创建数据库、领取任务、回收 lease、
+触发重试或读取长期记忆；数据库尚未建立时返回空快照，旧 schema 则明确报错。输出会区分
+pending/running/completed/failed、到期重试、退避等待、耗尽重试预算和过期 lease，便于判断
+worker 是否需要启动或人工恢复。
+
 Linux 查询入口和 Runtime 会读取知识空间的当前 active generation，并校验 owner 与
 visibility；不会把 generation `1` 当作永久默认值。首次使用由 `knowledge-help` 或
 `knowledge-man` 受控初始化 system 空间，后续采集会绑定当时的 active generation，

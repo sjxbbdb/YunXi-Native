@@ -168,6 +168,20 @@ grep -q ".yunxi" "$TMP_ROOT/internal.out" || {
   exit 1
 }
 
+run_json knowledge-worker-status --cwd "$WORKSPACE" >"$TMP_ROOT/queue-pending.json"
+python3 - "$TMP_ROOT/queue-pending.json" <<'PY'
+import json
+import sys
+
+value = json.load(open(sys.argv[1], encoding="utf-8"))
+assert value["database_present"] is True, value
+assert value["status"] == "ready", value
+assert value["active"]["pending"] == 3, value
+assert value["active"]["pending_ready"] == 3, value
+assert value["staging"]["total"] == 0, value
+assert "database" not in value, value
+PY
+
 run_json knowledge-search 'systemctl restart' \
   --space-id project-demo --owner local-user --visibility owner \
   --cwd "$WORKSPACE" >"$TMP_ROOT/project-search.json"
@@ -234,6 +248,17 @@ grep -q '"reason": "terminate"' "$TMP_ROOT/worker-watch.json" || {
   echo "knowledge worker watch did not report SIGTERM shutdown" >&2
   exit 1
 }
+run_json knowledge-worker-status --cwd "$WORKSPACE" >"$TMP_ROOT/queue-completed.json"
+python3 - "$TMP_ROOT/queue-completed.json" <<'PY'
+import json
+import sys
+
+value = json.load(open(sys.argv[1], encoding="utf-8"))
+assert value["status"] == "complete", value
+assert value["active"]["pending"] == 0, value
+assert value["active"]["completed"] == 3, value
+assert value["active"]["failed"] == 0, value
+PY
 run_json knowledge-vector-search 'dry-run' \
   --space-id private-demo --owner local-user --visibility private \
   --cwd "$WORKSPACE" >"$TMP_ROOT/private-vector.json"

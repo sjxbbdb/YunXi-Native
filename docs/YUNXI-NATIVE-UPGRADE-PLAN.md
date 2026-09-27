@@ -362,6 +362,13 @@ knowledge 的 Planner 只读召回已经接入，project/private 仍保持显式
 workspace 内按间隔轮询，便于 systemd/supervisor 托管。active generation 的读取边界、
 staging worker 和原子激活已经落地。
 
+现在还提供只读的 `knowledge-worker-status` 队列诊断：它在同一个 SQLite deferred read
+transaction 中观察 active/staging 两条队列，不创建缺失数据库，不初始化或迁移旧 schema，
+不领取任务、回收 lease、提升 retry，也不读取长期记忆。输出区分 pending、running、completed、
+failed、到期/等待中的 retry、耗尽预算和过期 lease，并用 `idle`/`ready`/`complete`/
+`degraded` 给出运维级状态标签。它是后续 systemd 告警与 daemon 调度的观察面，不改变当前
+显式 worker 的调度语义。
+
 为避免 daemon 或终端进程崩溃后留下永久 `running` 任务，领取事务还会回收超过五分钟
 未更新的 worker lease，并把它重新置为 `pending`；旧 worker 随后提交 complete/fail
 会因 lease 身份不匹配而被拒绝。这里仅处理崩溃恢复，不把 `failed` 任务自动重试，

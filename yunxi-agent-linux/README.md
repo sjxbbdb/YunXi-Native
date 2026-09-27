@@ -151,6 +151,8 @@ printf '%s\n' '项目约定：先 dry-run，再申请审批。' | \
 ./target/release/yunxi-linux knowledge-space-list --cwd .
 ./target/release/yunxi-linux knowledge-worker --max-jobs 10 --cwd .
 ./target/release/yunxi-linux knowledge-worker --watch --interval-secs 5 --max-jobs 10 --cwd .
+# 只读查看 active/staging 队列，不领取任务也不触发重试
+./target/release/yunxi-linux knowledge-worker-status --cwd .
 # 多工作区：重复 --workspace，最多 32 个；不扫描其他目录
 ./target/release/yunxi-linux knowledge-worker --max-jobs 4 \
   --workspace ~/src/project-a --workspace ~/src/project-b
@@ -183,6 +185,11 @@ JSON 默认只返回 `workspace_index`，不泄露绝对路径。按 `Ctrl+C` �
 `$XDG_STATE_HOME/yunxi/knowledge-worker/`（未设置时为 `~/.local/state/yunxi/knowledge-worker/`）
 的独立状态文件；文件原子替换且用户私有，损坏或版本不兼容时只重置游标并返回
 结构化 warning，不接触长期记忆或 `knowledge.sqlite3`。
+
+`knowledge-worker-status` 是独立的只读诊断入口：它不会创建缺失的知识数据库，不会初始化
+或迁移旧 schema，不会领取任务、回收 lease、提升 retry 或读取长期记忆。输出同时给出
+active/staging 队列的计数和同一时钟快照；`status` 为 `idle`、`ready`、`complete` 或
+`degraded`，只用于观察，不替代 worker 或 daemon 调度器。
 
 `knowledge-space-list` 只列出空间元数据，不读取文档正文、chunk 或向量；它用于确认
 当前 workspace 的 system/project/private 边界，输出按 `space_id` 稳定排序。

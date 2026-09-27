@@ -8,7 +8,10 @@ use crate::knowledge_ingest::{
     KnowledgeChunkingOptions, KnowledgeIngestSummary, chunk_knowledge_text, content_hash,
     normalize_knowledge_text,
 };
-use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
+use rusqlite::{
+    Connection, OpenFlags, OptionalExtension, Transaction, TransactionBehavior, params,
+};
+use serde::Serialize;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -236,6 +239,37 @@ pub struct KnowledgeEmbeddingSummary {
     pub chunks_indexed: usize,
 }
 
+/// A read-only snapshot of one embedding queue.
+///
+/// The counts are deliberately kept independent from worker scheduling.  A
+/// status query must not claim jobs, reclaim leases, promote retries, or
+/// initialize the knowledge schema; callers use it for diagnostics only.
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize)]
+pub struct KnowledgeEmbeddingQueueSummary {
+    pub total: u64,
+    pub pending: u64,
+    pub running: u64,
+    pub completed: u64,
+    pub failed: u64,
+    pub pending_ready: u64,
+    pub retry_due: u64,
+    pub retry_waiting: u64,
+    pub exhausted: u64,
+    pub terminal_failed: u64,
+    pub expired_leases: u64,
+    pub oldest_pending_at_millis: Option<i64>,
+    pub next_attempt_at_millis: Option<i64>,
+}
+
+/// A same-clock, read-only snapshot of active and staging embedding queues.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct KnowledgeEmbeddingQueueStatus {
+    pub database_present: bool,
+    pub observed_at_millis: i64,
+    pub active: KnowledgeEmbeddingQueueSummary,
+    pub staging: KnowledgeEmbeddingQueueSummary,
+}
+
 /// Durable state for one document/model/generation embedding request.
 ///
 /// The queue is intentionally only a storage contract. It does not invoke an
@@ -359,6 +393,69 @@ impl SqliteKnowledgeStore {
     pub fn initialize(&self) -> AgentResult<()> {
         let connection = self.open_connection()?;
         initialize_schema(&connection, &self.database)
+    }
+
+    /// Read one clock-consistent, active/staging queue status snapshot.
+    ///
+    /// This deliberately opens the database read-only and never calls schema
+    /// initialization or migration.  A missing database is a valid empty
+    /// observation; an existing database with an incompatible schema is an
+    /// explicit error so callers cannot mistake an old install for an empty
+    /// queue.  Both queue summaries are read in one deferred transaction and
+    /// use the same `now_millis` value.
+    pub fn embedding_queue_status(&self) -> AgentResult<KnowledgeEmbeddingQueueStatus> {
+        let observed_at_millis = now_millis();
+        let metadata = match std::fs::metadata(&self.database) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(KnowledgeEmbeddingQueueStatus {
+                    database_present: false,
+                    observed_at_millis,
+                    active: KnowledgeEmbeddingQueueSummary::default(),
+                    staging: KnowledgeEmbeddingQueueSummary::default(),
+                });
+            }
+            Err(_) => {
+                return Err(storage_error(
+                    "knowledge queue status database metadata is unavailable",
+                ));
+            }
+        };
+        if !metadata.is_file() {
+            return Err(storage_error(
+                "knowledge queue status database is not a regular file",
+            ));
+        }
+
+        let mut connection =
+            Connection::open_with_flags(&self.database, OpenFlags::SQLITE_OPEN_READ_ONLY).map_err(
+                |_| storage_error("knowledge queue status database cannot be opened read-only"),
+            )?;
+        connection
+            .busy_timeout(std::time::Duration::from_secs(2))
+            .map_err(|_| storage_error("knowledge queue status database cannot be configured"))?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Deferred)
+            .map_err(|_| storage_error("knowledge queue status read transaction cannot start"))?;
+        let active = read_embedding_queue_summary(
+            &transaction,
+            "knowledge_embedding_jobs",
+            observed_at_millis,
+        )?;
+        let staging = read_embedding_queue_summary(
+            &transaction,
+            "knowledge_staging_embedding_jobs",
+            observed_at_millis,
+        )?;
+        transaction
+            .commit()
+            .map_err(|_| storage_error("knowledge queue status read transaction cannot commit"))?;
+        Ok(KnowledgeEmbeddingQueueStatus {
+            database_present: true,
+            observed_at_millis,
+            active,
+            staging,
+        })
     }
 
     /// Enqueue one idempotent document/model/generation embedding request.
@@ -3647,6 +3744,103 @@ impl SqliteKnowledgeStore {
             .map_err(|error| sqlite_error(&self.database, "configure knowledge database", error))?;
         Ok(connection)
     }
+}
+
+fn read_embedding_queue_summary(
+    transaction: &Transaction<'_>,
+    table: &str,
+    now_millis: i64,
+) -> AgentResult<KnowledgeEmbeddingQueueSummary> {
+    // The table name is selected only from these two fixed call sites.  Keep
+    // it in a small allowlist instead of interpolating arbitrary identifiers.
+    let query = match table {
+        "knowledge_embedding_jobs" | "knowledge_staging_embedding_jobs" => format!(
+            "SELECT
+                COUNT(*) AS total,
+                COALESCE(SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END), 0) AS pending,
+                COALESCE(SUM(CASE WHEN status = 'running' THEN 1 ELSE 0 END), 0) AS running,
+                COALESCE(SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END), 0) AS completed,
+                COALESCE(SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END), 0) AS failed,
+                COALESCE(SUM(CASE WHEN status = 'pending' AND next_attempt_at_millis <= ?1
+                    THEN 1 ELSE 0 END), 0) AS pending_ready,
+                COALESCE(SUM(CASE WHEN status = 'failed' AND attempts < ?2
+                    AND next_attempt_at_millis <> ?3
+                    AND next_attempt_at_millis <= ?1 THEN 1 ELSE 0 END), 0) AS retry_due,
+                COALESCE(SUM(CASE WHEN status = 'failed' AND attempts < ?2
+                    AND next_attempt_at_millis <> ?3
+                    AND next_attempt_at_millis > ?1 THEN 1 ELSE 0 END), 0) AS retry_waiting,
+                COALESCE(SUM(CASE WHEN status = 'failed' AND attempts >= ?2 THEN 1 ELSE 0 END), 0)
+                    AS exhausted,
+                COALESCE(SUM(CASE WHEN status = 'failed' AND attempts < ?2
+                    AND next_attempt_at_millis = ?3 THEN 1 ELSE 0 END)
+                    , 0) AS terminal_failed,
+                COALESCE(SUM(CASE WHEN status = 'running' AND updated_at_millis <= ?4
+                    THEN 1 ELSE 0 END), 0) AS expired_leases,
+                MIN(CASE WHEN status = 'pending' THEN created_at_millis END)
+                    AS oldest_pending_at_millis,
+                MIN(CASE WHEN status IN ('pending', 'failed')
+                    AND next_attempt_at_millis <> ?3
+                    THEN next_attempt_at_millis END) AS next_attempt_at_millis
+             FROM {table}"
+        ),
+        _ => {
+            return Err(storage_error("knowledge queue status table is unsupported"));
+        }
+    };
+    let lease_cutoff = now_millis.saturating_sub(EMBEDDING_JOB_LEASE_MILLIS);
+    let row = transaction
+        .query_row(
+            &query,
+            params![
+                now_millis,
+                MAX_EMBEDDING_JOB_ATTEMPTS,
+                i64::MAX,
+                lease_cutoff
+            ],
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, i64>(3)?,
+                    row.get::<_, i64>(4)?,
+                    row.get::<_, i64>(5)?,
+                    row.get::<_, i64>(6)?,
+                    row.get::<_, i64>(7)?,
+                    row.get::<_, i64>(8)?,
+                    row.get::<_, i64>(9)?,
+                    row.get::<_, i64>(10)?,
+                    row.get::<_, Option<i64>>(11)?,
+                    row.get::<_, Option<i64>>(12)?,
+                ))
+            },
+        )
+        .map_err(|_| storage_error("knowledge queue status schema is missing or unsupported"))?;
+    let counts = [
+        row.0, row.1, row.2, row.3, row.4, row.5, row.6, row.7, row.8, row.9, row.10,
+    ];
+    let counts = counts
+        .into_iter()
+        .map(|value| {
+            u64::try_from(value)
+                .map_err(|_| storage_error("knowledge queue status contains invalid counts"))
+        })
+        .collect::<AgentResult<Vec<_>>>()?;
+    Ok(KnowledgeEmbeddingQueueSummary {
+        total: counts[0],
+        pending: counts[1],
+        running: counts[2],
+        completed: counts[3],
+        failed: counts[4],
+        pending_ready: counts[5],
+        retry_due: counts[6],
+        retry_waiting: counts[7],
+        exhausted: counts[8],
+        terminal_failed: counts[9],
+        expired_leases: counts[10],
+        oldest_pending_at_millis: row.11,
+        next_attempt_at_millis: row.12,
+    })
 }
 
 fn read_embedding_job(

@@ -116,6 +116,7 @@
 - fish hook 基础接管：已有保守模式与显式 takeover 模式，均已通过真实 fish + PTY smoke；尚未完成 Miyu 行为等价和完整 PTY 矩阵。
 - 知识 worker：已有单 workspace `--cwd` 与显式多 workspace `--workspace` fleet；fleet 只处理调用方明确列出的工作区，跨轮 round-robin、独立 XDG 游标状态、单工作区故障隔离和脱敏 JSON 已覆盖；daemon 级自动发现、告警和统一策略仍待实现。
 - 知识导入：project/private 支持 stdin 与显式单文件（UTF-8 文本/Markdown）导入；文件入口限定工作区边界、拒绝 `.yunxi` 状态目录和超大文件，不做目录扫描。
+- 知识队列诊断：已有只读 `knowledge-worker-status`，同一快照观察 active/staging 队列，区分就绪、退避、失败、耗尽和过期 lease；不会创建/迁移数据库或触发 worker。
 - Unix socket daemon：已补齐协议版本、frame 上限、单例锁、Ping、Cancel，以及已完成回合的有界 Follow 回放；活动回合断线续跑仍未实现。
 - daemon 活动回合断线续跑、过期游标和持久化会话映射：待实现。
 - Miyu Linux 专用 Skills：待评估，不在核心 Runtime 中硬编码。

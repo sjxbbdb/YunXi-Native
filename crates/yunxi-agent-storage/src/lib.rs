@@ -35,11 +35,12 @@ pub use companion_mailbox::{
 pub use conversation_state::FileConversationStateStore;
 pub use knowledge::{
     KnowledgeChunk, KnowledgeDocument, KnowledgeEmbeddingJob, KnowledgeEmbeddingJobStatus,
-    KnowledgeEmbeddingSummary, KnowledgeEmbeddingWorkerResult, KnowledgeGeneration,
-    KnowledgeGenerationReadiness, KnowledgeGenerationState, KnowledgeSearchResult,
-    KnowledgeSearchScope, KnowledgeSpaceKind, KnowledgeSpaceSpec, KnowledgeStagingEmbeddingJob,
-    KnowledgeStagingEmbeddingWorkerResult, KnowledgeVector, KnowledgeVectorMatch,
-    KnowledgeVisibility, MAX_EMBEDDING_JOB_ATTEMPTS, SqliteKnowledgeStore,
+    KnowledgeEmbeddingQueueStatus, KnowledgeEmbeddingQueueSummary, KnowledgeEmbeddingSummary,
+    KnowledgeEmbeddingWorkerResult, KnowledgeGeneration, KnowledgeGenerationReadiness,
+    KnowledgeGenerationState, KnowledgeSearchResult, KnowledgeSearchScope, KnowledgeSpaceKind,
+    KnowledgeSpaceSpec, KnowledgeStagingEmbeddingJob, KnowledgeStagingEmbeddingWorkerResult,
+    KnowledgeVector, KnowledgeVectorMatch, KnowledgeVisibility, MAX_EMBEDDING_JOB_ATTEMPTS,
+    SqliteKnowledgeStore,
 };
 pub use knowledge_ingest::{
     KnowledgeChunkDraft, KnowledgeChunkingOptions, KnowledgeIngestSummary, chunk_knowledge_text,
