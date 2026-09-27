@@ -479,7 +479,21 @@ pub(crate) enum LinuxShellCommand {
     },
     /// Hidden long-lived process used by shell-intercept.
     #[command(hide = true)]
-    Daemon,
+    Daemon {
+        /// Explicit workspace whose knowledge embedding queue is serviced by
+        /// this daemon. Omitting it keeps the knowledge worker disabled.
+        #[arg(long)]
+        knowledge_workspace: Option<PathBuf>,
+        /// Maximum jobs claimed by each knowledge worker polling round.
+        #[arg(long, default_value_t = 1)]
+        knowledge_max_jobs: usize,
+        /// Delay between knowledge worker polling rounds.
+        #[arg(long, default_value_t = 5)]
+        knowledge_interval_secs: u64,
+        /// Stable worker identity used for the SQLite lease.
+        #[arg(long)]
+        knowledge_worker_id: Option<String>,
+    },
 }
 
 pub(crate) async fn run_command(command: LinuxShellCommand) -> Result<()> {
@@ -698,7 +712,20 @@ pub(crate) async fn run_command(command: LinuxShellCommand) -> Result<()> {
         LinuxShellCommand::KnowledgeGenerationActivate { generation, cwd } => {
             run_knowledge_generation_activate(generation, cwd)
         }
-        LinuxShellCommand::Daemon => run_daemon().await,
+        LinuxShellCommand::Daemon {
+            knowledge_workspace,
+            knowledge_max_jobs,
+            knowledge_interval_secs,
+            knowledge_worker_id,
+        } => {
+            run_daemon(
+                knowledge_workspace,
+                knowledge_max_jobs,
+                knowledge_interval_secs,
+                knowledge_worker_id,
+            )
+            .await
+        }
     }
 }
 
@@ -3332,20 +3359,46 @@ async fn daemon_is_ready(socket: &Path) -> bool {
 }
 
 #[cfg(not(unix))]
-async fn run_daemon() -> Result<()> {
+async fn run_daemon(
+    _knowledge_workspace: Option<PathBuf>,
+    _knowledge_max_jobs: usize,
+    _knowledge_interval_secs: u64,
+    _knowledge_worker_id: Option<String>,
+) -> Result<()> {
     bail!("YunXi shell daemon 仅支持 Unix/Linux")
 }
 
 #[cfg(unix)]
-async fn run_daemon() -> Result<()> {
+async fn run_daemon(
+    knowledge_workspace: Option<PathBuf>,
+    knowledge_max_jobs: usize,
+    knowledge_interval_secs: u64,
+    knowledge_worker_id: Option<String>,
+) -> Result<()> {
+    validate_worker_max_jobs(knowledge_max_jobs)?;
+    if knowledge_interval_secs == 0 || knowledge_interval_secs > 3600 {
+        bail!("--knowledge-interval-secs 必须在 1 到 3600 之间");
+    }
+    let knowledge_workspace = knowledge_workspace
+        .map(|workspace| canonicalize_worker_workspace(&workspace))
+        .transpose()?;
     let socket = socket_path()?;
     if daemon_is_ready(&socket).await {
+        if knowledge_workspace.is_some() {
+            bail!("YunXi shell daemon 已在运行；不能向活动 daemon 附加 knowledge worker");
+        }
         return Ok(());
     }
     let lock_path = daemon_lock_path(&socket);
     let _lock = acquire_daemon_lock(&lock_path)?;
     if daemon_is_ready(&socket).await {
+        if knowledge_workspace.is_some() {
+            bail!("YunXi shell daemon 已在运行；不能向活动 daemon 附加 knowledge worker");
+        }
         return Ok(());
+    }
+    if let Some(workspace) = knowledge_workspace.as_ref() {
+        knowledge_worker::validate_daemon_workspace(workspace, knowledge_worker_id.as_deref())?;
     }
     if UnixStream::connect(&socket).await.is_ok() {
         bail!("YunXi shell socket 已被不兼容的 daemon 占用；拒绝覆盖活动进程");
@@ -3361,6 +3414,26 @@ async fn run_daemon() -> Result<()> {
     let replays = Arc::new(Mutex::new(ReplayStore::default()));
     let mut terminate = signal(SignalKind::terminate()).context("注册 SIGTERM handler 失败")?;
     let mut interrupt = signal(SignalKind::interrupt()).context("注册 SIGINT handler 失败")?;
+    let (knowledge_shutdown_tx, knowledge_shutdown_rx) = tokio::sync::watch::channel(false);
+    let knowledge_worker_handle = knowledge_workspace.map(|workspace| {
+        let worker_id = knowledge_worker_id
+            .clone()
+            .unwrap_or_else(|| knowledge_worker::DEFAULT_DAEMON_WORKER_ID.to_string());
+        tokio::spawn(async move {
+            let result = knowledge_worker::run_daemon_worker(
+                Some(worker_id),
+                knowledge_max_jobs,
+                knowledge_interval_secs,
+                vec![workspace],
+                knowledge_shutdown_rx,
+            )
+            .await;
+            if result.is_err() {
+                eprintln!("yunxi daemon knowledge worker stopped: knowledge_worker_failed");
+            }
+            result
+        })
+    });
     loop {
         tokio::select! {
             accepted = listener.accept() => {
@@ -3376,6 +3449,10 @@ async fn run_daemon() -> Result<()> {
             _ = terminate.recv() => break,
             _ = interrupt.recv() => break,
         }
+    }
+    let _ = knowledge_shutdown_tx.send(true);
+    if let Some(worker) = knowledge_worker_handle {
+        worker.await.context("daemon 知识 worker 任务异常退出")??;
     }
     let _ = fs::remove_file(&socket);
     Ok(())

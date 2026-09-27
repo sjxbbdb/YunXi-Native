@@ -13,9 +13,13 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+#[cfg(unix)]
+use tokio::sync::watch;
 
 const STATE_SCHEMA_VERSION: u32 = 1;
 const DEFAULT_FLEET_WORKER_ID: &str = "yunxi-linux-embedding-fleet";
+#[cfg(unix)]
+pub(super) const DEFAULT_DAEMON_WORKER_ID: &str = "yunxi-linux-daemon-knowledge";
 const MAX_STATUS_WORKSPACES: usize = 32;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -229,6 +233,18 @@ impl Fleet {
             self.state_warnings.clear();
         }
     }
+}
+
+/// Validate the explicit workspace and worker identity before a daemon binds
+/// its socket.  This keeps configuration errors synchronous instead of
+/// silently leaving a background task that failed during startup.
+#[cfg(unix)]
+pub(super) fn validate_daemon_workspace(path: &Path, worker_id: Option<&str>) -> Result<()> {
+    let worker_id = worker_id
+        .map(ToOwned::to_owned)
+        .or_else(|| Some(DEFAULT_DAEMON_WORKER_ID.to_string()));
+    let _ = Fleet::new(vec![path.to_path_buf()], worker_id)?;
+    Ok(())
 }
 
 fn stable_fingerprint(value: &str) -> String {
@@ -485,6 +501,74 @@ pub(super) async fn run(
             biased;
             reason = signals.recv() => return print_record(&fleet.stopped(reason?)),
             _ = tokio::time::sleep(Duration::from_secs(interval_secs)) => {},
+        }
+    }
+}
+
+/// Run the same explicit fleet scheduler under the long-lived host daemon.
+///
+/// The daemon owns signal handling, so this entry point receives a watch
+/// channel instead of installing process-wide handlers. A shutdown waits for
+/// the current blocking round to finish after setting its cancellation flag;
+/// this keeps an in-flight SQLite lease from being abandoned knowingly.
+#[cfg(unix)]
+pub(super) async fn run_daemon_worker(
+    worker_id: Option<String>,
+    max_jobs: usize,
+    interval_secs: u64,
+    workspaces: Vec<PathBuf>,
+    mut shutdown: watch::Receiver<bool>,
+) -> Result<()> {
+    super::validate_worker_max_jobs(max_jobs)?;
+    if interval_secs == 0 || interval_secs > 3600 {
+        bail!("--knowledge-interval-secs 必须在 1 到 3600 之间");
+    }
+    let mut fleet = Fleet::new(workspaces, worker_id)?;
+    let cancelled = Arc::new(AtomicBool::new(false));
+
+    loop {
+        if *shutdown.borrow() {
+            let _ = fleet.stopped("daemon_shutdown");
+            return Ok(());
+        }
+        let worker_cancelled = Arc::clone(&cancelled);
+        let mut task = tokio::task::spawn_blocking(move || {
+            let record = fleet.round(max_jobs, &worker_cancelled);
+            (fleet, record)
+        });
+        let result = tokio::select! {
+            biased;
+            changed = shutdown.changed() => {
+                cancelled.store(true, Ordering::Release);
+                let (mut fleet, _record) = task.await.context("daemon 知识调度任务异常退出")?;
+                let reason = if changed.is_ok() && *shutdown.borrow() {
+                    "daemon_shutdown"
+                } else {
+                    "daemon_shutdown_channel_closed"
+                };
+                let _ = fleet.stopped(reason);
+                return Ok(());
+            }
+            result = &mut task => result.context("daemon 知识调度任务异常退出")?,
+        };
+        fleet = result.0;
+        eprintln!(
+            "yunxi daemon knowledge worker status: {}",
+            serde_json::to_string(&result.1).unwrap_or_else(|_| "{\"status\":\"error\"}".into())
+        );
+
+        if *shutdown.borrow() {
+            let _ = fleet.stopped("daemon_shutdown");
+            return Ok(());
+        }
+        let should_stop = tokio::select! {
+            biased;
+            changed = shutdown.changed() => changed.is_err() || *shutdown.borrow(),
+            _ = tokio::time::sleep(Duration::from_secs(interval_secs)) => false,
+        };
+        if should_stop {
+            let _ = fleet.stopped("daemon_shutdown");
+            return Ok(());
         }
     }
 }

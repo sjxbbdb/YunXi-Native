@@ -165,6 +165,13 @@ printf '%s\n' '项目约定：先 dry-run，再申请审批。' | \
   --space-id project-demo --owner local-user --visibility owner --cwd .
 ```
 
+daemon 内单 workspace worker 的黑盒验收：
+
+```bash
+bash yunxi-agent-linux/tests/daemon_knowledge_worker_smoke.sh \
+  ./target/release/yunxi-linux
+```
+
 `project` 首版只允许 `owner` visibility；`private` 允许 `owner` 或 `private`。stdin 导入
 和文件导入都受默认输入上限与 chunking 约束；文件导入只接受工作区内的普通 UTF-8
 文本/Markdown 文件，拒绝工作区外路径、`.yunxi` 状态目录和超过 8 MiB 的文件。文档必须
@@ -190,6 +197,19 @@ JSON 默认只返回 `workspace_index`，不泄露绝对路径。按 `Ctrl+C` �
 或迁移旧 schema，不会领取任务、回收 lease、提升 retry 或读取长期记忆。输出同时给出
 active/staging 队列的计数和同一时钟快照；`status` 为 `idle`、`ready`、`complete` 或
 `degraded`，只用于观察，不替代 worker 或 daemon 调度器。
+
+如果希望让同一个 YunXi daemon 顺带托管一个明确的知识工作区，可以显式启动：
+
+```bash
+./target/release/yunxi-linux daemon --knowledge-workspace "$PWD" \
+  --knowledge-max-jobs 8 --knowledge-interval-secs 5
+```
+
+省略 `--knowledge-workspace` 时，daemon 不启动知识 worker；它不会自动发现目录。daemon
+运行期间仍可处理 Fish IPC 请求，停止时会等待当前 embedding round 完成，并把调度状态
+写入 XDG state 目录。知识库与长期记忆数据库保持独立。已经运行的 daemon 不支持后来
+追加 workspace；请先停止后再以该参数启动，避免出现“看似已挂载、实际没有 worker”的
+静默状态。独立的 `knowledge-worker@.service` 仍用于多 workspace fleet 托管。
 
 也可以重复传入 `--workspace` 获取最多 32 个明确工作区的 fleet 快照。路径会先
 canonicalize 后去重，结果只返回 `workspace_index`、队列计数和脱敏错误码；缺失数据库
