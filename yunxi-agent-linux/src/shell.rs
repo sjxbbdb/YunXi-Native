@@ -3049,6 +3049,8 @@ enum ServerFrame {
         next_seq: u64,
         recoverable: bool,
         created_at_unix_secs: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
     },
     /// Numbered output event. The wrapper lets a reconnecting client persist
     /// the exact cursor it has consumed without guessing from payloads.
@@ -3076,6 +3078,10 @@ enum ServerFrame {
     },
     Done {
         status: String,
+        /// A bounded, human-readable reason when the run did not complete.
+        /// Successful runs omit this field to keep the wire shape compact.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
     },
     ResyncRequired {
         run_id: String,
@@ -3143,6 +3149,7 @@ struct ReplayRun {
     live_tx: broadcast::Sender<ReplayEvent>,
     active_follow_allowed: bool,
     status: RunStatus,
+    error: Option<String>,
     request_id: Option<String>,
     cwd: Option<String>,
     session_id: Option<String>,
@@ -3155,6 +3162,8 @@ struct PersistedReplayRun {
     version: u8,
     run_id: String,
     status: RunStatus,
+    #[serde(default)]
+    error: Option<String>,
     next_seq: u64,
     active_follow_allowed: bool,
     request_id: Option<String>,
@@ -3200,6 +3209,7 @@ impl ReplayPersistence {
             version: REPLAY_STATE_VERSION,
             run_id: run_id.to_string(),
             status: run.status,
+            error: run.error.clone(),
             next_seq: run.next_seq,
             active_follow_allowed: run.active_follow_allowed,
             request_id: run.request_id.clone(),
@@ -3350,6 +3360,7 @@ impl ReplayStore {
             live_tx,
             active_follow_allowed,
             status: RunStatus::Running,
+            error: None,
             request_id,
             cwd,
             session_id,
@@ -3398,13 +3409,14 @@ impl ReplayStore {
         };
         run.events.push_back(event.clone());
         run.event_bytes = run.event_bytes.saturating_add(bytes);
-        if let ServerFrame::Done { status } = frame {
+        if let ServerFrame::Done { status, error } = frame {
             run.status = match status.as_str() {
                 "completed" => RunStatus::Completed,
                 "cancelled" => RunStatus::Cancelled,
                 "interrupted" => RunStatus::Interrupted,
                 _ => RunStatus::Failed,
             };
+            run.error = error.clone();
         }
         let _ = run.live_tx.send(event);
         let _ = self.persist_run(run_id);
@@ -3428,13 +3440,14 @@ impl ReplayStore {
         let _ = self.persist_run(run_id);
     }
 
-    fn status(&self, run_id: &str) -> Option<(RunStatus, u64, bool, u64)> {
+    fn status(&self, run_id: &str) -> Option<(RunStatus, u64, bool, u64, Option<String>)> {
         self.runs.get(run_id).map(|run| {
             (
                 run.status,
                 run.next_seq,
                 run.status.recoverable(),
                 run.created_at_unix_secs,
+                run.error.clone(),
             )
         })
     }
@@ -3475,9 +3488,11 @@ impl ReplayStore {
             let was_running = record.status == RunStatus::Running;
             if was_running {
                 record.status = RunStatus::Interrupted;
+                record.error = Some("daemon 在上一次运行完成前退出".to_string());
                 record.active_follow_allowed = false;
                 let done = ServerFrame::Done {
                     status: "interrupted".to_string(),
+                    error: Some("daemon 在上一次运行完成前退出".to_string()),
                 };
                 let seq = record.next_seq.saturating_add(1);
                 let bytes = serde_json::to_vec(&done)
@@ -3499,6 +3514,7 @@ impl ReplayStore {
                 live_tx,
                 active_follow_allowed: false,
                 status: record.status,
+                error: record.error,
                 request_id: record.request_id,
                 cwd: record.cwd,
                 session_id: record.session_id,
@@ -3712,6 +3728,42 @@ fn daemon_run_state_path() -> Result<PathBuf> {
         .or_else(|| home.map(|path| path.join(".local").join("state")))
         .unwrap_or_else(|| PathBuf::from(".yunxi-state"));
     Ok(base.join("yunxi").join("runs"))
+}
+
+#[cfg(unix)]
+fn daemon_log_path() -> Result<PathBuf> {
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    let base = std::env::var_os("XDG_STATE_HOME")
+        .map(PathBuf::from)
+        .or_else(|| home.map(|path| path.join(".local").join("state")))
+        .unwrap_or_else(|| PathBuf::from(".yunxi-state"));
+    Ok(base.join("yunxi").join("daemon.log"))
+}
+
+#[cfg(unix)]
+fn open_daemon_log() -> Result<fs::File> {
+    const MAX_DAEMON_LOG_BYTES: u64 = 4 * 1024 * 1024;
+    let path = daemon_log_path()?;
+    let parent = path.parent().context("YunXi daemon 日志路径缺少父目录")?;
+    fs::create_dir_all(parent)
+        .with_context(|| format!("创建 YunXi daemon 日志目录失败: {}", parent.display()))?;
+    restrict_mode(parent, 0o700)?;
+    if fs::metadata(&path)
+        .map(|metadata| metadata.len() > MAX_DAEMON_LOG_BYTES)
+        .unwrap_or(false)
+    {
+        let rotated = path.with_extension("log.1");
+        let _ = fs::remove_file(&rotated);
+        fs::rename(&path, rotated)
+            .with_context(|| format!("轮转 YunXi daemon 日志失败: {}", path.display()))?;
+    }
+    let file = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .with_context(|| format!("打开 YunXi daemon 日志失败: {}", path.display()))?;
+    restrict_mode(&path, 0o600)?;
+    Ok(file)
 }
 
 #[cfg(unix)]
@@ -4049,7 +4101,7 @@ async fn run_shell_intercept(
                     }
                 }
             }
-            ServerFrame::Done { status } => {
+            ServerFrame::Done { status, .. } => {
                 if cancel_sent && status == "cancelled" {
                     return Ok(());
                 }
@@ -4063,7 +4115,7 @@ async fn run_shell_intercept(
                 ServerFrame::Thread { thread_id } => {
                     eprintln!("[yunxi session {thread_id}]");
                 }
-                ServerFrame::Done { status } => {
+                ServerFrame::Done { status, .. } => {
                     if cancel_sent && status == "cancelled" {
                         return Ok(());
                     }
@@ -4249,6 +4301,7 @@ async fn run_status(run_id: String) -> Result<()> {
                 next_seq,
                 recoverable,
                 created_at_unix_secs,
+                error,
             } => println!(
                 "{}",
                 format_run_status_json(
@@ -4257,6 +4310,7 @@ async fn run_status(run_id: String) -> Result<()> {
                     next_seq,
                     recoverable,
                     created_at_unix_secs,
+                    error,
                 )?
             ),
             ServerFrame::ResyncRequired { run_id, reason } => {
@@ -4339,7 +4393,7 @@ async fn run_follow(run_id: String, after_seq: u64) -> Result<()> {
                         );
                     }
                     match frame.as_ref() {
-                        ServerFrame::Done { status } => Some(status.clone()),
+                        ServerFrame::Done { status, .. } => Some(status.clone()),
                         _ => None,
                     }
                 }
@@ -4537,15 +4591,19 @@ fn format_run_status_json(
     next_seq: u64,
     recoverable: bool,
     created_at_unix_secs: u64,
+    error: Option<String>,
 ) -> Result<String> {
-    serde_json::to_string(&serde_json::json!({
+    let mut value = serde_json::json!({
         "run_id": run_id,
         "status": status,
         "next_seq": next_seq,
         "recoverable": recoverable,
         "created_at_unix_secs": created_at_unix_secs,
-    }))
-    .context("序列化 YunXi run status 失败")
+    });
+    if let Some(error) = error {
+        value["error"] = serde_json::Value::String(error);
+    }
+    serde_json::to_string(&value).context("序列化 YunXi run status 失败")
 }
 
 #[cfg(unix)]
@@ -4558,11 +4616,18 @@ async fn ensure_daemon() -> Result<PathBuf> {
         .map(PathBuf::from)
         .or_else(|| std::env::current_exe().ok())
         .context("无法定位 yunxi-linux 可执行文件")?;
+    let (stdout, stderr) = match open_daemon_log() {
+        Ok(log) => (
+            std::process::Stdio::from(log.try_clone().context("复制 YunXi daemon 日志句柄失败")?),
+            std::process::Stdio::from(log),
+        ),
+        Err(_) => (std::process::Stdio::null(), std::process::Stdio::null()),
+    };
     let _ = std::process::Command::new(binary)
         .arg("daemon")
         .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
+        .stdout(stdout)
+        .stderr(stderr)
         .spawn();
     for _ in 0..40 {
         sleep(Duration::from_millis(50)).await;
@@ -4812,7 +4877,7 @@ async fn handle_connection(
         }
         ClientFrame::Status { run_id } => {
             let status = replays.lock().await.status(&run_id);
-            if let Some((status, next_seq, recoverable, created_at_unix_secs)) = status {
+            if let Some((status, next_seq, recoverable, created_at_unix_secs, error)) = status {
                 write_frame(
                     &mut writer,
                     &ServerFrame::RunStatus {
@@ -4821,6 +4886,7 @@ async fn handle_connection(
                         next_seq,
                         recoverable,
                         created_at_unix_secs,
+                        error,
                     },
                 )
                 .await?;
@@ -5186,18 +5252,72 @@ async fn run_detached_turn(
         model,
     )
     .await;
-    if result.is_err() {
+    if let Err(error) = &result {
+        let reason = sanitize_failure_reason(&error.to_string());
+        eprintln!("yunxi detached run {run_id} failed: {reason}");
         record_replay_frame(
             &replays,
             &run_id,
             ServerFrame::Done {
                 status: "failed".to_string(),
+                error: Some(reason),
             },
         )
         .await;
     }
     replays.lock().await.finish(&run_id);
     cancellations.lock().await.remove(&run_id);
+}
+
+#[cfg(unix)]
+fn sanitize_failure_reason(reason: &str) -> String {
+    let compact = reason.split_whitespace().collect::<Vec<_>>().join(" ");
+    let mut redacted = Vec::new();
+    let mut redact_next = false;
+    for token in compact.split_whitespace() {
+        if redact_next {
+            redacted.push("[REDACTED]".to_string());
+            redact_next = false;
+            continue;
+        }
+        if token.eq_ignore_ascii_case("bearer") {
+            redacted.push("Bearer".to_string());
+            redact_next = true;
+            continue;
+        }
+        let lower = token.to_ascii_lowercase();
+        if token.starts_with("sk-")
+            || lower.starts_with("api_key=")
+            || lower.starts_with("api-key=")
+            || lower.starts_with("token=")
+        {
+            if let Some((prefix, _)) = token.split_once('=') {
+                redacted.push(format!("{prefix}=[REDACTED]"));
+            } else {
+                redacted.push("[REDACTED]".to_string());
+            }
+            continue;
+        }
+        redacted.push(token.to_string());
+    }
+    redacted.join(" ").chars().take(512).collect()
+}
+
+#[cfg(unix)]
+fn failure_reason_from_events(events: &[AgentEvent]) -> Option<String> {
+    events.iter().rev().find_map(|event| match event {
+        AgentEvent::ProviderError {
+            provider,
+            status,
+            classification,
+            message,
+        } => Some(sanitize_failure_reason(&format!(
+            "provider={provider} status={status:?} classification={classification}: {message}"
+        ))),
+        AgentEvent::Error { message } => Some(sanitize_failure_reason(message)),
+        AgentEvent::Cancelled { reason } => reason.as_deref().map(sanitize_failure_reason),
+        _ => None,
+    })
 }
 
 #[cfg(unix)]
@@ -5267,6 +5387,16 @@ async fn run_detached_turn_inner(
         AgentRunStatus::Failed => "failed",
         AgentRunStatus::Cancelled => "cancelled",
     };
+    let error = (status == "failed")
+        .then(|| failure_reason_from_events(&result.events))
+        .flatten()
+        .or_else(|| {
+            (status == "failed")
+                .then(|| "YunXi Runtime 返回了失败状态，但没有提供诊断原因".to_string())
+        });
+    if let Some(reason) = &error {
+        eprintln!("yunxi detached run {run_id} failed: {reason}");
+    }
     if let Some(thread_id) = thread_id {
         sessions.lock().await.insert(session_key, thread_id);
     }
@@ -5275,6 +5405,7 @@ async fn run_detached_turn_inner(
         &run_id,
         ServerFrame::Done {
             status: status.to_string(),
+            error,
         },
     )
     .await;
@@ -5580,6 +5711,16 @@ async fn run_daemon_turn_inner<W: tokio::io::AsyncWrite + Unpin>(
         AgentRunStatus::Failed => "failed",
         AgentRunStatus::Cancelled => "cancelled",
     };
+    let error = (status == "failed")
+        .then(|| failure_reason_from_events(&result.events))
+        .flatten()
+        .or_else(|| {
+            (status == "failed")
+                .then(|| "YunXi Runtime 返回了失败状态，但没有提供诊断原因".to_string())
+        });
+    if let Some(reason) = &error {
+        eprintln!("yunxi attached run {run_id} failed: {reason}");
+    }
     if let Some(thread_id) = thread_id {
         sessions.lock().await.insert(session_key, thread_id);
     }
@@ -5589,6 +5730,7 @@ async fn run_daemon_turn_inner<W: tokio::io::AsyncWrite + Unpin>(
         &run_id,
         ServerFrame::Done {
             status: status.to_string(),
+            error,
         },
     )
     .await?;
@@ -5718,9 +5860,15 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn run_status_output_contains_only_lifecycle_fields() {
-        let output =
-            format_run_status_json("run-1".to_string(), RunStatus::Interrupted, 4, true, 123)
-                .expect("run status JSON");
+        let output = format_run_status_json(
+            "run-1".to_string(),
+            RunStatus::Interrupted,
+            4,
+            true,
+            123,
+            None,
+        )
+        .expect("run status JSON");
         let value: serde_json::Value = serde_json::from_str(&output).expect("valid JSON");
         assert_eq!(value["run_id"], "run-1");
         assert_eq!(value["status"], "interrupted");
@@ -5790,6 +5938,51 @@ mod tests {
     }
 
     #[cfg(unix)]
+    #[tokio::test]
+    async fn detached_failure_replays_a_reason_in_done_frame() {
+        let replays = Arc::new(Mutex::new(ReplayStore::default()));
+        assert!(replays.lock().await.begin_with_delivery("failed-run", true));
+        let cancellations = Arc::new(Mutex::new(HashMap::new()));
+        let sessions = Arc::new(Mutex::new(HashMap::new()));
+        let (control, _stream) = AgentRunControl::streaming_output_only();
+
+        run_detached_turn(
+            Arc::clone(&replays),
+            cancellations,
+            sessions,
+            "failed-run".to_string(),
+            control,
+            "request-1".to_string(),
+            "/tmp".to_string(),
+            "test".to_string(),
+            None,
+            true,
+            true,
+            None,
+            None,
+        )
+        .await;
+
+        let ReplayLookup::Events(events) = replays.lock().await.lookup("failed-run", 0) else {
+            panic!("failed detached run should remain replayable");
+        };
+        let done = events
+            .iter()
+            .find_map(|event| match &event.frame {
+                ServerFrame::Done { .. } => Some(&event.frame),
+                _ => None,
+            })
+            .expect("failed detached run should emit Done");
+        let serialized = serde_json::to_value(done).expect("serialize failed Done");
+        assert_eq!(serialized["status"], "failed");
+        assert!(
+            serialized["error"]
+                .as_str()
+                .is_some_and(|value| !value.is_empty())
+        );
+    }
+
+    #[cfg(unix)]
     #[test]
     fn terminal_polling_exits_before_opening_tty_when_cancelled() {
         let cancelled = AtomicBool::new(true);
@@ -5804,6 +5997,8 @@ mod tests {
         assert!(SYSTEMD_UNIT.contains("ExecStart=%h/.local/bin/yunxi-linux daemon"));
         assert!(SYSTEMD_UNIT.contains("WantedBy=default.target"));
         assert!(SYSTEMD_UNIT.contains("KillSignal=SIGTERM"));
+        assert!(SYSTEMD_UNIT.contains("EnvironmentFile=-%h/.config/yunxi/environment"));
+        assert!(SYSTEMD_UNIT.contains("PrivateTmp=no"));
         assert!(!SYSTEMD_UNIT.contains("User=root"));
         assert!(!SYSTEMD_UNIT.contains("ListenStream="));
     }
@@ -5833,6 +6028,7 @@ mod tests {
             "run-1",
             &ServerFrame::Done {
                 status: "completed".to_string(),
+                error: None,
             },
         );
         store.finish("run-1");
@@ -5891,6 +6087,7 @@ mod tests {
             "run-2",
             &ServerFrame::Done {
                 status: "completed".to_string(),
+                error: None,
             },
         );
         store.finish("run-2");
@@ -5931,6 +6128,7 @@ mod tests {
             "detached",
             &ServerFrame::Done {
                 status: "completed".to_string(),
+                error: None,
             },
         );
 
@@ -5992,14 +6190,15 @@ mod tests {
                 RunStatus::Interrupted,
                 2,
                 true,
-                restored.status("restart-run").unwrap().3
+                restored.status("restart-run").unwrap().3,
+                Some("daemon 在上一次运行完成前退出".to_string())
             ))
         );
         let ReplayLookup::Events(events) = restored.lookup("restart-run", 0) else {
             panic!("interrupted run should be replayable as a terminal result");
         };
         assert!(
-            matches!(events.last().map(|event| &event.frame), Some(ServerFrame::Done { status }) if status == "interrupted")
+            matches!(events.last().map(|event| &event.frame), Some(ServerFrame::Done { status, .. }) if status == "interrupted")
         );
         fs::remove_dir_all(directory).expect("remove test state");
     }

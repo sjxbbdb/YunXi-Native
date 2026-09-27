@@ -2215,6 +2215,7 @@ pub fn build_openai_request_json(
             .config
             .model
             .as_deref()
+            .filter(|value| !value.trim().is_empty())
             .unwrap_or(provider_config.model.as_str()),
         "messages": messages
     });

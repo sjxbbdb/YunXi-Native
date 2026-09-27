@@ -263,6 +263,27 @@ fn openai_request_json_uses_yunxi_provider_messages() {
 }
 
 #[test]
+fn openai_request_json_falls_back_for_blank_model_names() {
+    for blank_model in ["", " "] {
+        let request = ProviderRequest::new(
+            AgentConfig::new(PathBuf::from(".")).with_model(blank_model),
+            AgentInput::text("explain this project"),
+        );
+
+        let json = build_openai_request_json(
+            &ProviderConfig::openai_compatible("fallback-model"),
+            &request,
+        )
+        .expect("request json");
+
+        assert_eq!(
+            json["model"], "fallback-model",
+            "blank model: {blank_model:?}"
+        );
+    }
+}
+
+#[test]
 fn openai_request_json_can_disable_tools_for_a_single_turn() {
     let request = ProviderRequest::new(
         AgentConfig::new(PathBuf::from(".")),

@@ -504,6 +504,20 @@ systemctl --user daemon-reload
 systemctl --user enable --now yunxi-linux.service
 ```
 
+该 unit 会可选地读取 `~/.config/yunxi/environment`（对应
+`EnvironmentFile=-%h/.config/yunxi/environment`）；文件不存在时不会阻止服务启动。
+需要让 systemd 服务使用在线 Provider 时，创建该文件并限制为仅当前用户可读：
+
+```bash
+install -Dm600 /dev/null ~/.config/yunxi/environment
+printf '%s\n' 'DEEPSEEK_API_KEY=在此填入你的密钥' >> ~/.config/yunxi/environment
+```
+
+也可以在该文件中设置 `YUNXI_PROVIDER_API_KEY`、`OPENAI_API_KEY`、
+`YUNXI_PROVIDER_PROFILE`、`YUNXI_PROVIDER_BASE_URL` 或 `YUNXI_AGENT_MODEL`。
+不要把真实凭证提交到 Git；修改后执行 `systemctl --user restart yunxi-linux.service`。
+该 unit 保持宿主 `/tmp` 可见，以便 fish 从临时工作区提交请求时路径语义不变。
+
 没有 systemd 的环境不受影响，继续使用手动 daemon 或 fish hook 的按需启动。
 
 ## 数据位置

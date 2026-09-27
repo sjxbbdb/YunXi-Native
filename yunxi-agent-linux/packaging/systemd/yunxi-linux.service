@@ -4,13 +4,15 @@ After=default.target
 
 [Service]
 Type=simple
+EnvironmentFile=-%h/.config/yunxi/environment
 ExecStart=%h/.local/bin/yunxi-linux daemon
 Restart=on-failure
 RestartSec=2s
 KillSignal=SIGTERM
 TimeoutStopSec=10s
 NoNewPrivileges=yes
-PrivateTmp=yes
+# Fish may submit a workspace under /tmp; keep the host namespace visible.
+PrivateTmp=no
 UMask=0077
 
 [Install]
