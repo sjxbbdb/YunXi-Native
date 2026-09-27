@@ -536,9 +536,15 @@ def main() -> None:
         rounds = [item for item in stream if item.get("status") in {"idle", "processed", "error"}]
         stopped = [item for item in stream if item.get("status") == "stopped"]
         assert stopped and stopped[-1]["reason"] == "terminate", stream
-        assert rounds[0]["workspaces"][0]["jobs"], stream
-        assert rounds[1]["workspaces"][1]["jobs"], stream
-        assert rounds[0]["jobs_processed"] == 1 and rounds[1]["jobs_processed"] == 1, stream
+        # A fresh import may still be inside the provider queue's first
+        # attempt window when the watch process starts.  The first legal
+        # round can therefore be idle; assert fairness on the first two
+        # rounds that actually process work instead of assuming timing.
+        processed_rounds = [item for item in rounds if item.get("status") == "processed"]
+        assert len(processed_rounds) >= 2, stream
+        assert processed_rounds[0]["workspaces"][0]["jobs"], stream
+        assert processed_rounds[1]["workspaces"][1]["jobs"], stream
+        assert processed_rounds[0]["jobs_processed"] == 1 and processed_rounds[1]["jobs_processed"] == 1, stream
 
     print("knowledge-worker-fleet-smoke=ok")
 

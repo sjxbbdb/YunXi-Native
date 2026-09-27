@@ -124,6 +124,11 @@ pub(crate) enum LinuxShellCommand {
         #[arg(long)]
         model: Option<String>,
     },
+    /// Query the durable lifecycle state of one daemon run.
+    RunStatus {
+        /// Run id returned by the daemon in `run_accepted`.
+        run_id: String,
+    },
     /// Print the user-level systemd unit used to host the daemon.
     SystemdUnit,
     /// Run a bounded read-only Linux host probe.
@@ -564,6 +569,7 @@ pub(crate) async fn run_command(command: LinuxShellCommand) -> Result<()> {
             )
             .await
         }
+        LinuxShellCommand::RunStatus { run_id } => run_status(run_id).await,
         LinuxShellCommand::SystemdUnit => {
             print!("{SYSTEMD_UNIT}");
             Ok(())
@@ -4051,6 +4057,92 @@ async fn run_shell_intercept(
     bail!("fish 接管仅支持 Unix/Linux；Linux 构建不会在 Windows 上启用它")
 }
 
+async fn run_status(run_id: String) -> Result<()> {
+    #[cfg(unix)]
+    {
+        let socket = ensure_daemon().await?;
+        let stream = UnixStream::connect(&socket)
+            .await
+            .with_context(|| format!("连接 YunXi shell daemon 失败: {}", socket.display()))?;
+        let (mut reader, mut writer) = stream.into_split();
+        send_client_frame(
+            &mut writer,
+            &ClientFrame::Hello {
+                protocol_version: LINUX_IPC_PROTOCOL_VERSION,
+                client: "yunxi-run-status".to_string(),
+                capabilities: vec!["run_status".to_string()],
+            },
+        )
+        .await?;
+        let Some(ServerFrame::HelloAck {
+            protocol_version, ..
+        }) = read_frame_with_timeout(&mut reader, DAEMON_HANDSHAKE_TIMEOUT, "状态查询握手").await?
+        else {
+            bail!("YunXi shell daemon 在状态查询握手时断开连接");
+        };
+        if protocol_version != LINUX_IPC_PROTOCOL_VERSION {
+            bail!(
+                "YunXi shell IPC 版本不兼容：daemon={} client={}",
+                protocol_version,
+                LINUX_IPC_PROTOCOL_VERSION
+            );
+        }
+        send_client_frame(&mut writer, &ClientFrame::Status { run_id }).await?;
+        let Some(frame) =
+            read_frame_with_timeout(&mut reader, DAEMON_HANDSHAKE_TIMEOUT, "状态查询").await?
+        else {
+            bail!("YunXi shell daemon 在状态查询时断开连接");
+        };
+        match frame {
+            ServerFrame::RunStatus {
+                run_id,
+                status,
+                next_seq,
+                recoverable,
+                created_at_unix_secs,
+            } => println!(
+                "{}",
+                format_run_status_json(
+                    run_id,
+                    status,
+                    next_seq,
+                    recoverable,
+                    created_at_unix_secs,
+                )?
+            ),
+            ServerFrame::ResyncRequired { run_id, reason } => {
+                bail!("run {run_id} 不可用: {reason}");
+            }
+            ServerFrame::Error { message } => bail!("{message}"),
+            other => bail!("YunXi shell daemon 返回了意外的状态响应: {other:?}"),
+        }
+        Ok(())
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = run_id;
+        bail!("run-status 仅支持 Unix/Linux")
+    }
+}
+
+#[cfg(unix)]
+fn format_run_status_json(
+    run_id: String,
+    status: RunStatus,
+    next_seq: u64,
+    recoverable: bool,
+    created_at_unix_secs: u64,
+) -> Result<String> {
+    serde_json::to_string(&serde_json::json!({
+        "run_id": run_id,
+        "status": status,
+        "next_seq": next_seq,
+        "recoverable": recoverable,
+        "created_at_unix_secs": created_at_unix_secs,
+    }))
+    .context("序列化 YunXi run status 失败")
+}
+
 #[cfg(unix)]
 async fn ensure_daemon() -> Result<PathBuf> {
     let socket = socket_path()?;
@@ -5200,6 +5292,23 @@ mod tests {
         ));
         assert!(hook.contains("bind enter __yunxi_accept_line"));
         assert!(hook.contains("bind ctrl-j __yunxi_insert_newline"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn run_status_output_contains_only_lifecycle_fields() {
+        let output =
+            format_run_status_json("run-1".to_string(), RunStatus::Interrupted, 4, true, 123)
+                .expect("run status JSON");
+        let value: serde_json::Value = serde_json::from_str(&output).expect("valid JSON");
+        assert_eq!(value["run_id"], "run-1");
+        assert_eq!(value["status"], "interrupted");
+        assert_eq!(value["next_seq"], 4);
+        assert_eq!(value["recoverable"], true);
+        assert_eq!(value["created_at_unix_secs"], 123);
+        assert_eq!(value.as_object().expect("object").len(), 5);
+        assert!(!output.contains("prompt"));
+        assert!(!output.contains("cwd"));
     }
 
     #[cfg(unix)]
