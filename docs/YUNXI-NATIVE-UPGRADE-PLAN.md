@@ -708,9 +708,9 @@ Memory 与 Knowledge retrieval 的 `elapsed_ms`、选择/丢弃或证据数量�
 - 兼容第二个发行版前先冻结 Host/Tool adapter 接口。
 
 当前增量：已新增 `packaging/arch/yunxi-native/PKGBUILD` 与配套用户级 systemd unit，
-并将包源固定到最新行为代码 commit `0776de713f1b5ab5632be9fec8942adcbd319a47`；该提交
+并将包源固定到最新行为代码 commit `3ae1f55ad01b053047ce5245dd1a432bd5f1cbfb`；该提交
 基于包含混合召回确定性排序的 `af6dc1198e79df0e16636874ee4d04af13c1fbad`，并包含
-后续 fish 接管修复。`pkgver` 不变、`pkgrel=7`，从 workspace 构建 `/usr/bin/yunxi-linux`；
+后续 fish 接管修复。`pkgver` 不变、`pkgrel=8`，从 workspace 构建 `/usr/bin/yunxi-linux`；
 service 对 daemon 设置
 `MemoryHigh=1536M`、`MemoryMax=2G`、`TasksMax=128`、`LimitNOFILE=4096` 和
 `OOMPolicy=stop`；标准输出/错误进入用户级 journald，使用 `SyslogIdentifier=yunxi-native`
@@ -718,7 +718,7 @@ service 对 daemon 设置
 journald 统一管理，不修改全局日志配置。不自动启用服务、不创建 root daemon、不删除用户数据。配套的
 `package-smoke.sh` 可在无 Arch 环境中静态验证这些安装、安全和生命周期边界。
 已在并行 Arch Linux WSL 发行版中使用 `makepkg --clean --cleanbuild --noconfirm --syncdeps`
-完成 `pkgrel=7` 的真实构建与 `yunxi-agent-linux` release 测试；因 Arch
+完成 `pkgrel=8` 的真实构建与 `yunxi-agent-linux` release 测试；因 Arch
 makepkg 的 native `-flto=auto`/release LTO/LLD 与 bundled SQLite、ring native static
 link 冲突，PKGBUILD 移除该 native LTO、显式关闭 Rust release LTO 并固定 bfd linker；
 Windows/Ubuntu 构建路径不受影响。
