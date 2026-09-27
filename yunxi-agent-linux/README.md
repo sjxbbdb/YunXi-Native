@@ -395,6 +395,10 @@ IPC 已提供有界的回合回放：`Turn` 会先返回 `run_accepted`，随后
 回放；未知 run、过期游标、协议错误或连接在 `done` 前断开都会输出明确错误并以非零状态退出。
 
 ```bash
+# 启动 detached 回合；只输出一行 run_accepted JSON，然后立即退出
+./target/release/yunxi-linux run-detached '整理这个工作区的待办事项' \
+  --cwd "$PWD" --offline
+
 # 从头回放；每行是一个 event(run_id, seq, frame) JSON frame
 ./target/release/yunxi-linux run-follow <run_id>
 
@@ -405,8 +409,10 @@ IPC 已提供有界的回合回放：`Turn` 会先返回 `run_accepted`，随后
 ./target/release/yunxi-linux run-cancel <run_id>
 ```
 
-这两个入口沿用 daemon 的版本化 `Hello`、当前用户 Unix socket 权限和 5 秒握手限制，不保存
-prompt，也不实现 resume；`run-cancel` 只发送 `Cancel { run_id }`，取消后的终态仍需用
+这三个入口沿用 daemon 的版本化 `Hello`、当前用户 Unix socket 权限和 5 秒握手限制，不保存
+prompt，也不实现 resume。`run-detached` 会先 canonicalize `--cwd`，发送
+`delivery=detached_output_only`，只等待并输出 `run_accepted` 后退出，不自动 Follow；随后用
+`run-follow` 读取输出。`run-cancel` 只发送 `Cancel { run_id }`，取消后的终态仍需用
 `run-follow` 读取 `done(status=cancelled)`。
 
 在进入 Runtime 之前，daemon 还会对 `Turn` 的语义字段做独立上限校验，避免合法的大 frame

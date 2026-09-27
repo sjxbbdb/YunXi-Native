@@ -262,10 +262,10 @@ knowledge_fts
 - 完成用户级单例锁、socket 权限、PID/start-time 检查和 graceful shutdown；
 - 提供 `systemd --user` 单元与无 systemd 启动路径。
 
-当前已提供 `yunxi-linux systemd-unit` 输出模板、用户级服务示例、SIGTERM/SIGINT 清理路径、PID/start-time 锁校验，以及有界的事件游标回放；daemon lock metadata 采用临时文件同步后硬链接抢占，损坏 metadata 不会被直接删除。`delivery=detached_output_only` 支持活动回合的 backlog+live Follow，并通过 run 级 cancellation registry 接受独立连接的显式 `Cancel {run_id}`；默认 attached 回合仍在连接断开时 cancel+discard。daemon 现在还将 detached run 的元数据、事件游标和有界事件环写入当前用户的 `$XDG_STATE_HOME/yunxi/runs/`，重启时把未完成 run 结构化标记为 `interrupted`，追加终止事件，并通过 `Status {run_id}` 与 Follow 暴露 `recoverable=true`；这一步只恢复可观察性，不伪造 provider 继续执行，真正 resume 仍需显式设计。Linux CLI 已提供 `run-status <run_id>`、`run-follow <run_id> [--after-seq N]` 和 `run-cancel <run_id>`：Follow 逐行输出有界 JSON frame，支持 completed/interrupted 回放；Cancel 发送独立连接的 `Cancel {run_id}` 并输出 `cancel_accepted`，未知 run、断线和协议错误均以非零状态报告。
+当前已提供 `yunxi-linux systemd-unit` 输出模板、用户级服务示例、SIGTERM/SIGINT 清理路径、PID/start-time 锁校验，以及有界的事件游标回放；daemon lock metadata 采用临时文件同步后硬链接抢占，损坏 metadata 不会被直接删除。`delivery=detached_output_only` 支持活动回合的 backlog+live Follow，并通过 run 级 cancellation registry 接受独立连接的显式 `Cancel {run_id}`；默认 attached 回合仍在连接断开时 cancel+discard。daemon 现在还将 detached run 的元数据、事件游标和有界事件环写入当前用户的 `$XDG_STATE_HOME/yunxi/runs/`，重启时把未完成 run 结构化标记为 `interrupted`，追加终止事件，并通过 `Status {run_id}` 与 Follow 暴露 `recoverable=true`；这一步只恢复可观察性，不伪造 provider 继续执行，真正 resume 仍需显式设计。Linux CLI 已提供 `run-detached <prompt>`、`run-status <run_id>`、`run-follow <run_id> [--after-seq N]` 和 `run-cancel <run_id>`：`run-detached` canonicalize `--cwd` 后发送 `delivery=detached_output_only`，只等待并输出 `run_accepted` JSON，不保存 prompt 或自动 Follow；Follow 逐行输出有界 JSON frame，支持 completed/interrupted 回放；Cancel 发送独立连接的 `Cancel {run_id}` 并输出 `cancel_accepted`，未知 run、断线和协议错误均以非零状态报告。
 
 同时提供真实 Unix socket smoke：`yunxi-agent-linux/tests/daemon_ipc_smoke.sh` 在临时
-XDG 目录启动 release daemon，验证版本握手、Ping、CLI `run-follow`/`run-cancel`、未知回合 Follow 重同步、确定性
+XDG 目录启动 release daemon，验证版本握手、Ping、CLI `run-detached`/`run-follow`/`run-cancel`、未知回合 Follow 重同步、确定性
 Provider 配置失败与超限 `Turn` 请求的结构化 `Error` 帧，以及 SIGTERM 后 socket 清理；
 超限请求在 `run_accepted` 之前被拒绝，随后仍能 Ping，说明语义限额不会破坏 daemon 生命周期。
 它不需要模型凭据，也不执行真实系统工具。该 smoke 与单元测试互补，前者覆盖真实

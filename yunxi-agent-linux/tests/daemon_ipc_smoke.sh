@@ -163,6 +163,44 @@ with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
     assert frame["kind"] == "error", frame
     assert "未知或已结束" in frame["message"], frame
 
+# Exercise the real CLI detached entry point. It must canonicalize cwd, send
+# detached_output_only, print exactly one run_accepted JSON frame, and leave
+# output delivery to a subsequent run-follow invocation.
+cli_detached = subprocess.run(
+    [
+        binary_path,
+        "run-detached",
+        "cli detached smoke",
+        "--cwd",
+        "/tmp",
+        "--offline",
+    ],
+    capture_output=True,
+    text=True,
+)
+assert cli_detached.returncode == 0, (cli_detached.stdout, cli_detached.stderr)
+cli_detached_lines = cli_detached.stdout.splitlines()
+assert len(cli_detached_lines) == 1, cli_detached.stdout
+cli_detached_accepted = json.loads(cli_detached_lines[0])
+assert cli_detached_accepted["kind"] == "run_accepted", cli_detached_accepted
+cli_detached_run_id = cli_detached_accepted["run_id"]
+cli_detached_follow = subprocess.run(
+    [binary_path, "run-follow", cli_detached_run_id],
+    capture_output=True,
+    text=True,
+)
+assert cli_detached_follow.returncode == 0, (
+    cli_detached_follow.stdout,
+    cli_detached_follow.stderr,
+)
+cli_detached_events = [
+    json.loads(line) for line in cli_detached_follow.stdout.splitlines()
+]
+assert cli_detached_events, cli_detached_follow.stdout
+assert cli_detached_events[-1]["frame"] == {"kind": "done", "status": "completed"}, (
+    cli_detached_events
+)
+
 with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
     sock.settimeout(5)
     sock.connect(socket_path)

@@ -314,6 +314,11 @@ cargo build --release -p yunxi-agent-linux
 --offline          强制使用离线 Runtime
 ```
 
+Linux daemon 的 detached 回合链路可用 `run-detached <prompt>` 启动（支持 `--cwd`、
+`--session-id`、`--offline`/`--live`、`--provider`、`--model`）；它只输出一行
+`run_accepted` JSON，随后用 `run-follow <run_id>` 查看事件，用 `run-cancel <run_id>`
+取消活动回合。
+
 ## fish 接管
 
 安装全量接管 hook：

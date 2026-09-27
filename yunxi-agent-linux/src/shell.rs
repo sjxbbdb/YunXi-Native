@@ -142,6 +142,25 @@ pub(crate) enum LinuxShellCommand {
         /// Run id returned by the daemon in `run_accepted`.
         run_id: String,
     },
+    /// Start a detached run and print only its `run_accepted` JSON frame.
+    RunDetached {
+        /// Prompt submitted to the daemon; it is not persisted by the CLI.
+        prompt: String,
+        /// Workspace path sent to the daemon after canonicalization.
+        #[arg(long, default_value = ".")]
+        cwd: PathBuf,
+        /// Stable session identity to resume from in the daemon.
+        #[arg(long)]
+        session_id: Option<String>,
+        #[arg(long)]
+        offline: bool,
+        #[arg(long)]
+        live: bool,
+        #[arg(long)]
+        provider: Option<String>,
+        #[arg(long)]
+        model: Option<String>,
+    },
     /// Print the user-level systemd unit used to host the daemon.
     SystemdUnit,
     /// Run a bounded read-only Linux host probe.
@@ -585,6 +604,15 @@ pub(crate) async fn run_command(command: LinuxShellCommand) -> Result<()> {
         LinuxShellCommand::RunStatus { run_id } => run_status(run_id).await,
         LinuxShellCommand::RunFollow { run_id, after_seq } => run_follow(run_id, after_seq).await,
         LinuxShellCommand::RunCancel { run_id } => run_cancel(run_id).await,
+        LinuxShellCommand::RunDetached {
+            prompt,
+            cwd,
+            session_id,
+            offline,
+            live,
+            provider,
+            model,
+        } => run_detached(prompt, cwd, session_id, offline, live, provider, model).await,
         LinuxShellCommand::SystemdUnit => {
             print!("{SYSTEMD_UNIT}");
             Ok(())
@@ -4304,6 +4332,83 @@ async fn run_cancel(run_id: String) -> Result<()> {
     {
         let _ = run_id;
         bail!("run-cancel 仅支持 Unix/Linux")
+    }
+}
+
+/// Start a daemon-owned detached run. The CLI deliberately stops after the
+/// acceptance frame; callers that want output must reconnect with `run-follow`.
+async fn run_detached(
+    prompt: String,
+    cwd: PathBuf,
+    session_id: Option<String>,
+    offline: bool,
+    live: bool,
+    provider: Option<String>,
+    model: Option<String>,
+) -> Result<()> {
+    #[cfg(unix)]
+    {
+        let cwd =
+            fs::canonicalize(&cwd).with_context(|| format!("无法访问工作区: {}", cwd.display()))?;
+        let socket = ensure_daemon().await?;
+        let stream = UnixStream::connect(&socket)
+            .await
+            .with_context(|| format!("连接 YunXi shell daemon 失败: {}", socket.display()))?;
+        let (mut reader, mut writer) = stream.into_split();
+        send_client_frame(
+            &mut writer,
+            &ClientFrame::Hello {
+                protocol_version: LINUX_IPC_PROTOCOL_VERSION,
+                client: "yunxi-run-detached".to_string(),
+                capabilities: vec!["turn".to_string(), "detached_output_only".to_string()],
+            },
+        )
+        .await?;
+        let Some(ServerFrame::HelloAck {
+            protocol_version, ..
+        }) =
+            read_frame_with_timeout(&mut reader, DAEMON_HANDSHAKE_TIMEOUT, "detached 握手").await?
+        else {
+            bail!("YunXi shell daemon 在 detached 握手时断开连接");
+        };
+        if protocol_version != LINUX_IPC_PROTOCOL_VERSION {
+            bail!(
+                "YunXi shell IPC 版本不兼容：daemon={} client={}",
+                protocol_version,
+                LINUX_IPC_PROTOCOL_VERSION
+            );
+        }
+        send_client_frame(
+            &mut writer,
+            &ClientFrame::Turn {
+                request_id: new_request_id(),
+                cwd: cwd.display().to_string(),
+                prompt,
+                session_id,
+                offline,
+                live,
+                provider,
+                model,
+                delivery: DeliveryMode::DetachedOutputOnly,
+            },
+        )
+        .await?;
+        let Some(frame) =
+            read_frame_with_timeout(&mut reader, DAEMON_HANDSHAKE_TIMEOUT, "detached 接受响应")
+                .await?
+        else {
+            bail!("YunXi shell daemon 在 detached 回合接受前断开连接");
+        };
+        match frame {
+            accepted @ ServerFrame::RunAccepted { .. } => print_json_frame(&accepted),
+            ServerFrame::Error { message } => bail!("{message}"),
+            other => bail!("YunXi shell daemon 返回了意外的 detached 响应: {other:?}"),
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (prompt, cwd, session_id, offline, live, provider, model);
+        bail!("run-detached 仅支持 Unix/Linux")
     }
 }
 
