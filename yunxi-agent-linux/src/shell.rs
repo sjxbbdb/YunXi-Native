@@ -61,6 +61,7 @@ use linux_tools::LinuxToolCommand;
 
 const HOOK_MARKER: &str = "# YunXi Agent fish hook";
 const MAX_KNOWLEDGE_CATALOG_COMMANDS: usize = 32;
+const MAX_KNOWLEDGE_MAN_TOPICS: usize = 32;
 
 #[cfg(unix)]
 const MAX_TURN_PROMPT_BYTES: usize = 64 * 1024;
@@ -418,6 +419,25 @@ pub(crate) enum LinuxShellCommand {
         #[arg(long, default_value = ".")]
         cwd: PathBuf,
     },
+    /// Collect an explicit batch of local man pages into a candidate generation.
+    KnowledgeStageManCatalog {
+        /// Candidate generation returned by knowledge-generation-begin.
+        #[arg(long)]
+        generation: i64,
+        /// Man topic to collect; repeat for multiple topics. With no occurrences,
+        /// use the fixed Linux P1 topic catalog.
+        #[arg(long = "topic", action = ArgAction::Append)]
+        topics: Vec<String>,
+        /// Optional common man section, for example 1 or 8.
+        #[arg(long)]
+        section: Option<String>,
+        /// Distro/runtime version recorded as provenance; `auto` reads os-release.
+        #[arg(long, default_value = "auto")]
+        source_version: String,
+        /// Workspace whose knowledge database receives the staging documents.
+        #[arg(long, default_value = ".")]
+        cwd: PathBuf,
+    },
     /// Process one pending staging-generation embedding job and exit.
     KnowledgeGenerationWorker {
         /// Stable worker identity used for the SQLite lease.
@@ -655,6 +675,15 @@ pub(crate) async fn run_command(command: LinuxShellCommand) -> Result<()> {
             source_version,
             cwd,
         } => run_knowledge_stage_man(topic, generation, section, source_version, cwd).await,
+        LinuxShellCommand::KnowledgeStageManCatalog {
+            generation,
+            topics,
+            section,
+            source_version,
+            cwd,
+        } => {
+            run_knowledge_stage_man_catalog(generation, topics, section, source_version, cwd).await
+        }
         LinuxShellCommand::KnowledgeGenerationWorker {
             worker_id,
             max_jobs,
@@ -876,6 +905,97 @@ async fn run_knowledge_stage_man(
     let cancellation = yunxi_agent_core::AgentCancellationToken::new();
     let collected = knowledge_collector::collect_man_page(&request, &cwd, cancellation).await?;
     run_staged_collection_result(&cwd, generation, &collected, "linux.man")
+}
+
+async fn run_knowledge_stage_man_catalog(
+    generation: i64,
+    topics: Vec<String>,
+    section: Option<String>,
+    source_version: String,
+    cwd: PathBuf,
+) -> Result<()> {
+    let cwd = canonical_knowledge_cwd(cwd)?;
+    let topics = if topics.is_empty() {
+        knowledge_collector::P1_MAN_TOPICS
+            .iter()
+            .map(|topic| (*topic).to_string())
+            .collect::<Vec<_>>()
+    } else {
+        topics
+    };
+    if topics.len() > MAX_KNOWLEDGE_MAN_TOPICS {
+        bail!("knowledge-stage-man-catalog accepts at most {MAX_KNOWLEDGE_MAN_TOPICS} topics");
+    }
+    let requested_topics = topics.clone();
+    let source_version = resolve_source_version(&source_version);
+    let mut results = Vec::with_capacity(topics.len());
+    for topic in topics {
+        let request = knowledge_collector::ManPageRequest {
+            topic: topic.clone(),
+            section: section.clone(),
+            source_version: source_version.clone(),
+        };
+        let cancellation = yunxi_agent_core::AgentCancellationToken::new();
+        let mut result = match knowledge_collector::collect_man_page(&request, &cwd, cancellation)
+            .await
+        {
+            Ok(collected) => staged_collection_result(&cwd, generation, &collected, "linux.man")
+                .unwrap_or_else(|error| {
+                    serde_json::json!({
+                        "schema_version": 1,
+                        "collector": "linux.man",
+                        "topic": topic.clone(),
+                        "generation": generation,
+                        "status": "failed",
+                        "error": error.to_string(),
+                        "active_generation_unchanged": true,
+                    })
+                }),
+            Err(error) => serde_json::json!({
+                "schema_version": 1,
+                "collector": "linux.man",
+                "topic": topic.clone(),
+                "generation": generation,
+                "status": "failed",
+                "error": error.to_string(),
+                "active_generation_unchanged": true,
+            }),
+        };
+        result["topic"] = serde_json::Value::String(topic);
+        results.push(result);
+    }
+    let ok = results
+        .iter()
+        .filter(|result| result["status"] == "ok")
+        .count();
+    let unavailable = results
+        .iter()
+        .filter(|result| result["status"] == "unavailable")
+        .count();
+    let failed = results
+        .iter()
+        .filter(|result| result["status"] == "failed")
+        .count();
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&serde_json::json!({
+            "schema_version": 1,
+            "collector": "linux.man",
+            "generation": generation,
+            "source_version": source_version,
+            "section": section,
+            "topics": requested_topics,
+            "results": results,
+            "summary": {
+                "total": ok + unavailable + failed,
+                "ok": ok,
+                "unavailable": unavailable,
+                "failed": failed,
+            },
+            "active_generation_unchanged": true,
+        }))?
+    );
+    Ok(())
 }
 
 fn run_staged_collection_result(

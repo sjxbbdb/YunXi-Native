@@ -40,6 +40,25 @@ pub const P0_HELP_COMMANDS: &[&str] = &[
     "sed",
     "tar",
 ];
+/// Fixed P1 man-topic catalog used when the batch collector receives no topics.
+/// Missing pages remain structured unavailable/failed results and are never
+/// fabricated as knowledge.
+pub const P1_MAN_TOPICS: &[&str] = &[
+    "bash",
+    "fish",
+    "git",
+    "systemctl",
+    "ip",
+    "awk",
+    "cat",
+    "cp",
+    "find",
+    "grep",
+    "ls",
+    "rm",
+    "sed",
+    "tar",
+];
 const MAX_TOKEN_CHARS: usize = 128;
 
 /// Classify the command described by a knowledge document, not the safety of
@@ -573,6 +592,22 @@ mod tests {
             assert!(
                 validate_help_request(&CommandHelpRequest {
                     command: (*command).to_string(),
+                    source_version: "ubuntu-24.04".to_string(),
+                })
+                .is_ok()
+            );
+        }
+    }
+
+    #[test]
+    fn p1_man_catalog_is_explicit_and_token_safe() {
+        assert_eq!(P1_MAN_TOPICS.len(), 14);
+        assert!(P1_MAN_TOPICS.windows(2).all(|pair| pair[0] != pair[1]));
+        for topic in P1_MAN_TOPICS {
+            assert!(
+                validate_request(&ManPageRequest {
+                    topic: (*topic).to_string(),
+                    section: Some("1".to_string()),
                     source_version: "ubuntu-24.04".to_string(),
                 })
                 .is_ok()

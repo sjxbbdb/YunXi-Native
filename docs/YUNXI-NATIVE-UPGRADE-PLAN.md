@@ -448,7 +448,9 @@ Linux CLI 已暴露这条安全管道：`knowledge-generation-begin` 创建候�
 `knowledge-stage-catalog` 批量收集显式指定的 `--command`，省略该参数时使用固定的
 Linux P0 help allowlist。它复用单命令 collector 和 staging 边界，逐项输出
 `ok`/`unavailable`/`failed`，失败项不写 staging；它不会扫描任意目录、自动激活
-generation 或改写长期记忆。随后由 `knowledge-generation-worker`
+generation 或改写长期记忆。P1 man 文档也提供对应的
+`knowledge-stage-man-catalog`，使用固定主题目录或显式 `--topic`，共享相同的失败隔离与
+generation 边界。随后由 `knowledge-generation-worker`
 有界处理候选 embedding 任务，`knowledge-generation-readiness` 输出完整性诊断，
 `knowledge-generation-seal` 在候选完整后把 manifest 标记为 ready，最后由
 `knowledge-generation-activate` 在显式确认后切换 active 指针；未 ready 的候选不会被激活，

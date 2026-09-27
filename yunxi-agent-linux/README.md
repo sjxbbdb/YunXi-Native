@@ -224,6 +224,16 @@ FTS/向量代际一致性和 `man` 来源：
 bash yunxi-agent-linux/tests/knowledge_catalog_smoke.sh ./target/release/yunxi-linux
 ```
 
+本地 man 文档也支持批量进入候选 generation：
+
+```bash
+./target/release/yunxi-linux knowledge-stage-man-catalog \\
+  --generation <N> --section 1 --topic fish --topic bash --cwd .
+```
+
+不传 `--topic` 时使用固定 P1 主题目录；缺少 man/page 只返回
+`unavailable`/`failed`，不会伪造文档或中止同批其他主题。
+
 `knowledge-space-list` 只列出空间元数据，不读取文档正文、chunk 或向量；它用于确认
 当前 workspace 的 system/project/private 边界，输出按 `space_id` 稳定排序。
 
