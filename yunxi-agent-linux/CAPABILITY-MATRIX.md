@@ -15,7 +15,7 @@
 | 能力 | Miyu | YunXi | Linux 决策 |
 |---|---|---|---|
 | TUI 对话 | 已有，普通模式与 Dev 模式 | 已有，统一 Runtime 事件流 | 已接入，保留 YunXi TUI |
-| fish 接管 | 已有，完整 Enter hook、原始首词判断、多行、运行时命令识别、兜底 | 主项目此前没有 Linux 原生 fish 宿主 | 已有实验实现；复杂语法和完整 PTY 矩阵仍待验收 |
+| fish 接管 | 已有，完整 Enter hook、多行、运行时命令识别 | Linux-native all-takeover hook | 已接入；每个非空提交统一交给 YunXi，fish 只保留编辑、历史、补全和空输入 |
 | zsh 接管 | 已有，单行集成 | 暂无 Linux 版实现 | 后续可移植，不与 fish 共用未经验证的 hook |
 | bash 接管 | 已有，单行集成 | 暂无 Linux 版实现 | 后续可移植 |
 | Web UI | 已有 | 已有 | 暂不纳入 Linux 版 |
@@ -27,11 +27,11 @@
 
 | 能力 | Miyu | YunXi 当前状态 | 差距/边界 |
 |---|---|---|---|
-| 原始首词分类 | `commandline --tokens-raw`，避免命令替换和 glob 副作用 | 已按同样思路实现 | 需要继续覆盖更多 fish 语法边界 |
-| 普通命令放行 | 可识别命令原样交给 fish | 已实现 | 保持 fish 作为最终执行者 |
-| 自然语言转发 | 未识别命令转 daemon | 已实现 | 由 YunXi Runtime 处理人格、记忆和工具 |
-| `fish_command_not_found` | 第二道兜底 | 已实现保守分支 | 需要覆盖复合命令、未知命令和 127 退出码 |
-| 多行输入 | 完整处理 | 基础实现 | 后续补齐提示符重绘和复杂语法判断 |
+| 原始首词分类 | `commandline --tokens-raw`，避免命令替换和 glob 副作用 | 不再作为交互路由 | 仅可作为离线兼容诊断；fish hook 不得调用 |
+| 普通命令放行 | 可识别命令原样交给 fish | 由 YunXi Runtime 决定是否执行 | 不在 fish hook 内本地放行，避免交互路径分裂 |
+| 自然语言转发 | 未识别命令转 daemon | 所有非空提交统一转 daemon | 由 YunXi Runtime 处理人格、记忆、审批和工具 |
+| `fish_command_not_found` | 第二道兜底 | 不参与接管路径 | 非空输入在 Enter hook 阶段已交给 YunXi，不依赖 127 退出码 |
+| 多行输入 | 完整处理 | 已接入基础提交路径 | 继续补齐提示符重绘；不重新引入命令分类 |
 | Ctrl+J 换行 | 已有 | 已接入 | 保持一致 |
 | 剪贴板/附件 | fish hook 内置粘贴处理 | 暂无 Linux 版附件协议 | 需要先定义 YunXi 附件模型 |
 | 历史记录 | 接管输入可写入 Miyu 历史 | Runtime 有会话历史 | 需要统一 fish 历史与 YunXi 会话记录的边界 |

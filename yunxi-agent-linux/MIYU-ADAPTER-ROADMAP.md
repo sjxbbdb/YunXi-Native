@@ -37,8 +37,8 @@ fish / TUI / Linux tools / daemon host
 
 ### 第一层：重写 Linux 宿主适配层
 
-- fish Enter hook 与 `commandline --tokens-raw` 分类；
-- `fish_command_not_found` 兜底；
+- fish Enter hook：保留 fish 编辑体验，但把每个非空提交统一交给 YunXi；
+- 不采用 Miyu 的首词分类或 `fish_command_not_found` 作为交互分流；旧参数仅保留兼容性；
 - 用户级 Unix socket daemon；
 - 协议化的审批、用户输入、取消和事件流；
 - 会话 origin、Follow、Cancel、断线续跑；
