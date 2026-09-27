@@ -293,7 +293,9 @@ daemon 还对 `Hello` 与握手后的首个请求设置 5 秒超时，防止半�
 当前同时提供显式 `fish-init --takeover`：它保留 fish 的行编辑和 prompt，但把每个非空
 提交直接交给 YunXi Runtime，不再依赖本地首词分类；默认 `fish-init` 仍保持保守模式，
 因此用户可以在两种交互哲学之间切换。真实 `fish_pty_smoke.sh --takeover` 验证命令、
-中文和多行输入均进入 `shell-intercept`，且没有 `shell-classify` 调用。
+中文和多行输入均进入 `shell-intercept`，且没有 `shell-classify` 调用；空提交和编辑态
+Ctrl+C 仍由 fish 本地处理。接管范围明确限定为交互式 fish 的非空提交，不包括非交互式
+脚本或其他 shell；daemon/Runtime 不可用时不静默回退执行原始输入。
 
 **门槛**：普通命令零误拦截，自然语言零重复执行，PTY resize/中断/退出码一致。
 

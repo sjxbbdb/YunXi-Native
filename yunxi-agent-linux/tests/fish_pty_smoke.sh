@@ -140,6 +140,14 @@ read_until(b"> ")
 if os.environ.get("YUNXI_TEST_FISH_TAKEOVER") == "--takeover":
     # Takeover mode deliberately sends shell-looking input to YunXi too. The
     # fish process remains the line editor and prompt host; YunXi owns routing.
+    # Empty submits and Ctrl+C while editing stay local to fish; takeover
+    # applies to submitted buffers, not every keypress.
+    os.write(fd, b"\r")
+    read_until(b"> ")
+    os.write(fd, b"draft")
+    time.sleep(0.1)
+    os.write(fd, b"\x03")
+    read_until(b"> ")
     os.write(fd, b"ls -la\r")
     read_until(b"[yunxi intercepted] ls -la")
     read_until(b"> ")
@@ -160,6 +168,9 @@ if os.environ.get("YUNXI_TEST_FISH_TAKEOVER") == "--takeover":
     assert any(line.endswith(":ls -la") for line in lines if line.startswith("intercept:")), lines
     assert any(line.endswith(":你好，帮我整理一下") for line in lines if line.startswith("intercept:")), lines
     assert any(line.endswith(":第一行\\n第二行") for line in lines if line.startswith("intercept:")), lines
+    intercepted = [line for line in lines if line.startswith("intercept:")]
+    assert len(intercepted) == 3, lines
+    assert not any(line.endswith(":draft") or line.endswith(":") for line in intercepted), lines
     assert not any(line.startswith("classify:") for line in lines), lines
     print("fish-takeover-pty-smoke=ok")
     raise SystemExit(0)

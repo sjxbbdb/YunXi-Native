@@ -305,7 +305,12 @@ git status                     → 交给 fish
 解释一下这个编译错误             → 交给 YunXi
 ```
 
-当前 hook 仍处于 Linux-native foundation 阶段。已覆盖 fish 运行时 alias/function、中文自然语言、Ctrl+J 多行的真实 PTY smoke；真正发布前还必须通过 glob/命令替换、`command_not_found`、嵌套命令返回 127、终端尺寸变化、PTY 断线和 daemon 重启测试。
+当前 hook 仍处于 Linux-native foundation 阶段。接管范围是交互式 fish 的“非空提交”，
+不是每个按键、非交互式脚本或其他 shell；空提交和编辑态 Ctrl+C 仍由 fish 本地处理。
+真实 PTY smoke 已覆盖 takeover 下的普通命令、中文、多行、空提交，以及保守模式下的
+alias/function、命令替换、重定向、管道、`command_not_found`、终端尺寸变化、退出码和取消。
+daemon 或 Runtime 不可用时不会静默把 takeover 输入交回 fish；应先修复 YunXi 运行时或
+切回不带 `--takeover` 的保守 hook。
 
 ## systemd 用户服务
 
