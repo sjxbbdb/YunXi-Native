@@ -618,6 +618,12 @@ Windows Runtime 路径。
 `yunxi-agent-linux/tests/performance_smoke.sh`，对 release 进程启动、临时 daemon
 就绪耗时和 `/proc` RSS 输出无硬阈值 JSON 基线；它不替代目标 Arch 主机的实测。
 
+本增量新增 packaging/arch/yunxi-native/lifecycle-smoke.sh，在临时 package root
+中模拟安装、升级迁移失败时保持旧 manifest、成功升级、显式回滚和卸载。它验证
+卸载只移除包文件，不删除工作区 .yunxi、长期记忆、知识库、XDG 调度状态或 fish
+hook，也验证 smoke 本身不会隐式 enable 服务。该脚本固化了事务边界，但不冒充真实
+pacman/Arch 主机安装、迁移和回滚验收。
+
 **门槛**：冷启动/热查询/常驻 RSS/p95 延迟有基线；安装、升级、回滚和卸载可重复执行。
 
 ## 7. 风险与回滚

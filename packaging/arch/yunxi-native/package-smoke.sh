@@ -7,6 +7,7 @@ repo_root=$(cd -- "$script_dir/../../.." && pwd)
 service="$script_dir/yunxi-linux.service"
 worker_service="$script_dir/yunxi-knowledge-worker@.service"
 preflight="$script_dir/preflight.sh"
+lifecycle_smoke="$script_dir/lifecycle-smoke.sh"
 
 fail() {
   printf 'package-smoke: %s\n' "$1" >&2
@@ -17,6 +18,7 @@ fail() {
 [[ -f "$service" ]] || fail "missing systemd user service"
 [[ -f "$worker_service" ]] || fail "missing knowledge worker template"
 [[ -f "$preflight" ]] || fail "missing packaging preflight"
+[[ -f "$lifecycle_smoke" ]] || fail "missing lifecycle smoke"
 
 grep -Eq "^pkgname=yunxi-native$" "$pkgbuild" \
   || fail "PKGBUILD package name must be yunxi-native"

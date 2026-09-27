@@ -23,6 +23,12 @@ bash packaging/arch/yunxi-native/preflight-smoke.sh
 bash packaging/arch/yunxi-native/package-smoke.sh
 ```
 
+发行生命周期的临时 root 契约也可以独立验收。它模拟安装、升级失败回滚、成功升级、
+显式回滚和卸载，不调用真实 pacman 或 systemctl，并验证用户的 .yunxi 数据、XDG
+调度状态和 fish hook 不会被卸载删除：
+
+    bash packaging/arch/yunxi-native/lifecycle-smoke.sh
+
 在具备 `systemd-analyze` 的 Linux 环境中，还可以验证 user service 的完整语法和
 绝对 `ExecStart` 路径；脚本只使用临时 root，不启动服务：
 
