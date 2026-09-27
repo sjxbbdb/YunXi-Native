@@ -6,29 +6,34 @@
 
 ## 范围
 
-- 20 个 Linux 命令/工具：systemd、shell、Git、包管理、进程、内存、磁盘、文件、文本、归档、权限和网络等类别；
+- 22 个 Linux 命令/工具：systemd、shell、Git、包管理、进程、内存、磁盘、文件、文本、归档、权限和网络等类别；
 - 每个命令 10 个自然语言意图：解释、状态、日志、网络、权限、磁盘、进程、包管理、安全使用和故障排查；
-- 共 200 条确定性任务；每条任务都指定一个期望文档，并以同一 `system-linux` active generation 查询；
+- 共 220 条确定性任务；每条任务都指定一个期望文档，并以同一 `system-linux` active generation 查询；
+- 夹具使用稳定的命令帮助意图和固定 provenance/risk 元数据，不写入运行时 workspace 或用户知识库；
 - 评测只验证知识检索，不执行检索结果，也不测试 Provider 生成内容。
 
 ## 指标
 
-| 指标 | 结果 |
-| --- | ---: |
-| 任务总数 | 200 |
-| Recall@1 | 200/200 = 1.00 |
-| Recall@5 | 200/200 = 1.00 |
-| 运行方式 | `cargo test -p yunxi-agent-storage --test knowledge_recall_baseline_tests --locked` |
+| 模式 | Recall@1 | Recall@5 | MRR | source accuracy | version accuracy | risk-label accuracy |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| lexical / FTS | 220/220 = 1.000 | 220/220 = 1.000 | 1.000 | 1.000 | 1.000 | 1.000 |
+| vector-only (`yunxi-local-chargram-v1`) | 0.495 | 0.886 | 0.642 | 1.000 | 1.000 | 0.659 |
+| hybrid (FTS + cosine) | 220/220 = 1.000 | 220/220 = 1.000 | 1.000 | 1.000 | 1.000 | 1.000 |
 
-同一夹具还会用 `yunxi-local-chargram-v1` 建立独立向量并运行相同的 200 条查询。当前
-向量-only 基线为 Recall@1 `99/200 = 0.495`、Recall@5 `180/200 = 0.900`；这是一条
-防回归基线，不冒充最终质量门。运行时使用 FTS + 向量的混合召回，后续更换 embedding
-模型或 rerank 策略时必须重新报告并解释这两个指标。
+固定回归阈值为：所有模式的 source/version accuracy `>= 0.99`；lexical 的 Recall@5/MRR/risk
+分别为 `1.00/1.00/0.99`；vector-only 分别为 `0.85/0.60/0.60`；hybrid 分别为
+`0.95/0.85/0.90`。这些是离线回归门，不是生产质量 SLA；向量-only 的结果明确保留为
+当前字符 n-gram provider 的防回归基线。运行时采用 FTS + 向量的混合召回，后续替换
+embedding 模型或 rerank 策略时必须重新报告并解释全部指标。
 
-该结果是本地字符/FTS 基线的回归门，不代表真实发行版文档上的最终质量，也不替代后续
-人工整理的 200+ 真实任务集。下一步应加入真实 `man`/`--help` 文本、版本差异、危险命令
-风险标签、撤回和权限隔离样本，并报告 MRR、source accuracy、risk-label accuracy 与
-延迟分位数。
+同一评测还验证知识边界：generation 更新后旧文档不可见（freshness `1/1`）、不同 owner
+无法读取 private 空间（isolation `1/1`），以及撤回后 FTS/向量均清理且 tombstone 阻止
+重新写入（retraction `3/3`）。这组结果仍然不代表真实发行版文档上的最终质量；下一步
+应加入真实 `man`/`--help` 文本、版本差异和更宽的危险命令样本，并补充延迟分位数回归。
+
+运行命令（`--nocapture` 用于显示指标）：
+
+`cargo test -p yunxi-agent-storage --test knowledge_recall_baseline_tests --locked -- --nocapture`
 
 ## WSL 查询延迟观测
 
