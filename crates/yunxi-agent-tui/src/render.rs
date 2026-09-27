@@ -11,7 +11,7 @@ use crate::text_layout::{TextLayout, WrapPolicy};
 use crate::transcript_layout::build_wrapped_transcript;
 use crate::transcript_layout::build_wrapped_transcript_with_styles;
 use ratatui::Frame;
-use ratatui::layout::{Position, Rect};
+use ratatui::layout::{Alignment, Position, Rect};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 
@@ -189,6 +189,10 @@ fn render_transcript(
     scrollbar_area: Rect,
     styles: TuiStyleSet,
 ) {
+    if !app.has_user_round() {
+        render_welcome(frame, app, area, inner, styles);
+        return;
+    }
     let wrapped = build_wrapped_transcript_with_styles(
         app.transcript().cells(),
         inner.width as usize,
@@ -225,6 +229,53 @@ fn render_transcript(
             styles,
         );
     }
+}
+
+fn render_welcome(
+    frame: &mut Frame<'_>,
+    app: &YunxiTuiApp,
+    area: Rect,
+    inner: Rect,
+    styles: TuiStyleSet,
+) {
+    let mode = app
+        .provider_live()
+        .map(|provider_live| if provider_live { "live" } else { "offline" })
+        .unwrap_or("starting");
+    let lines = vec![
+        Line::from(Span::styled(
+            "YUNXI",
+            styles.style(TuiSemanticStyle::Header),
+        )),
+        Line::from(Span::styled(
+            "自然语言终端",
+            styles.style(TuiSemanticStyle::Subheader),
+        )),
+        Line::from(""),
+        Line::from(Span::styled(
+            "把目标交给云熙，直接开始。",
+            styles.style(TuiSemanticStyle::Muted),
+        )),
+        Line::from(Span::styled(
+            format!("{mode} · /help  /capabilities  /status"),
+            styles.style(TuiSemanticStyle::Footer),
+        )),
+    ];
+    let welcome = Paragraph::new(lines).alignment(Alignment::Center).block(
+        Block::default()
+            .title(Span::styled(
+                "YunXi | ready",
+                styles.style(TuiSemanticStyle::Subheader),
+            ))
+            .borders(Borders::ALL)
+            .border_style(if app.focus_target() == FocusTarget::History {
+                styles.style(TuiSemanticStyle::Focus)
+            } else {
+                styles.style(TuiSemanticStyle::Border)
+            }),
+    );
+    frame.render_widget(welcome, area);
+    let _ = inner;
 }
 
 fn render_transcript_scrollbar(
@@ -515,6 +566,29 @@ mod tests {
             .draw(|frame| render_tui_frame_with_styles(frame, app, styles))
             .expect("draw");
         format!("{:?}", terminal.backend().buffer())
+    }
+
+    #[test]
+    fn empty_session_renders_welcome_card_until_first_real_round() {
+        let mut app = YunxiTuiApp::default();
+        app.set_banner(banner());
+        app.push_warning("[offline] 使用本地静态 Runtime");
+        app.push_notice("linux", "Linux 原生 TUI");
+
+        let welcome = render_app(&app, 80, 24);
+        assert!(welcome.contains("YUNXI"));
+        assert!(welcome.contains("自然语言终端"));
+        assert!(welcome.contains("/capabilities"));
+        assert!(!welcome.contains("Ready."));
+
+        app.push_user("先查看当前目录");
+        let transcript = render_app(&app, 80, 24);
+        assert!(!transcript.contains("YUNXI"));
+        assert!(transcript.contains("[user] 先查看当前目录"));
+
+        app.clear_transcript();
+        let cleared = render_app(&app, 80, 24);
+        assert!(cleared.contains("YUNXI"));
     }
 
     fn render_full_frame_snapshot(app: &YunxiTuiApp, width: u16, height: u16) -> String {

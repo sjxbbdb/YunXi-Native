@@ -1,5 +1,5 @@
 00|YunXi v2.3.3 | deepseek live
-01|new output below | cells=38 | provider=deepseek
+01|new output below | live · deepseek | running
 02|────────────────────────────────────────────────────────────────────────────────
 03|┌Transcript 29-43 / 51 | new output below──────────────────────────────────────┐
 04|│[notice] history 28: stable transcript row for viewport evidence              ^

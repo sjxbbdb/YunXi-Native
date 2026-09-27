@@ -83,6 +83,7 @@ impl DebugBuffer {
         self.entries.last()
     }
 
+    #[cfg(test)]
     pub(crate) fn status(&self) -> String {
         format!(
             "debug={} hidden={}",

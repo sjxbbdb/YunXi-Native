@@ -1,6 +1,6 @@
 === normal-companion/main 100x30 style=full ===
 00|YunXi Agent v2.1.0 | deepseek offline | model=deepseek-chat
-01|tail | cells=2 | backend=yunxi | source=offline_static | debug off
+01|tail | offline · deepseek | ready
 02|────────────────────────────────────────────────────────────────────────────────────────────────────
 03|┌Transcript | tail─────────────────────────────────────────────────────────────────────────────────┐
 04|│[user] 请用三点总结今天的开发进度。                                                               │
@@ -31,7 +31,7 @@
 29|└──────────────────────────────────────────────────────────────────────────────────────────────────┘
 === normal-companion/details 100x30 style=full ===
 00|YunXi Agent v2.1.0 | deepseek offline | model=deepseek-chat
-01|tail | cells=2 | backend=yunxi | source=offline_static | debug off
+01|tail | offline · deepseek | ready
 02|────────────────────────────────────────────────────────────────────────────────────────────────────
 03|┌Details | Esc close | wheel/PgUp/PgDown scroll────────────────────────────────────────────────────┐
 04|│debug #1 reasoning                                                                                │
@@ -63,7 +63,7 @@
 
 === long-stream-markdown-cjk/main 58x18 style=full ===
 00|YunXi v2.1.0 | deepseek live
-01|tail | cells=2 | provider=deepseek
+01|tail | live · deepseek | running
 02|──────────────────────────────────────────────────────────
 03|┌Transcript 100-108 / 108 | tail─────────────────────────┐
 04|│    - 路径：`C:/Workspace/云汐/阶段-16`                 ^
@@ -82,7 +82,7 @@
 17|└────────────────────────────────────────────────────────┘
 === long-stream-markdown-cjk/details 58x18 style=full ===
 00|YunXi v2.1.0 | deepseek live
-01|tail | cells=2 | provider=deepseek
+01|tail | live · deepseek | running
 02|──────────────────────────────────────────────────────────
 03|┌Details | Esc close | wheel/PgUp/PgDown scroll──────────┐
 04|│debug #1 reasoning                                      │
@@ -102,7 +102,7 @@
 
 === tool-approval-failure/main 80x24 style=full ===
 00|YunXi v2.1.0 | deepseek live
-01|tail | cells=2 | provider=deepseek
+01|tail | live · deepseek | ready
 02|────────────────────────────────────────────────────────────────────────────────
 03|┌Transcript | tail─────────────────────────────────────────────────────────────┐
 04|│[user] 检查生成目录。                                                         │
@@ -127,7 +127,7 @@
 23|└──────────────────────────────────────────────────────────────────────────────┘
 === tool-approval-failure/details 80x24 style=full ===
 00|YunXi v2.1.0 | deepseek live
-01|tail | cells=2 | provider=deepseek
+01|tail | live · deepseek | ready
 02|────────────────────────────────────────────────────────────────────────────────
 03|┌Details | Esc close | wheel/PgUp/PgDown scroll────────────────────────────────┐
 04|│debug #2 tool output                                                          │
@@ -153,7 +153,7 @@
 
 === history-scroll-resize/main 100x30 style=ansi16 ===
 00|YunXi Agent v2.1.0 | deepseek offline | model=deepseek-chat
-01|new output below | cells=37 | backend=yunxi | source=offline_static | debug off
+01|new output below | offline · deepseek | ready
 02|────────────────────────────────────────────────────────────────────────────────────────────────────
 03|┌Transcript 17-37 / 37 | new output below──────────────────────────────────────────────────────────┐
 04|│[notice] 历史记录 16：窗口缩放后保持当前锚点。                                                    ^
@@ -184,7 +184,7 @@
 29|└──────────────────────────────────────────────────────────────────────────────────────────────────┘
 === history-scroll-resize/details 100x30 style=ansi16 ===
 00|YunXi Agent v2.1.0 | deepseek offline | model=deepseek-chat
-01|new output below | cells=37 | backend=yunxi | source=offline_static | debug off
+01|new output below | offline · deepseek | ready
 02|────────────────────────────────────────────────────────────────────────────────────────────────────
 03|┌Details | Esc close | wheel/PgUp/PgDown scroll────────────────────────────────────────────────────┐
 04|│debug #1 reasoning                                                                                │
@@ -216,7 +216,7 @@
 
 === stream-fault-recovery/main 100x30 style=full ===
 00|YunXi Agent v2.1.0 | deepseek live | model=deepseek-chat
-01|tail | cells=3 | backend=yunxi | source=fixture_live | debug off
+01|tail | live · deepseek | ready
 02|────────────────────────────────────────────────────────────────────────────────────────────────────
 03|┌Transcript | tail─────────────────────────────────────────────────────────────────────────────────┐
 04|│[user] 验证断流恢复。                                                                             │
@@ -247,7 +247,7 @@
 29|└──────────────────────────────────────────────────────────────────────────────────────────────────┘
 === stream-fault-recovery/details 100x30 style=full ===
 00|YunXi Agent v2.1.0 | deepseek live | model=deepseek-chat
-01|tail | cells=3 | backend=yunxi | source=fixture_live | debug off
+01|tail | live · deepseek | ready
 02|────────────────────────────────────────────────────────────────────────────────────────────────────
 03|┌Details | Esc close | wheel/PgUp/PgDown scroll────────────────────────────────────────────────────┐
 04|│debug #1 provider error                                                                           │
@@ -279,7 +279,7 @@
 
 === low-color-semantics/main 58x18 style=monochrome ===
 00|YunXi v2.1.0 | deepseek offline
-01|tail | cells=3 | provider=deepseek
+01|tail | offline · deepseek | ready
 02|──────────────────────────────────────────────────────────
 03|┌Transcript 5-7 / 7 | tail───────────────────────────────┐
 04|│[error] YX-PROVIDER-001 provider request failed:        ^
@@ -298,7 +298,7 @@
 17|└────────────────────────────────────────────────────────┘
 === low-color-semantics/details 58x18 style=monochrome ===
 00|YunXi v2.1.0 | deepseek offline
-01|tail | cells=3 | provider=deepseek
+01|tail | offline · deepseek | ready
 02|──────────────────────────────────────────────────────────
 03|┌Details | Esc close | wheel/PgUp/PgDown scroll──────────┐
 04|│debug #3 provider error                                 │

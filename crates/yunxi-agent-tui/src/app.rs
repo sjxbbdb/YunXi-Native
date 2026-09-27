@@ -75,6 +75,28 @@ impl YunxiTuiApp {
         &self.transcript
     }
 
+    pub(crate) fn has_user_round(&self) -> bool {
+        self.transcript
+            .cells()
+            .iter()
+            .any(|cell| match cell.kind() {
+                crate::chat::HistoryCellKind::Event { kind, message } => {
+                    !(kind == "linux"
+                        || message.contains("[offline]")
+                        || message.starts_with("Linux 原生 TUI"))
+                }
+                crate::chat::HistoryCellKind::User(_)
+                | crate::chat::HistoryCellKind::Assistant { .. }
+                | crate::chat::HistoryCellKind::Tool(_)
+                | crate::chat::HistoryCellKind::Debug { .. }
+                | crate::chat::HistoryCellKind::Error(_) => true,
+            })
+    }
+
+    pub(crate) fn provider_live(&self) -> Option<bool> {
+        self.banner.as_ref().map(|banner| banner.provider_live)
+    }
+
     pub(crate) fn viewport(&self) -> &TranscriptViewport {
         &self.viewport
     }
@@ -299,44 +321,24 @@ impl YunxiTuiApp {
     pub(crate) fn subheader_for_width(&self, width: usize) -> String {
         match &self.banner {
             Some(banner) => {
-                let cells = format!("cells={}", self.transcript.cells().len());
                 let view = self.viewport.scroll_status();
-                let mut debug = compact_debug_status(&self.transcript.debug_status());
-                let duplicate_events = self.timeline.duplicate_event_count();
-                if duplicate_events > 0 {
-                    debug.push_str(&format!("/stream-dupes={duplicate_events}"));
-                }
-                if width < 90 {
-                    let provider =
-                        format!("provider={}", TextLayout::truncate(&banner.provider, 18));
-                    let mut segments = vec![
-                        PrioritySegment::new(view, ClipPriority::MustKeep),
-                        PrioritySegment::new(&cells, ClipPriority::Important),
-                    ];
-                    if self.realtime_voice_enabled {
-                        segments.push(PrioritySegment::new("voice=live", ClipPriority::Important));
-                    }
-                    segments.push(PrioritySegment::new(&provider, ClipPriority::Optional));
-                    return TextLayout::priority_line(&segments, width);
-                }
-                let source = if width < 90 {
-                    banner.provider_source.clone()
+                let mode = mode_label(banner.provider_live);
+                let provider =
+                    TextLayout::truncate(&banner.provider, if width < 90 { 16 } else { 24 });
+                let mode_provider = format!("{mode} · {provider}");
+                let state = if self.timeline.has_active_sessions() {
+                    "running"
                 } else {
-                    format!("source={}", banner.provider_source)
+                    "ready"
                 };
-                let backend = format!("backend={}", banner.backend);
                 let mut segments = vec![
                     PrioritySegment::new(view, ClipPriority::MustKeep),
-                    PrioritySegment::new(&cells, ClipPriority::Important),
+                    PrioritySegment::new(&mode_provider, ClipPriority::Important),
+                    PrioritySegment::new(state, ClipPriority::Important),
                 ];
                 if self.realtime_voice_enabled {
-                    segments.push(PrioritySegment::new("voice=live", ClipPriority::Important));
+                    segments.push(PrioritySegment::new("voice", ClipPriority::Optional));
                 }
-                segments.extend([
-                    PrioritySegment::new(&backend, ClipPriority::Optional),
-                    PrioritySegment::new(&source, ClipPriority::Optional),
-                    PrioritySegment::new(&debug, ClipPriority::DebugOnly),
-                ]);
                 TextLayout::priority_line(&segments, width)
             }
             None => "initializing".to_string(),
@@ -538,14 +540,6 @@ fn model_label(model: &str, width: usize) -> String {
     format!("{prefix}{}", TextLayout::truncate(model, value_width))
 }
 
-fn compact_debug_status(status: &str) -> String {
-    if status.contains("debug=on") {
-        "debug on".to_string()
-    } else {
-        "debug off".to_string()
-    }
-}
-
 fn compact_path(path: &str, width: usize) -> String {
     if TextLayout::measure(path) <= width {
         return path.to_string();
@@ -645,20 +639,22 @@ mod tests {
         assert!(header.contains("model=deepseek-chat"));
         assert!(header.contains("D:/"));
         assert!(header.contains("yunxi-agent-cli"));
-        assert!(subheader.contains("backend=yunxi"));
-        assert!(subheader.contains("source=offline_static"));
+        assert!(subheader.contains("offline · static"));
+        assert!(subheader.contains("ready"));
+        assert!(!subheader.contains("backend="));
+        assert!(!subheader.contains("source="));
     }
 
     #[test]
     fn realtime_voice_state_is_visible_without_changing_the_banner_contract() {
         let mut app = YunxiTuiApp::default();
         app.set_banner(banner());
-        assert!(!app.subheader_for_width(120).contains("voice=live"));
+        assert!(!app.subheader_for_width(120).contains("voice"));
 
         app.set_realtime_voice_enabled(true);
 
-        assert!(app.subheader_for_width(120).contains("voice=live"));
-        assert!(app.subheader_for_width(70).contains("voice=live"));
+        assert!(app.subheader_for_width(120).contains("voice"));
+        assert!(app.subheader_for_width(70).contains("voice"));
         assert!(app.footer_for_width(120).contains("q + Enter stop"));
     }
 
@@ -716,10 +712,11 @@ mod tests {
 
         let tight_subheader = app.subheader_for_width(58);
         assert!(tight_subheader.contains("tail"));
-        assert!(tight_subheader.contains("cells="));
+        assert!(!tight_subheader.contains("cells="));
         assert!(!tight_subheader.contains("backend="));
         assert!(!tight_subheader.contains("source="));
         assert!(!tight_subheader.contains("debug"));
+        assert!(tight_subheader.contains("live"));
 
         let medium = app.header_for_width(100);
         assert!(medium.contains("model=deepseek-chat"));

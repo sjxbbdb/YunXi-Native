@@ -74,6 +74,7 @@ impl Transcript {
         &self.cells
     }
 
+    #[cfg(test)]
     pub(crate) fn debug_status(&self) -> String {
         self.debug.status()
     }

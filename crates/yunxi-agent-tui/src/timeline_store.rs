@@ -112,6 +112,7 @@ impl TimelineStore {
         !self.sessions.is_empty()
     }
 
+    #[cfg(test)]
     pub(crate) fn duplicate_event_count(&self) -> u64 {
         self.duplicate_event_count
     }

@@ -1,5 +1,5 @@
 00|YunXi v2.3.3 | deepseek live
-01|new output below | cells=38 | provider=deepseek
+01|new output below | live · deepseek | running
 02|──────────────────────────────────────────────────────────
 03|┌Transcript 74-82 / 93 | new output below────────────────┐
 04|│    answer streams.                                     ^
