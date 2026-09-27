@@ -2402,6 +2402,10 @@ enum ClientFrame {
     },
     Cancel {
         request_id: String,
+        /// Detached clients cancel by the run id returned in RunAccepted.
+        /// Attached clients keep using request_id for compatibility.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        run_id: Option<String>,
     },
     Follow {
         /// New clients identify the completed turn directly.
@@ -2449,6 +2453,9 @@ enum ServerFrame {
         request_id: Option<String>,
     },
     RunAccepted {
+        run_id: String,
+    },
+    CancelAccepted {
         run_id: String,
     },
     /// Numbered output event. The wrapper lets a reconnecting client persist
@@ -3061,6 +3068,7 @@ async fn run_shell_intercept(
                         &mut writer,
                         &ClientFrame::Cancel {
                             request_id: request_id.clone(),
+                            run_id: None,
                         },
                     ).await?;
                     cancel_sent = true;
@@ -3118,6 +3126,7 @@ async fn run_shell_intercept(
                             &mut writer,
                             &ClientFrame::Cancel {
                                 request_id: request_id.clone(),
+                                run_id: None,
                             },
                         )
                         .await?;
@@ -3147,6 +3156,7 @@ async fn run_shell_intercept(
                             &mut writer,
                             &ClientFrame::Cancel {
                                 request_id: request_id.clone(),
+                                run_id: None,
                             },
                         )
                         .await?;
@@ -3184,7 +3194,7 @@ async fn run_shell_intercept(
             ServerFrame::ResyncRequired { run_id, reason } => {
                 eprintln!("[yunxi resync required: {run_id}] {reason}");
             }
-            ServerFrame::RunAccepted { .. } => {}
+            ServerFrame::RunAccepted { .. } | ServerFrame::CancelAccepted { .. } => {}
         }
     }
 }
@@ -3431,6 +3441,7 @@ async fn run_daemon(
     restrict_mode(&socket, 0o600)?;
     let sessions = Arc::new(Mutex::new(HashMap::<String, String>::new()));
     let replays = Arc::new(Mutex::new(ReplayStore::default()));
+    let cancellations = Arc::new(Mutex::new(HashMap::<String, AgentRunControl>::new()));
     let mut terminate = signal(SignalKind::terminate()).context("注册 SIGTERM handler 失败")?;
     let mut interrupt = signal(SignalKind::interrupt()).context("注册 SIGINT handler 失败")?;
     let (knowledge_shutdown_tx, knowledge_shutdown_rx) = tokio::sync::watch::channel(false);
@@ -3459,8 +3470,11 @@ async fn run_daemon(
                 let (stream, _) = accepted?;
                 let sessions = Arc::clone(&sessions);
                 let replays = Arc::clone(&replays);
+                let cancellations = Arc::clone(&cancellations);
                 tokio::spawn(async move {
-                    if let Err(error) = handle_connection(stream, sessions, replays).await {
+                    if let Err(error) =
+                        handle_connection(stream, sessions, replays, cancellations).await
+                    {
                         eprintln!("yunxi daemon connection error: {error:#}");
                     }
                 });
@@ -3492,6 +3506,7 @@ async fn handle_connection(
     stream: UnixStream,
     sessions: Arc<Mutex<HashMap<String, String>>>,
     replays: Arc<Mutex<ReplayStore>>,
+    cancellations: Arc<Mutex<HashMap<String, AgentRunControl>>>,
 ) -> Result<()> {
     let (reader, mut writer) = stream.into_split();
     let (tx, mut rx) = mpsc::channel::<ClientFrame>(16);
@@ -3539,6 +3554,7 @@ async fn handle_connection(
                 "follow_replay".to_string(),
                 "follow_active".to_string(),
                 "detached_output_only".to_string(),
+                "detached_cancel".to_string(),
             ],
         },
     )
@@ -3601,6 +3617,11 @@ async fn handle_connection(
                 }
                 DeliveryMode::DetachedOutputOnly => {
                     let run_id = begin_detached_run(&replays).await?;
+                    let (control, _stream) = AgentRunControl::streaming_output_only();
+                    cancellations
+                        .lock()
+                        .await
+                        .insert(run_id.clone(), control.clone());
                     if let Err(error) = write_frame(
                         &mut writer,
                         &ServerFrame::RunAccepted {
@@ -3609,15 +3630,19 @@ async fn handle_connection(
                     )
                     .await
                     {
+                        cancellations.lock().await.remove(&run_id);
                         replays.lock().await.discard(&run_id);
                         return Err(error);
                     }
                     let task_replays = Arc::clone(&replays);
+                    let task_cancellations = Arc::clone(&cancellations);
                     tokio::spawn(async move {
                         run_detached_turn(
                             task_replays,
+                            task_cancellations,
                             sessions,
                             run_id,
+                            control,
                             request_id,
                             cwd,
                             prompt,
@@ -3696,8 +3721,33 @@ async fn handle_connection(
                 }
             }
         }
+        ClientFrame::Cancel { request_id, run_id } => {
+            let Some(run_id) = run_id else {
+                write_frame(
+                    &mut writer,
+                    &ServerFrame::Error {
+                        message: "detached Cancel 必须提供 run_id；attached 回合应在原连接中取消"
+                            .to_string(),
+                    },
+                )
+                .await?;
+                return Ok(());
+            };
+            if cancel_detached_run(&cancellations, &run_id).await {
+                write_frame(&mut writer, &ServerFrame::CancelAccepted { run_id }).await?;
+            } else {
+                write_frame(
+                    &mut writer,
+                    &ServerFrame::Error {
+                        message: format!(
+                            "未知或已结束的 detached run_id: {run_id} (request_id={request_id})"
+                        ),
+                    },
+                )
+                .await?;
+            }
+        }
         ClientFrame::Hello { .. }
-        | ClientFrame::Cancel { .. }
         | ClientFrame::ApprovalResponse { .. }
         | ClientFrame::UserInputResponse { .. } => {
             write_frame(
@@ -3710,6 +3760,20 @@ async fn handle_connection(
         }
     }
     Ok(())
+}
+
+#[cfg(unix)]
+async fn cancel_detached_run(
+    cancellations: &Arc<Mutex<HashMap<String, AgentRunControl>>>,
+    run_id: &str,
+) -> bool {
+    let control = cancellations.lock().await.get(run_id).cloned();
+    if let Some(control) = control {
+        control.cancel();
+        true
+    } else {
+        false
+    }
 }
 
 #[cfg(unix)]
@@ -3811,8 +3875,10 @@ async fn begin_detached_run(replays: &Arc<Mutex<ReplayStore>>) -> Result<String>
 #[cfg(unix)]
 async fn run_detached_turn(
     replays: Arc<Mutex<ReplayStore>>,
+    cancellations: Arc<Mutex<HashMap<String, AgentRunControl>>>,
     sessions: Arc<Mutex<HashMap<String, String>>>,
     run_id: String,
+    control: AgentRunControl,
     request_id: String,
     cwd: String,
     prompt: String,
@@ -3824,6 +3890,7 @@ async fn run_detached_turn(
 ) {
     let result = run_detached_turn_inner(
         Arc::clone(&replays),
+        control,
         sessions,
         run_id.clone(),
         request_id,
@@ -3847,11 +3914,13 @@ async fn run_detached_turn(
         .await;
     }
     replays.lock().await.finish(&run_id);
+    cancellations.lock().await.remove(&run_id);
 }
 
 #[cfg(unix)]
 async fn run_detached_turn_inner(
     replays: Arc<Mutex<ReplayStore>>,
+    control: AgentRunControl,
     sessions: Arc<Mutex<HashMap<String, String>>>,
     run_id: String,
     _request_id: String,
@@ -3888,9 +3957,11 @@ async fn run_detached_turn_inner(
     config.session_title = Some("YunXi Linux fish shell detached turn".to_string());
     config.parent_session_id = prior;
     let agent = Agent::new(config);
-    let (control, mut stream) = AgentRunControl::streaming_output_only();
+    let cancellation_token = control.cancellation_token();
+    let (stream_control, mut stream) = AgentRunControl::streaming_output_only();
+    let stream_control = stream_control.with_cancellation_token(cancellation_token);
     let mut turn =
-        Box::pin(agent.run_with_backend_stream(&backend, AgentInput::text(prompt), control));
+        Box::pin(agent.run_with_backend_stream(&backend, AgentInput::text(prompt), stream_control));
     let mut thread_id = None;
     let mut message_sent = false;
     let result = loop {
@@ -4169,7 +4240,7 @@ async fn run_daemon_turn_inner<W: tokio::io::AsyncWrite + Unpin>(
             },
             frame = rx.recv() => match frame {
                 Some(frame) => match frame {
-                    ClientFrame::Cancel { request_id: cancelled } if cancelled == request_id => {
+                    ClientFrame::Cancel { request_id: cancelled, run_id: None } if cancelled == request_id => {
                         control.cancel();
                     }
                     ClientFrame::Ping { request_id } => {
@@ -4276,6 +4347,7 @@ async fn await_approval(
         match frame {
             ClientFrame::Cancel {
                 request_id: cancelled,
+                run_id: None,
             } if cancelled == request_id => return Ok(ShellPromptResult::Cancelled),
             ClientFrame::ApprovalResponse {
                 id,
@@ -4302,6 +4374,7 @@ async fn await_user_input(
         match frame {
             ClientFrame::Cancel {
                 request_id: cancelled,
+                run_id: None,
             } if cancelled == request_id => return Ok(ShellPromptResult::Cancelled),
             ClientFrame::UserInputResponse { id, value } if id.as_deref() == expected => {
                 return Ok(ShellPromptResult::Value(value));
@@ -4350,6 +4423,7 @@ mod tests {
         approval_tx
             .send(ClientFrame::Cancel {
                 request_id: "turn-1".to_string(),
+                run_id: None,
             })
             .await
             .expect("cancel frame");
@@ -4364,6 +4438,7 @@ mod tests {
         input_tx
             .send(ClientFrame::Cancel {
                 request_id: "other-turn".to_string(),
+                run_id: None,
             })
             .await
             .expect("mismatched cancel frame");
@@ -4380,6 +4455,22 @@ mod tests {
                 .expect("input wait"),
             ShellPromptResult::Value(Some(value)) if value == "answer"
         ));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn detached_cancel_registry_cancels_only_known_run() {
+        let cancellations = Arc::new(Mutex::new(HashMap::new()));
+        let (control, _stream) = AgentRunControl::streaming_output_only();
+        let token = control.cancellation_token();
+        cancellations
+            .lock()
+            .await
+            .insert("detached-run".to_string(), control);
+
+        assert!(cancel_detached_run(&cancellations, "detached-run").await);
+        assert!(token.is_cancelled());
+        assert!(!cancel_detached_run(&cancellations, "missing-run").await);
     }
 
     #[cfg(unix)]

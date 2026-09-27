@@ -116,7 +116,7 @@ def hello(sock):
     assert frame["kind"] == "hello_ack", frame
     assert frame["protocol_version"] == protocol_version, frame
     assert frame["max_frame_bytes"] == 24 * 1024 * 1024, frame
-    assert {"ping", "turn", "cancel", "follow_resync", "follow_replay", "follow_active", "detached_output_only"}.issubset(
+    assert {"ping", "turn", "cancel", "follow_resync", "follow_replay", "follow_active", "detached_output_only", "detached_cancel"}.issubset(
         frame["capabilities"]
     ), frame
 
@@ -144,6 +144,22 @@ with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
     frame = recv(sock)
     assert frame["kind"] == "resync_required", frame
     assert frame["run_id"] == "missing-run", frame
+
+with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
+    sock.settimeout(5)
+    sock.connect(socket_path)
+    hello(sock)
+    send(
+        sock,
+        {
+            "kind": "cancel",
+            "request_id": "cancel-missing",
+            "run_id": "missing-run",
+        },
+    )
+    frame = recv(sock)
+    assert frame["kind"] == "error", frame
+    assert "未知或已结束" in frame["message"], frame
 
 with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
     sock.settimeout(5)

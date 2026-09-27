@@ -262,7 +262,7 @@ knowledge_fts
 - 完成用户级单例锁、socket 权限、PID/start-time 检查和 graceful shutdown；
 - 提供 `systemd --user` 单元与无 systemd 启动路径。
 
-当前已提供 `yunxi-linux systemd-unit` 输出模板、用户级服务示例、SIGTERM/SIGINT 清理路径、PID/start-time 锁校验，以及有界的事件游标回放；daemon lock metadata 采用临时文件同步后硬链接抢占，损坏 metadata 不会被直接删除。`delivery=detached_output_only` 支持活动回合的 backlog+live Follow；默认 attached 回合仍在连接断开时 cancel+discard，detached Cancel 和跨重启续跑另行设计。
+当前已提供 `yunxi-linux systemd-unit` 输出模板、用户级服务示例、SIGTERM/SIGINT 清理路径、PID/start-time 锁校验，以及有界的事件游标回放；daemon lock metadata 采用临时文件同步后硬链接抢占，损坏 metadata 不会被直接删除。`delivery=detached_output_only` 支持活动回合的 backlog+live Follow，并通过 run 级 cancellation registry 接受独立连接的显式 `Cancel {run_id}`；默认 attached 回合仍在连接断开时 cancel+discard，跨重启续跑另行设计。
 
 同时提供真实 Unix socket smoke：`yunxi-agent-linux/tests/daemon_ipc_smoke.sh` 在临时
 XDG 目录启动 release daemon，验证版本握手、Ping、未知回合 Follow 重同步、确定性
@@ -273,8 +273,9 @@ Provider 配置失败与超限 `Turn` 请求的结构化 `Error` 帧，以及 SI
 daemon 发送 `SIGKILL`，并发启动多个候选进程，验证陈旧 socket/lock 的回收、单例 owner
 收敛和 owner 的 Ping/退出清理；还会用离线静态 Runtime 完成一个真实回合，断开后按
 `run_id` 从游标 0 回放并逐帧校验顺序与 `Done` 终止帧；另覆盖
-`detached_output_only` 断开后 active Follow 的 backlog+live 顺序。只有显式 detached
-delivery 才允许活动回合 Follow，不能把这一项误读为 attached 回合可恢复或支持 detached Cancel。
+`detached_output_only` 断开后 active Follow 的 backlog+live 顺序，以及 detached run 的独立
+Cancel。只有显式 detached delivery 才允许活动回合 Follow；这不等于 attached 回合可恢复，
+也不等于 run 状态已经跨 daemon 重启持久化。
 
 当前 `Turn` 语义边界为：`prompt` ≤ 64 KiB、`cwd` ≤ 4 KiB、`request_id`/`session_id` ≤
 512 字节、`provider`/`model` ≤ 256 字节。它们独立于 24 MiB frame 传输上限，目的是在
