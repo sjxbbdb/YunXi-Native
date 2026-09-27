@@ -327,6 +327,14 @@ p50/p95，不设置跨机器硬阈值）：
 bash yunxi-agent-linux/tests/knowledge_latency_smoke.sh ./target/release/yunxi-linux
 ```
 
+Linux 宿主的进程启动、daemon socket 就绪和常驻 RSS 可用性能基线脚本测量。脚本只
+输出 JSON，不设置跨机器硬阈值；它会启动并清理临时用户 daemon，不读写真实的
+`~/.yunxi` 数据：
+
+```bash
+bash yunxi-agent-linux/tests/performance_smoke.sh ./target/release/yunxi-linux
+```
+
 命令帮助采集器的完整 allowlist、固定 argv 和缺失工具回退可用真实 Linux smoke 验证：
 
 ```bash

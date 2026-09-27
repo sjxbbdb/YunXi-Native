@@ -221,6 +221,11 @@ CLI 验证路径：先运行 `yunxi-linux knowledge-index <document-id> --cwd .`
 `result_count`，便于在真实 Linux 环境建立冷启动/热查询 p50/p95 基线。这些字段只
 描述本次查询，不改变结果排序、知识空间权限或执行策略。
 
+Linux 宿主还提供 `yunxi-agent-linux/tests/performance_smoke.sh`，测量 release binary
+进程启动、临时用户 daemon 的 socket+Ping 就绪耗时和 `/proc` RSS。它只输出可比较的
+JSON，不设置跨机器阈值，也不会触碰真实用户数据；发行前应在目标 Arch 主机保存一份
+基线，再与升级版本对比。
+
 如果来源需要撤回，使用 `yunxi-linux knowledge-retract <document-id> --cwd .`。
 撤回只允许命中固定的 `system-linux` 公共空间，并在一个事务内删除文档、chunk、
 FTS 行和向量；找不到文档不会误报成功，也不会触碰 project/private 或长期记忆库。

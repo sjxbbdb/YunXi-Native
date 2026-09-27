@@ -560,7 +560,9 @@ scope、source、预算、丢弃原因和召回数量。两者只共享本轮上
 `OOMPolicy=stop`，不自动启用服务、不创建 root daemon、不删除用户数据。配套的
 `package-smoke.sh` 可在无 Arch 环境中静态验证这些安装、安全和生命周期边界。
 `packaging/README.md` 明确了 Arch 构建、fish hook、卸载和数据边界；安装/升级/回滚的
-完整可重复流水线仍未宣称完成。
+完整可重复流水线仍未宣称完成。另有
+`yunxi-agent-linux/tests/performance_smoke.sh`，对 release 进程启动、临时 daemon
+就绪耗时和 `/proc` RSS 输出无硬阈值 JSON 基线；它不替代目标 Arch 主机的实测。
 
 **门槛**：冷启动/热查询/常驻 RSS/p95 延迟有基线；安装、升级、回滚和卸载可重复执行。
 
