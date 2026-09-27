@@ -591,6 +591,14 @@ embed_error/skipped_prompt）、active generation、FTS/向量证据数量、`so
 scope、source、预算、丢弃原因和召回数量。两者只共享本轮上下文组装的观测面，不共享
 数据库、敏感度、权限或写入路径。
 
+本增量新增真实 Runtime 双域协同回归：同一轮上下文同时放入一条工作区记忆和一条
+system 知识，验证两类召回都能进入 `context_assembled`，而知识 provenance 只保留
+document/chunk/source/risk 等元数据、不携带正文；同时检查 `knowledge.sqlite3`、
+`long-term-vectors.sqlite3` 与记忆 JSONL 的物理边界，确保知识正文不会写入记忆向量库，
+个人记忆不会写入知识库。测试位于
+`crates/yunxi-agent-runtime/tests/runtime_tests.rs`，仅在 Linux 目标启用，不改变
+Windows Runtime 路径。
+
 **门槛**：个人信息不自动进入知识库，知识文本不改写个人记忆，跨 workspace/用户/知识空间不可串线。
 
 ### Phase 6：发行与长期运行
