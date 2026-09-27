@@ -5,6 +5,7 @@ script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 pkgbuild="$script_dir/PKGBUILD"
 service="$script_dir/yunxi-linux.service"
 worker_service="$script_dir/yunxi-knowledge-worker@.service"
+preflight="$script_dir/preflight.sh"
 
 fail() {
   printf 'package-smoke: %s\n' "$1" >&2
@@ -14,9 +15,20 @@ fail() {
 [[ -f "$pkgbuild" ]] || fail "missing PKGBUILD"
 [[ -f "$service" ]] || fail "missing systemd user service"
 [[ -f "$worker_service" ]] || fail "missing knowledge worker template"
+[[ -f "$preflight" ]] || fail "missing packaging preflight"
 
-grep -Eq "^_commit='[0-9a-f]{7,40}'$" "$pkgbuild" \
-  || fail "PKGBUILD must pin a full hexadecimal source commit"
+grep -Eq "^pkgname=yunxi-native$" "$pkgbuild" \
+  || fail "PKGBUILD package name must be yunxi-native"
+grep -Eq "^pkgver=2\\.3\\.3\\.hotfix\\.32$" "$pkgbuild" \
+  || fail "PKGBUILD package version is unexpected"
+grep -Eq "^pkgrel=[0-9]+$" "$pkgbuild" \
+  || fail "PKGBUILD package release must be numeric"
+grep -Eq "^arch=\\('x86_64' 'aarch64'\\)$" "$pkgbuild" \
+  || fail "PKGBUILD architecture list is incomplete"
+grep -Eq "^_commit='[0-9a-f]{40}'$" "$pkgbuild" \
+  || fail "PKGBUILD must pin a full 40-character hexadecimal source commit"
+grep -Fq 'source=("${pkgname}::git+${url}.git#commit=${_commit}")' "$pkgbuild" \
+  || fail "PKGBUILD source must use the pinned commit"
 grep -Fq 'cargo build --release --locked -p yunxi-agent-linux' "$pkgbuild" \
   || fail "release build command is missing"
 grep -Fq 'cargo test --release --locked -p yunxi-agent-linux' "$pkgbuild" \

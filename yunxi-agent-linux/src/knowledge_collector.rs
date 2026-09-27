@@ -500,7 +500,7 @@ mod tests {
     }
 
     #[test]
-    fn coreutils_help_commands_are_allowlisted_without_opening_arbitrary_paths() {
+    fn help_commands_are_allowlisted_without_opening_arbitrary_paths() {
         for command in [
             "awk", "bash", "cat", "cp", "find", "grep", "ls", "rm", "sed", "tar",
         ] {
@@ -511,7 +511,15 @@ mod tests {
             assert!(validate_help_request(&request).is_ok(), "{command}");
             assert_eq!(help_argv(&request), vec![command, "--help"]);
         }
-        for command in ["./cat", "/usr/bin/grep", "grep --help", "cat;id"] {
+        for command in [
+            "./cat",
+            "/usr/bin/grep",
+            "/usr/bin/bash",
+            "grep --help",
+            "bash -c id",
+            "bash script",
+            "cat;id",
+        ] {
             let request = CommandHelpRequest {
                 command: command.to_string(),
                 source_version: "ubuntu-24.04".to_string(),

@@ -367,7 +367,7 @@ pub(crate) enum LinuxShellCommand {
     },
     /// Collect allowlisted help text into a candidate generation.
     KnowledgeStageHelp {
-        /// Allowlisted command: fish, git, systemctl, pacman, ip, or a small
+        /// Allowlisted command: bash, fish, git, systemctl, pacman, ip, or a small
         /// fixed set of read-only shell/coreutils help commands.
         command: String,
         /// Candidate generation returned by knowledge-generation-begin.

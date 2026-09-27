@@ -8,8 +8,16 @@
 这些限制只约束 YunXi daemon，不会替外部 Provider 进程设限；需要调整时应在本机复制
 service 到用户配置目录后显式覆盖，不修改打包文件中的安全基线。
 
-在没有 Arch `makepkg` 的环境中，可以先运行静态打包验收，检查源码 pin、安装路径、
-user service 安全项以及“不自动启用服务”的边界：
+在没有 Arch `makepkg` 的环境中，可以先运行只读 preflight。它检查 Linux 环境、工具可用性、
+PKGBUILD 元数据、源码 pin 是否存在且为当前提交的祖先、unit 模板、工作区状态和 XDG
+数据目录权限；不会安装包、启用服务、迁移数据或读取记忆/知识正文：
+
+```bash
+bash packaging/arch/yunxi-native/preflight.sh
+bash packaging/arch/yunxi-native/preflight-smoke.sh
+```
+
+随后运行静态打包验收，检查源码 pin、安装路径、user service 安全项以及“不自动启用服务”的边界：
 
 ```bash
 bash packaging/arch/yunxi-native/package-smoke.sh
@@ -47,8 +55,9 @@ mkdir -p ~/.config/fish/conf.d
 yunxi-linux fish-init --print > ~/.config/fish/conf.d/yunxi.fish
 ```
 
-如需让 YunXi 接手所有非空提交，可改用 `yunxi-linux fish-init --takeover`；不带该
-参数时保持保守分类模式，便于在首次安装后验证和回退。
+`yunxi-linux fish-init` 默认接手所有非空提交；`--takeover` 仍可作为旧脚本兼容参数，
+但不再提供保守分类模式。fish 负责行编辑、历史和 prompt，提交内容统一交给 YunXi Runtime
+的审批、Sandbox 和工作区策略。
 
 知识 worker 也提供了一个不自动启用的用户级模板。它只接受用户明确选择的工作区，
 不会扫描 `$HOME`：
