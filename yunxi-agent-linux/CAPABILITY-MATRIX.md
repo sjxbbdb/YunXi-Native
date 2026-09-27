@@ -66,6 +66,7 @@
 | 多 Agent | Dev/后台任务/子代理 | Multi-agent Runtime | 直接复用 YunXi，后续接 daemon 后台任务 |
 | Linux/Arch 专用工具 | AUR、Arch Wiki、PKGBUILD、Man、ProtonDB、游戏兼容性 | 当前没有同等专用插件集合 | 可增加为 YunXi Linux Skills，不直接复制 Miyu 插件状态模型 |
 | Linux 只读主机 ToolSpec | systemd、Man、process、network 通过插件/工具层 | `linux_readonly` 固定 argv ToolSpec，沿用 Approval/Sandbox/Audit | 已接入八类观察能力（含 filesystem、disk usage、pacman）；修改类工具仍需单独设计 |
+| Linux 操作预览 | 插件可先生成计划再执行 | `linux_preview::plan` 纯函数，typed intent + 显式风险评估 | 已实现不 spawn/不写入的预览边界；模型 ToolSpec、可回滚写入仍待接入 |
 | 网络搜索/网页读取 | 内置或可选搜索服务 | 由 MCP/工具能力承载 | 先保持 YunXi Provider/工具边界 |
 | 天气/汇率/闹钟 | 作为内置插件 | 不是当前核心 Runtime 能力 | 后续作为可选 Skills，不进入第一版核心 |
 | 生图/搜图/视觉 | 由插件和多模态模型提供 | 非 Arch TUI 第一阶段目标 | 暂不纳入 |

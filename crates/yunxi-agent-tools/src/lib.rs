@@ -28,6 +28,7 @@ use yunxi_agent_skills::{
     load_skill_injection, workspace_dynamic_tools,
 };
 
+pub mod linux_preview;
 mod linux_readonly;
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]

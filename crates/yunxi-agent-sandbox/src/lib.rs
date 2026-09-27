@@ -37,6 +37,21 @@ impl ExecutionPolicy {
         let risk = command
             .map(CommandRisk::classify)
             .unwrap_or(CommandRisk::Low);
+        self.evaluate_with_risk(cwd, command, risk)
+    }
+
+    /// Evaluate a request when the caller has already classified its risk.
+    ///
+    /// Preview/planning code must use this helper for typed operations (for
+    /// example `systemd_action` or `delete_path`) instead of manufacturing a
+    /// shell command and relying on token heuristics.  It remains a pure policy
+    /// calculation: no process is spawned and no filesystem state is changed.
+    pub fn evaluate_with_risk(
+        &self,
+        cwd: &Path,
+        command: Option<&str>,
+        risk: CommandRisk,
+    ) -> PolicyEvaluation {
         let sandbox_backend = SandboxBackendSelection::from_requirement(self.sandbox);
         let network_decision = NetworkDecision::from_policy(self.network);
         if let Some(reason) = self.network_denial_for(risk) {
@@ -1607,5 +1622,37 @@ mod tests {
         assert_eq!(diagnostic.enforcement, "policy_bypass");
         assert!(!diagnostic.os_isolation);
         assert!(diagnostic.unsupported_reason.is_none());
+    }
+
+    #[test]
+    fn explicit_risk_is_used_by_preview_policy_evaluation() {
+        let workspace = TempDir::new().expect("workspace");
+        let policy = ExecutionPolicy {
+            approval: ApprovalRequirement::AskBeforeRunning,
+            sandbox: SandboxRequirement::ReadOnly,
+            network: NetworkPolicy::Disabled,
+            workspace_root: workspace.path().to_path_buf(),
+        };
+
+        // The descriptive string is deliberately not shell syntax.  Typed
+        // preview intents still receive the correct write/approval decision.
+        let evaluation = policy.evaluate_with_risk(
+            workspace.path(),
+            Some("write_file notes.txt"),
+            CommandRisk::WritesWorkspace,
+        );
+
+        assert!(matches!(
+            evaluation.decision,
+            PolicyDecision::Blocked { ref reason } if reason == "tool execution requires approval"
+        ));
+        assert!(evaluation.approval_request.is_some());
+        assert_eq!(
+            evaluation
+                .approval_request
+                .as_ref()
+                .map(|request| request.risk),
+            Some(CommandRisk::WritesWorkspace)
+        );
     }
 }

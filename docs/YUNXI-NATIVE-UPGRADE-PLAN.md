@@ -318,6 +318,12 @@ daemon 还对 `Hello` 与握手后的首个请求设置 5 秒超时，防止半�
 契约、缺少可选系统工具时的 `unavailable` 结果、64 KiB 输出边界，以及 systemd/man
 参数中的 shell 语法拒绝（含 pacman 查询）；它不要求 root，也不修改本机状态。
 
+本阶段新增 `yunxi_agent_tools::linux_preview::plan` 纯规划原语。它只接受固定只读 argv
+或 typed mutation intent，复用 `ExecutionPolicy::evaluate_with_risk` 生成风险、审批、
+沙盒和网络升级结论；预览不会创建 `ExecCommand`，不会启动进程、读取输出或修改文件，
+并以 `runner=none` 与三项 `side_effects=false` 作为可测试契约。当前它仍是工具层内部
+原语，尚未作为模型可见 ToolSpec 暴露，也不替代后续可回滚写入设计。
+
 **门槛**：每个工具有 schema、权限矩阵、错误恢复、单元测试和至少一个真实 Linux 验收脚本。
 
 ### Phase 4：通用知识平台与 Linux 首发 RAG

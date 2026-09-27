@@ -117,6 +117,18 @@ yunxi-linux linux-tool disk-usage --path .
 
 CLI 探针与模型可见的 `linux_readonly` ToolSpec 共用同一只读边界，但 CLI 输出是诊断入口，不替代 Runtime 的审批链路。
 
+### 只规划、不执行的 Linux 预览
+
+Phase 3 现在提供 `yunxi-agent-tools::linux_preview::plan` 纯规划原语。它接受两类
+输入：现有只读命令的固定 `argv`，或 `write_file`、`delete_path`、`move_path`、
+`systemd_action`、`package_action`、`network_action` 等 typed mutation intent。预览会
+规范化参数、标注风险、调用现有 `ExecutionPolicy::evaluate_with_risk` 生成审批/沙盒/网络
+升级结论，但不会创建 `ExecCommand`、启动进程、读取 stdout/stderr、写入或删除文件。
+
+预览输出中的 `runner: "none"`、`spawned: false`、`files_changed: false` 和
+`system_modified: false` 是硬契约；`command` 仅供展示，绝不能重新交给 shell。模型可见
+ToolSpec、可回滚写入和高风险执行仍需后续增量接入，当前不把计划误报为执行成功。
+
 真实 Linux 验收可运行：
 
 ```bash
