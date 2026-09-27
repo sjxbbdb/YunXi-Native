@@ -19,6 +19,27 @@ use yunxi_agent_storage::{
 };
 
 pub const MAX_OUTPUT_BYTES: usize = 64 * 1024;
+/// Fixed P0 command-help catalog used when the batch CLI receives no commands.
+///
+/// This is deliberately explicit: the catalog must never discover commands by
+/// scanning PATH or a filesystem directory.
+pub const P0_HELP_COMMANDS: &[&str] = &[
+    "bash",
+    "fish",
+    "git",
+    "systemctl",
+    "pacman",
+    "ip",
+    "awk",
+    "cat",
+    "cp",
+    "find",
+    "grep",
+    "ls",
+    "rm",
+    "sed",
+    "tar",
+];
 const MAX_TOKEN_CHARS: usize = 128;
 
 /// Classify the command described by a knowledge document, not the safety of
@@ -273,24 +294,7 @@ fn validate_request(request: &ManPageRequest) -> AgentResult<()> {
 }
 
 fn validate_help_request(request: &CommandHelpRequest) -> AgentResult<()> {
-    const ALLOWED_COMMANDS: &[&str] = &[
-        "bash",
-        "fish",
-        "git",
-        "systemctl",
-        "pacman",
-        "ip",
-        "awk",
-        "cat",
-        "cp",
-        "find",
-        "grep",
-        "ls",
-        "rm",
-        "sed",
-        "tar",
-    ];
-    if !ALLOWED_COMMANDS.contains(&request.command.as_str()) {
+    if !P0_HELP_COMMANDS.contains(&request.command.as_str()) {
         return Err(yunxi_agent_core::AgentError::Execution {
             message: format!("command help is not allowlisted: {}", request.command),
         });
@@ -558,6 +562,21 @@ mod tests {
                 source_version: "ubuntu-24.04".to_string(),
             };
             assert!(validate_help_request(&request).is_err(), "{command}");
+        }
+    }
+
+    #[test]
+    fn p0_help_catalog_is_explicit_and_matches_allowlist() {
+        assert_eq!(P0_HELP_COMMANDS.len(), 15);
+        assert!(P0_HELP_COMMANDS.windows(2).all(|pair| pair[0] != pair[1]));
+        for command in P0_HELP_COMMANDS {
+            assert!(
+                validate_help_request(&CommandHelpRequest {
+                    command: (*command).to_string(),
+                    source_version: "ubuntu-24.04".to_string(),
+                })
+                .is_ok()
+            );
         }
     }
 

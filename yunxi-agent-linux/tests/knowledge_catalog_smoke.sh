@@ -62,19 +62,22 @@ with tempfile.TemporaryDirectory(prefix="yunxi-catalog-smoke-") as directory:
     # exercise both read-only and mutating/destructive advisory labels.
     help_commands = ("cat", "ls", "grep", "rm")
     staged = {}
+    catalog_args = [
+        "knowledge-stage-catalog",
+        "--generation",
+        str(generation),
+        "--source-version",
+        "ubuntu-24.04",
+        "--cwd",
+        str(workspace),
+    ]
     for command in help_commands:
-        item = run(
-            "knowledge-stage-help",
-            command,
-            "--generation",
-            str(generation),
-            "--source-version",
-            "ubuntu-24.04",
-            "--cwd",
-            str(workspace),
-        )
+        catalog_args.extend(["--command", command])
+    catalog = run(*catalog_args)
+    assert catalog["summary"] == {"failed": 0, "ok": 4, "total": 4, "unavailable": 0}, catalog
+    for item in catalog["results"]:
         assert item["status"] == "ok", item
-        staged[command] = item["document_id"]
+        staged[item["command"]] = item["document_id"]
 
     # The same command is collected for a second explicit version so exact
     # source-version filtering has two real documents to distinguish.
@@ -239,6 +242,36 @@ with tempfile.TemporaryDirectory(prefix="yunxi-catalog-smoke-") as directory:
     man_metadata = json.loads(man_match["metadata_json"])
     assert man_metadata["source_type"] == "man", man_metadata
     assert man_metadata["risk_class"] == "read_only", man_metadata
+
+    # A rejected command must not abort the batch or create a staging document;
+    # successful siblings still remain queued in the new candidate generation.
+    failed_begin = run("knowledge-generation-begin", "--cwd", str(workspace))
+    failed_generation = failed_begin["generation"]
+    mixed = run(
+        "knowledge-stage-catalog",
+        "--generation",
+        str(failed_generation),
+        "--source-version",
+        "ubuntu-24.04",
+        "--cwd",
+        str(workspace),
+        "--command",
+        "cat",
+        "--command",
+        "not-allowlisted",
+    )
+    assert mixed["summary"] == {"failed": 1, "ok": 1, "total": 2, "unavailable": 0}, mixed
+    failed_item = next(item for item in mixed["results"] if item["command"] == "not-allowlisted")
+    assert failed_item["status"] == "failed", failed_item
+    assert "embedding_job" not in failed_item, failed_item
+    failed_readiness = run(
+        "knowledge-generation-readiness",
+        "--generation",
+        str(failed_generation),
+        "--cwd",
+        str(workspace),
+    )
+    assert failed_readiness["readiness"]["actual_documents"] == 1, failed_readiness
 
     print(
         "knowledge-catalog-smoke=ok "

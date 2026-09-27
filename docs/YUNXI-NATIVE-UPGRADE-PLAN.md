@@ -444,7 +444,11 @@ SQLite `IMMEDIATE` 事务内重新校验 ready manifest、staging 文档/chunk/v
 任务状态与跨空间 document ID 冲突，再复制到 active 表、由触发器重建 FTS、切换
 `knowledge_spaces.generation` 并清理候选 staging 行；任何校验或写入失败都会回滚旧代际。
 Linux CLI 已暴露这条安全管道：`knowledge-generation-begin` 创建候选代际，
-`knowledge-stage-help`/`knowledge-stage-man` 只写候选，`knowledge-generation-worker`
+`knowledge-stage-help`/`knowledge-stage-man` 只写候选；Phase 4 另提供
+`knowledge-stage-catalog` 批量收集显式指定的 `--command`，省略该参数时使用固定的
+Linux P0 help allowlist。它复用单命令 collector 和 staging 边界，逐项输出
+`ok`/`unavailable`/`failed`，失败项不写 staging；它不会扫描任意目录、自动激活
+generation 或改写长期记忆。随后由 `knowledge-generation-worker`
 有界处理候选 embedding 任务，`knowledge-generation-readiness` 输出完整性诊断，
 `knowledge-generation-seal` 在候选完整后把 manifest 标记为 ready，最后由
 `knowledge-generation-activate` 在显式确认后切换 active 指针；未 ready 的候选不会被激活，

@@ -201,6 +201,14 @@ python3 yunxi-agent-linux/tests/knowledge_worker_status_fleet_smoke.py \
   ./target/release/yunxi-linux
 ```
 
+候选 generation 的帮助目录可以用批量入口显式收集：先运行
+`knowledge-generation-begin`，再运行
+`knowledge-stage-catalog --generation <N> --source-version ubuntu-24.04 --cwd .`。
+不传 `--command` 时只使用代码中固定的 P0 allowlist；也可以重复传入
+`--command cat --command git` 选择子集。命令不会扫描 PATH、不会自动创建或激活
+generation、不会启动 embedding worker，也不会写入长期记忆。输出是一个结构化 JSON，
+其中每个项目都标记 `ok`、`unavailable` 或 `failed`；不可用/失败项目不会写入 staging。
+
 候选 generation 的 staging → embedding → seal → activate 黑盒闭环也可单独验收：
 激活前 FTS/向量查询不可见，未 ready 的代际不能切换，激活后两类索引同时可见，
 并确认不会改写长期记忆向量库。

@@ -60,6 +60,7 @@ mod linux_tools;
 use linux_tools::LinuxToolCommand;
 
 const HOOK_MARKER: &str = "# YunXi Agent fish hook";
+const MAX_KNOWLEDGE_CATALOG_COMMANDS: usize = 32;
 
 #[cfg(unix)]
 const MAX_TURN_PROMPT_BYTES: usize = 64 * 1024;
@@ -384,6 +385,22 @@ pub(crate) enum LinuxShellCommand {
         #[arg(long, default_value = ".")]
         cwd: PathBuf,
     },
+    /// Collect an explicit batch of allowlisted help pages into a candidate generation.
+    KnowledgeStageCatalog {
+        /// Candidate generation returned by knowledge-generation-begin.
+        #[arg(long)]
+        generation: i64,
+        /// Allowlisted command to collect; repeat for multiple commands. With no
+        /// occurrences, use the fixed Linux P0 catalog.
+        #[arg(long = "command", action = ArgAction::Append)]
+        command: Vec<String>,
+        /// Distro/runtime version recorded as provenance; `auto` reads os-release.
+        #[arg(long, default_value = "auto")]
+        source_version: String,
+        /// Workspace whose knowledge database receives the staging documents.
+        #[arg(long, default_value = ".")]
+        cwd: PathBuf,
+    },
     /// Collect one local man page into a candidate generation.
     KnowledgeStageMan {
         /// Man topic such as `fish` or `systemctl`.
@@ -625,6 +642,12 @@ pub(crate) async fn run_command(command: LinuxShellCommand) -> Result<()> {
             source_version,
             cwd,
         } => run_knowledge_stage_help(command, generation, source_version, cwd).await,
+        LinuxShellCommand::KnowledgeStageCatalog {
+            generation,
+            command,
+            source_version,
+            cwd,
+        } => run_knowledge_stage_catalog(generation, command, source_version, cwd).await,
         LinuxShellCommand::KnowledgeStageMan {
             topic,
             generation,
@@ -747,6 +770,96 @@ async fn run_knowledge_stage_help(
     run_staged_collection_result(&cwd, generation, &collected, "linux.command_help")
 }
 
+async fn run_knowledge_stage_catalog(
+    generation: i64,
+    commands: Vec<String>,
+    source_version: String,
+    cwd: PathBuf,
+) -> Result<()> {
+    let cwd = canonical_knowledge_cwd(cwd)?;
+    let commands = if commands.is_empty() {
+        knowledge_collector::P0_HELP_COMMANDS
+            .iter()
+            .map(|command| (*command).to_string())
+            .collect::<Vec<_>>()
+    } else {
+        commands
+    };
+    if commands.len() > MAX_KNOWLEDGE_CATALOG_COMMANDS {
+        bail!("knowledge-stage-catalog accepts at most {MAX_KNOWLEDGE_CATALOG_COMMANDS} commands");
+    }
+    let requested_commands = commands.clone();
+    let source_version = resolve_source_version(&source_version);
+    let mut results = Vec::with_capacity(commands.len());
+    for command in commands {
+        let request = knowledge_collector::CommandHelpRequest {
+            command: command.clone(),
+            source_version: source_version.clone(),
+        };
+        let cancellation = yunxi_agent_core::AgentCancellationToken::new();
+        let mut result =
+            match knowledge_collector::collect_help_command(&request, &cwd, cancellation).await {
+                Ok(collected) => {
+                    staged_collection_result(&cwd, generation, &collected, "linux.command_help")
+                        .unwrap_or_else(|error| {
+                            serde_json::json!({
+                                "schema_version": 1,
+                                "collector": "linux.command_help",
+                                "command": command.clone(),
+                                "generation": generation,
+                                "status": "failed",
+                                "error": error.to_string(),
+                                "active_generation_unchanged": true,
+                            })
+                        })
+                }
+                Err(error) => serde_json::json!({
+                    "schema_version": 1,
+                    "collector": "linux.command_help",
+                    "command": command.clone(),
+                    "generation": generation,
+                    "status": "failed",
+                    "error": error.to_string(),
+                    "active_generation_unchanged": true,
+                }),
+            };
+        result["command"] = serde_json::Value::String(command);
+        results.push(result);
+    }
+
+    let ok = results
+        .iter()
+        .filter(|result| result["status"] == "ok")
+        .count();
+    let unavailable = results
+        .iter()
+        .filter(|result| result["status"] == "unavailable")
+        .count();
+    let failed = results
+        .iter()
+        .filter(|result| result["status"] == "failed")
+        .count();
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&serde_json::json!({
+            "schema_version": 1,
+            "collector": "linux.command_help",
+            "generation": generation,
+            "source_version": source_version,
+            "commands": requested_commands,
+            "results": results,
+            "summary": {
+                "total": ok + unavailable + failed,
+                "ok": ok,
+                "unavailable": unavailable,
+                "failed": failed,
+            },
+            "active_generation_unchanged": true,
+        }))?
+    );
+    Ok(())
+}
+
 async fn run_knowledge_stage_man(
     topic: String,
     generation: i64,
@@ -771,6 +884,17 @@ fn run_staged_collection_result(
     collected: &knowledge_collector::CollectedKnowledge,
     collector: &str,
 ) -> Result<()> {
+    let result = staged_collection_result(cwd, generation, collected, collector)?;
+    println!("{}", serde_json::to_string_pretty(&result)?);
+    Ok(())
+}
+
+fn staged_collection_result(
+    cwd: &Path,
+    generation: i64,
+    collected: &knowledge_collector::CollectedKnowledge,
+    collector: &str,
+) -> Result<serde_json::Value> {
     let mut result = serde_json::json!({
         "schema_version": 1,
         "collector": collector,
@@ -784,8 +908,7 @@ fn run_staged_collection_result(
     });
     if collected.status != knowledge_collector::CollectionStatus::Ok {
         result["stderr"] = serde_json::Value::String(collected.stderr.clone());
-        println!("{}", serde_json::to_string_pretty(&result)?);
-        return Ok(());
+        return Ok(result);
     }
 
     let store = yunxi_agent_storage::SqliteKnowledgeStore::for_workspace(cwd);
@@ -812,8 +935,7 @@ fn run_staged_collection_result(
         "generation": job.generation,
         "attempts": job.attempts,
     });
-    println!("{}", serde_json::to_string_pretty(&result)?);
-    Ok(())
+    Ok(result)
 }
 
 fn run_knowledge_generation_worker(
