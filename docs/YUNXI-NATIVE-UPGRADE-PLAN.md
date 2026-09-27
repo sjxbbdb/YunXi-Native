@@ -697,7 +697,8 @@ Windows/Ubuntu 构建路径不受影响。
 `packaging/README.md` 明确了 Arch 构建、fish hook、卸载和数据边界；安装/升级/回滚的
 完整包事务已在 Arch WSL 实机完成：`pkgrel=6` 安装、升级到 `7`、回滚到 `6` 和卸载，
 并检查二进制/unit 文件边界。跨机器发布的签名、仓库索引和多架构产物仍不在本切片。
-另有
+`docs/YUNXI-NATIVE-PERFORMANCE-BASELINE.md` 记录了 Ubuntu/Arch WSL2 的冷启动、daemon
+就绪和 RSS p50/p95 实测基线。另有
 `yunxi-agent-linux/tests/performance_smoke.sh`，对 release 进程启动、临时 daemon
 就绪耗时和 `/proc` RSS 输出无硬阈值 JSON 基线；它不替代目标 Arch 主机的实测。
 
