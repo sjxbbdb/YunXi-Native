@@ -271,7 +271,9 @@ Provider 配置失败与超限 `Turn` 请求的结构化 `Error` 帧，以及 SI
 它不需要模型凭据，也不执行真实系统工具。该 smoke 与单元测试互补，前者覆盖真实
 进程/套接字生命周期，后者继续覆盖锁、回放、协议和字段边界细节。smoke 还会对真实
 daemon 发送 `SIGKILL`，并发启动多个候选进程，验证陈旧 socket/lock 的回收、单例 owner
-收敛和 owner 的 Ping/退出清理。
+收敛和 owner 的 Ping/退出清理；还会用离线静态 Runtime 完成一个真实回合，断开后按
+`run_id` 从游标 0 回放并逐帧校验顺序与 `Done` 终止帧。活动回合断线续跑仍明确不支持，
+不能把这一项误读为任意活动回合可恢复。
 
 当前 `Turn` 语义边界为：`prompt` ≤ 64 KiB、`cwd` ≤ 4 KiB、`request_id`/`session_id` ≤
 512 字节、`provider`/`model` ≤ 256 字节。它们独立于 24 MiB frame 传输上限，目的是在

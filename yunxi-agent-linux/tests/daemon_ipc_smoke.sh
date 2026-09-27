@@ -169,6 +169,65 @@ with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
     assert error["kind"] == "error", error
     assert "--offline" in error["message"] and "--live" in error["message"], error
 
+# The offline static runtime gives the replay ring a completed, credential-free
+# run.  Reconnect by run_id and verify that the numbered event sequence is
+# replayed from cursor zero, including the terminal Done event.
+run_id = None
+with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
+    sock.settimeout(8)
+    sock.connect(socket_path)
+    hello(sock)
+    send(
+        sock,
+        {
+            "kind": "turn",
+            "request_id": "replay-1",
+            "cwd": "/tmp",
+            "prompt": "replay smoke",
+            "session_id": None,
+            "offline": True,
+            "live": False,
+            "provider": None,
+            "model": None,
+        },
+    )
+    accepted = recv(sock)
+    assert accepted["kind"] == "run_accepted", accepted
+    run_id = accepted["run_id"]
+    original_events = []
+    while True:
+        frame = recv(sock)
+        if frame["kind"] != "event":
+            raise AssertionError(frame)
+        assert frame["run_id"] == run_id, frame
+        original_events.append(frame)
+        if frame["frame"]["kind"] == "done":
+            break
+assert original_events, original_events
+
+with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
+    sock.settimeout(8)
+    sock.connect(socket_path)
+    hello(sock)
+    send(
+        sock,
+        {
+            "kind": "follow",
+            "run_id": run_id,
+            "session_id": None,
+            "after_seq": 0,
+        },
+    )
+    replayed = []
+    while len(replayed) < len(original_events):
+        frame = recv(sock)
+        assert frame["kind"] == "event", frame
+        assert frame["run_id"] == run_id, frame
+        replayed.append(frame)
+        if frame["frame"]["kind"] == "done":
+            break
+    assert replayed == original_events, (original_events, replayed)
+
 
 with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
     sock.settimeout(5)

@@ -324,6 +324,8 @@ bash yunxi-agent-linux/tests/daemon_ipc_smoke.sh ./target/release/yunxi-linux
 自动删除测试状态；同时会发送超大 frame 和截断 JSON，确认坏连接只被丢弃而不会拖垮
 daemon 或影响后续 Ping。脚本还会真实 `SIGKILL` 一个 daemon，再并发启动多个候选进程，
 确认陈旧 socket/lock 可回收、最终只有一个 daemon 持有 lock 并响应 Ping，随后能正常清理。
+它还会用离线静态 Runtime 完成一个真实回合，断开客户端后按 `run_id` 从游标 0 回放，
+逐帧校验事件顺序和 `Done` 终止帧。
 
 project/private 知识空间的 stdin 导入、owner/visibility 隔离、重复导入和向量闭环可用：
 
