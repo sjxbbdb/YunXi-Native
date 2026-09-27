@@ -204,17 +204,22 @@ active/staging 队列的计数和同一时钟快照；`status` 为 `idle`、`rea
 `error` 状态，不会创建状态目录、领取任务、触发 retry，也不会打开 `knowledge.sqlite3`
 或长期记忆数据库。需要查看自定义 worker 时传入 `--worker-id`。
 
-如果希望让同一个 YunXi daemon 顺带托管一个明确的知识工作区，可以显式启动：
+如果希望让同一个 YunXi daemon 顺带托管明确的知识工作区，可以显式启动；参数可重复
+传入最多 32 个工作区：
 
 ```bash
 ./target/release/yunxi-linux daemon --knowledge-workspace "$PWD" \
   --knowledge-max-jobs 8 --knowledge-interval-secs 5
+# 多工作区示例（不会扫描其他目录）
+./target/release/yunxi-linux daemon \
+  --knowledge-workspace "$HOME/src/project-a" \
+  --knowledge-workspace "$HOME/src/project-b"
 ```
 
 省略 `--knowledge-workspace` 时，daemon 不启动知识 worker；它不会自动发现目录。daemon
 运行期间仍可处理 Fish IPC 请求，停止时会等待当前 embedding round 完成，并把调度状态
 写入 XDG state 目录。知识库与长期记忆数据库保持独立。已经运行的 daemon 不支持后来
-追加 workspace；请先停止后再以该参数启动，避免出现“看似已挂载、实际没有 worker”的
+追加 workspace；请先停止后再以这些参数启动，避免出现“看似已挂载、实际没有 worker”的
 静默状态。独立的 `knowledge-worker@.service` 仍用于多 workspace fleet 托管。
 
 也可以重复传入 `--workspace` 获取最多 32 个明确工作区的 fleet 快照。路径会先

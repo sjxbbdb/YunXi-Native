@@ -234,15 +234,18 @@ impl Fleet {
     }
 }
 
-/// Validate the explicit workspace and worker identity before a daemon binds
-/// its socket.  This keeps configuration errors synchronous instead of
-/// silently leaving a background task that failed during startup.
+/// Validate explicit workspaces and worker identity before a daemon binds its
+/// socket. This keeps configuration errors synchronous instead of silently
+/// leaving a background task that failed during startup.
 #[cfg(unix)]
-pub(super) fn validate_daemon_workspace(path: &Path, worker_id: Option<&str>) -> Result<()> {
+pub(super) fn validate_daemon_workspaces(paths: &[PathBuf], worker_id: Option<&str>) -> Result<()> {
+    if paths.is_empty() || paths.len() > 32 {
+        bail!("--knowledge-workspace 必须显式指定 1 到 32 个工作区");
+    }
     let worker_id = worker_id
         .map(ToOwned::to_owned)
         .or_else(|| Some(DEFAULT_DAEMON_WORKER_ID.to_string()));
-    let _ = Fleet::new(vec![path.to_path_buf()], worker_id)?;
+    let _ = Fleet::new(paths.to_vec(), worker_id)?;
     Ok(())
 }
 

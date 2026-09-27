@@ -488,9 +488,11 @@ pub(crate) enum LinuxShellCommand {
     #[command(hide = true)]
     Daemon {
         /// Explicit workspace whose knowledge embedding queue is serviced by
-        /// this daemon. Omitting it keeps the knowledge worker disabled.
-        #[arg(long)]
-        knowledge_workspace: Option<PathBuf>,
+        /// this daemon. Repeat up to 32 times for an explicit fleet; omitting
+        /// it keeps the knowledge worker disabled. No directory discovery is
+        /// performed.
+        #[arg(long = "knowledge-workspace", action = ArgAction::Append)]
+        knowledge_workspaces: Vec<PathBuf>,
         /// Maximum jobs claimed by each knowledge worker polling round.
         #[arg(long, default_value_t = 1)]
         knowledge_max_jobs: usize,
@@ -723,13 +725,13 @@ pub(crate) async fn run_command(command: LinuxShellCommand) -> Result<()> {
             run_knowledge_generation_activate(generation, cwd)
         }
         LinuxShellCommand::Daemon {
-            knowledge_workspace,
+            knowledge_workspaces,
             knowledge_max_jobs,
             knowledge_interval_secs,
             knowledge_worker_id,
         } => {
             run_daemon(
-                knowledge_workspace,
+                knowledge_workspaces,
                 knowledge_max_jobs,
                 knowledge_interval_secs,
                 knowledge_worker_id,
@@ -3370,7 +3372,7 @@ async fn daemon_is_ready(socket: &Path) -> bool {
 
 #[cfg(not(unix))]
 async fn run_daemon(
-    _knowledge_workspace: Option<PathBuf>,
+    _knowledge_workspaces: Vec<PathBuf>,
     _knowledge_max_jobs: usize,
     _knowledge_interval_secs: u64,
     _knowledge_worker_id: Option<String>,
@@ -3380,7 +3382,7 @@ async fn run_daemon(
 
 #[cfg(unix)]
 async fn run_daemon(
-    knowledge_workspace: Option<PathBuf>,
+    knowledge_workspaces: Vec<PathBuf>,
     knowledge_max_jobs: usize,
     knowledge_interval_secs: u64,
     knowledge_worker_id: Option<String>,
@@ -3389,12 +3391,16 @@ async fn run_daemon(
     if knowledge_interval_secs == 0 || knowledge_interval_secs > 3600 {
         bail!("--knowledge-interval-secs 必须在 1 到 3600 之间");
     }
-    let knowledge_workspace = knowledge_workspace
+    if knowledge_workspaces.len() > 32 {
+        bail!("--knowledge-workspace 最多重复 32 次");
+    }
+    let knowledge_workspaces = knowledge_workspaces
+        .into_iter()
         .map(|workspace| canonicalize_worker_workspace(&workspace))
-        .transpose()?;
+        .collect::<Result<Vec<_>>>()?;
     let socket = socket_path()?;
     if daemon_is_ready(&socket).await {
-        if knowledge_workspace.is_some() {
+        if !knowledge_workspaces.is_empty() {
             bail!("YunXi shell daemon 已在运行；不能向活动 daemon 附加 knowledge worker");
         }
         return Ok(());
@@ -3402,13 +3408,16 @@ async fn run_daemon(
     let lock_path = daemon_lock_path(&socket);
     let _lock = acquire_daemon_lock(&lock_path)?;
     if daemon_is_ready(&socket).await {
-        if knowledge_workspace.is_some() {
+        if !knowledge_workspaces.is_empty() {
             bail!("YunXi shell daemon 已在运行；不能向活动 daemon 附加 knowledge worker");
         }
         return Ok(());
     }
-    if let Some(workspace) = knowledge_workspace.as_ref() {
-        knowledge_worker::validate_daemon_workspace(workspace, knowledge_worker_id.as_deref())?;
+    if !knowledge_workspaces.is_empty() {
+        knowledge_worker::validate_daemon_workspaces(
+            &knowledge_workspaces,
+            knowledge_worker_id.as_deref(),
+        )?;
     }
     if UnixStream::connect(&socket).await.is_ok() {
         bail!("YunXi shell socket 已被不兼容的 daemon 占用；拒绝覆盖活动进程");
@@ -3425,7 +3434,7 @@ async fn run_daemon(
     let mut terminate = signal(SignalKind::terminate()).context("注册 SIGTERM handler 失败")?;
     let mut interrupt = signal(SignalKind::interrupt()).context("注册 SIGINT handler 失败")?;
     let (knowledge_shutdown_tx, knowledge_shutdown_rx) = tokio::sync::watch::channel(false);
-    let knowledge_worker_handle = knowledge_workspace.map(|workspace| {
+    let knowledge_worker_handle = (!knowledge_workspaces.is_empty()).then(|| {
         let worker_id = knowledge_worker_id
             .clone()
             .unwrap_or_else(|| knowledge_worker::DEFAULT_DAEMON_WORKER_ID.to_string());
@@ -3434,7 +3443,7 @@ async fn run_daemon(
                 Some(worker_id),
                 knowledge_max_jobs,
                 knowledge_interval_secs,
-                vec![workspace],
+                knowledge_workspaces,
                 knowledge_shutdown_rx,
             )
             .await;

@@ -411,9 +411,9 @@ round-robin 游标保证共享预算下的基本公平；单个工作区的 SQLi
 结构化 warning，不进入记忆或知识数据库。当前 worker 已能在 Ctrl+C 或 SIGTERM 下
 优雅退出并输出 stopped 记录。
 
-随后增加了 daemon 内的最小常驻调度闭环：`yunxi-linux daemon --knowledge-workspace <DIR>`
-只接受一个用户显式指定的 workspace，默认不启用，不从当前 shell、HOME 或目录树推断范围。
-daemon 以 `spawn_blocking` 执行有界 embedding round，IPC socket 在 worker 运行期间仍可
+随后增加了 daemon 内的常驻调度闭环：`yunxi-linux daemon --knowledge-workspace <DIR>`
+接受 1 到 32 个用户显式指定的 workspace（参数可重复），默认不启用，不从当前 shell、
+HOME 或目录树推断范围。daemon 以 `spawn_blocking` 执行有界 embedding round，IPC socket 在 worker 运行期间仍可
 Ping；daemon 收到 SIGTERM/SIGINT 后先停止领取，再等待当前 round 完成并写入独立的
 `$XDG_STATE_HOME/yunxi/knowledge-worker/` 调度状态。已有 daemon 再次携带该参数会明确
 失败，不会静默返回而让用户误以为 worker 已挂载。这个入口只处理 active knowledge
