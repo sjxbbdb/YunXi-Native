@@ -262,7 +262,7 @@ knowledge_fts
 - 完成用户级单例锁、socket 权限、PID/start-time 检查和 graceful shutdown；
 - 提供 `systemd --user` 单元与无 systemd 启动路径。
 
-当前已提供 `yunxi-linux systemd-unit` 输出模板、用户级服务示例、SIGTERM/SIGINT 清理路径、PID/start-time 锁校验，以及有界的事件游标回放；daemon lock metadata 采用临时文件同步后硬链接抢占，损坏 metadata 不会被直接删除。`delivery=detached_output_only` 支持活动回合的 backlog+live Follow，并通过 run 级 cancellation registry 接受独立连接的显式 `Cancel {run_id}`；默认 attached 回合仍在连接断开时 cancel+discard，跨重启续跑另行设计。
+当前已提供 `yunxi-linux systemd-unit` 输出模板、用户级服务示例、SIGTERM/SIGINT 清理路径、PID/start-time 锁校验，以及有界的事件游标回放；daemon lock metadata 采用临时文件同步后硬链接抢占，损坏 metadata 不会被直接删除。`delivery=detached_output_only` 支持活动回合的 backlog+live Follow，并通过 run 级 cancellation registry 接受独立连接的显式 `Cancel {run_id}`；默认 attached 回合仍在连接断开时 cancel+discard。daemon 现在还将 detached run 的元数据、事件游标和有界事件环写入当前用户的 `$XDG_STATE_HOME/yunxi/runs/`，重启时把未完成 run 结构化标记为 `interrupted`，追加终止事件，并通过 `Status {run_id}` 与 Follow 暴露 `recoverable=true`；这一步只恢复可观察性，不伪造 provider 继续执行，真正 resume 仍需显式设计。
 
 同时提供真实 Unix socket smoke：`yunxi-agent-linux/tests/daemon_ipc_smoke.sh` 在临时
 XDG 目录启动 release daemon，验证版本握手、Ping、未知回合 Follow 重同步、确定性
@@ -274,8 +274,10 @@ daemon 发送 `SIGKILL`，并发启动多个候选进程，验证陈旧 socket/l
 收敛和 owner 的 Ping/退出清理；还会用离线静态 Runtime 完成一个真实回合，断开后按
 `run_id` 从游标 0 回放并逐帧校验顺序与 `Done` 终止帧；另覆盖
 `detached_output_only` 断开后 active Follow 的 backlog+live 顺序，以及 detached run 的独立
-Cancel。只有显式 detached delivery 才允许活动回合 Follow；这不等于 attached 回合可恢复，
-也不等于 run 状态已经跨 daemon 重启持久化。
+Cancel。只有显式 detached delivery 才允许活动回合 Follow；attached 回合仍保持断线
+cancel+discard。`yunxi-agent-linux/tests/daemon_restart_recovery_smoke.sh` 额外覆盖以用户级
+XDG state manifest 模拟 daemon 崩溃后的重启：Status 返回 `interrupted/recoverable`，Follow
+返回已有事件和结构化 `Done(interrupted)`，不触发 provider 重跑。
 
 当前 `Turn` 语义边界为：`prompt` ≤ 64 KiB、`cwd` ≤ 4 KiB、`request_id`/`session_id` ≤
 512 字节、`provider`/`model` ≤ 256 字节。它们独立于 24 MiB frame 传输上限，目的是在

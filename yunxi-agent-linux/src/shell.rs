@@ -2812,6 +2812,11 @@ enum ClientFrame {
     Ping {
         request_id: Option<String>,
     },
+    /// Return the durable lifecycle state of a run, including one recovered
+    /// after a daemon restart.
+    Status {
+        run_id: String,
+    },
     Turn {
         request_id: String,
         cwd: String,
@@ -2883,6 +2888,13 @@ enum ServerFrame {
     CancelAccepted {
         run_id: String,
     },
+    RunStatus {
+        run_id: String,
+        status: RunStatus,
+        next_seq: u64,
+        recoverable: bool,
+        created_at_unix_secs: u64,
+    },
     /// Numbered output event. The wrapper lets a reconnecting client persist
     /// the exact cursor it has consumed without guessing from payloads.
     Event {
@@ -2932,6 +2944,28 @@ const REPLAY_MAX_EVENTS_PER_RUN: usize = 64;
 const REPLAY_MAX_BYTES_PER_RUN: usize = 2 * 1024 * 1024;
 #[cfg(unix)]
 const REPLAY_LIVE_CHANNEL_CAPACITY: usize = 128;
+#[cfg(unix)]
+const REPLAY_STATE_VERSION: u8 = 1;
+#[cfg(unix)]
+const REPLAY_STATE_MAX_BYTES: u64 = 8 * 1024 * 1024;
+
+#[cfg(unix)]
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum RunStatus {
+    Running,
+    Completed,
+    Failed,
+    Cancelled,
+    Interrupted,
+}
+
+#[cfg(unix)]
+impl RunStatus {
+    fn recoverable(self) -> bool {
+        matches!(self, Self::Interrupted)
+    }
+}
 
 /// An event retained for a completed run. Only user-visible output is kept;
 /// approvals and user-input prompts are intentionally excluded because they
@@ -2953,6 +2987,138 @@ struct ReplayRun {
     complete: bool,
     live_tx: broadcast::Sender<ReplayEvent>,
     active_follow_allowed: bool,
+    status: RunStatus,
+    request_id: Option<String>,
+    cwd: Option<String>,
+    session_id: Option<String>,
+    created_at_unix_secs: u64,
+}
+
+#[cfg(unix)]
+#[derive(Debug, Serialize, Deserialize)]
+struct PersistedReplayRun {
+    version: u8,
+    run_id: String,
+    status: RunStatus,
+    next_seq: u64,
+    active_follow_allowed: bool,
+    request_id: Option<String>,
+    cwd: Option<String>,
+    session_id: Option<String>,
+    created_at_unix_secs: u64,
+    events: Vec<PersistedReplayEvent>,
+}
+
+#[cfg(unix)]
+#[derive(Debug, Serialize, Deserialize)]
+struct PersistedReplayEvent {
+    seq: u64,
+    frame: ServerFrame,
+}
+
+#[cfg(unix)]
+#[derive(Debug, Clone)]
+struct ReplayPersistence {
+    directory: PathBuf,
+}
+
+#[cfg(unix)]
+impl ReplayPersistence {
+    fn new(directory: PathBuf) -> Result<Self> {
+        fs::create_dir_all(&directory).with_context(|| {
+            format!(
+                "创建 YunXi daemon run state 目录失败: {}",
+                directory.display()
+            )
+        })?;
+        restrict_mode(&directory, 0o700)?;
+        Ok(Self { directory })
+    }
+
+    fn path_for(&self, run_id: &str) -> PathBuf {
+        self.directory
+            .join(format!("{:016x}.json", stable_run_hash(run_id)))
+    }
+
+    fn write(&self, run_id: &str, run: &ReplayRun) -> Result<()> {
+        let record = PersistedReplayRun {
+            version: REPLAY_STATE_VERSION,
+            run_id: run_id.to_string(),
+            status: run.status,
+            next_seq: run.next_seq,
+            active_follow_allowed: run.active_follow_allowed,
+            request_id: run.request_id.clone(),
+            cwd: run.cwd.clone(),
+            session_id: run.session_id.clone(),
+            created_at_unix_secs: run.created_at_unix_secs,
+            events: run
+                .events
+                .iter()
+                .map(|event| PersistedReplayEvent {
+                    seq: event.seq,
+                    frame: event.frame.clone(),
+                })
+                .collect(),
+        };
+        let payload = serde_json::to_vec(&record).context("序列化 YunXi daemon run state 失败")?;
+        if payload.len() as u64 > REPLAY_STATE_MAX_BYTES {
+            bail!("YunXi daemon run state 超过大小上限")
+        }
+        let path = self.path_for(run_id);
+        let temp = path.with_extension(format!("{}.tmp", std::process::id()));
+        fs::write(&temp, payload)
+            .with_context(|| format!("写入 run state 失败: {}", temp.display()))?;
+        restrict_mode(&temp, 0o600)?;
+        fs::rename(&temp, &path)
+            .with_context(|| format!("提交 run state 失败: {}", path.display()))?;
+        Ok(())
+    }
+
+    fn remove(&self, run_id: &str) {
+        let _ = fs::remove_file(self.path_for(run_id));
+    }
+
+    fn load(&self) -> Result<Vec<PersistedReplayRun>> {
+        let mut entries = fs::read_dir(&self.directory)
+            .with_context(|| format!("读取 run state 目录失败: {}", self.directory.display()))?
+            .filter_map(|entry| entry.ok())
+            .filter(|entry| {
+                entry
+                    .path()
+                    .extension()
+                    .is_some_and(|value| value == "json")
+            })
+            .collect::<Vec<_>>();
+        entries.sort_by_key(|entry| entry.file_name());
+        let mut records = Vec::new();
+        for entry in entries {
+            let path = entry.path();
+            let Ok(metadata) = fs::metadata(&path) else {
+                continue;
+            };
+            if metadata.len() > REPLAY_STATE_MAX_BYTES {
+                continue;
+            }
+            let Ok(payload) = fs::read(&path) else {
+                continue;
+            };
+            let Ok(record) = serde_json::from_slice::<PersistedReplayRun>(&payload) else {
+                continue;
+            };
+            if record.version == REPLAY_STATE_VERSION && !record.run_id.is_empty() {
+                records.push(record);
+            }
+        }
+        Ok(records)
+    }
+}
+
+#[cfg(unix)]
+fn stable_run_hash(value: &str) -> u64 {
+    value
+        .bytes()
+        .fold(0xcbf29ce484222325, |hash, byte| hash ^ u64::from(byte))
+        .wrapping_mul(0x100000001b3)
 }
 
 #[cfg(unix)]
@@ -2977,6 +3143,7 @@ struct ReplayStore {
     max_active_runs: usize,
     max_events_per_run: usize,
     max_bytes_per_run: usize,
+    persistence: Option<ReplayPersistence>,
 }
 
 #[cfg(unix)]
@@ -2989,6 +3156,7 @@ impl Default for ReplayStore {
             max_active_runs: REPLAY_MAX_ACTIVE_RUNS,
             max_events_per_run: REPLAY_MAX_EVENTS_PER_RUN,
             max_bytes_per_run: REPLAY_MAX_BYTES_PER_RUN,
+            persistence: None,
         }
     }
 }
@@ -3000,27 +3168,49 @@ impl ReplayStore {
     }
 
     fn begin_with_delivery(&mut self, run_id: &str, active_follow_allowed: bool) -> bool {
+        self.begin_with_metadata(run_id, active_follow_allowed, None, None, None)
+    }
+
+    fn begin_with_metadata(
+        &mut self,
+        run_id: &str,
+        active_follow_allowed: bool,
+        request_id: Option<String>,
+        cwd: Option<String>,
+        session_id: Option<String>,
+    ) -> bool {
         if self.runs.values().filter(|run| !run.complete).count() >= self.max_active_runs {
             return false;
         }
+        let created_at_unix_secs = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
         let (live_tx, _) = broadcast::channel(REPLAY_LIVE_CHANNEL_CAPACITY);
-        self.runs.insert(
-            run_id.to_string(),
-            ReplayRun {
-                next_seq: 0,
-                events: VecDeque::new(),
-                event_bytes: 0,
-                complete: false,
-                live_tx,
-                active_follow_allowed,
-            },
-        );
+        let run = ReplayRun {
+            next_seq: 0,
+            events: VecDeque::new(),
+            event_bytes: 0,
+            complete: false,
+            live_tx,
+            active_follow_allowed,
+            status: RunStatus::Running,
+            request_id,
+            cwd,
+            session_id,
+            created_at_unix_secs,
+        };
+        self.runs.insert(run_id.to_string(), run);
+        let _ = self.persist_run(run_id);
         true
     }
 
     fn discard(&mut self, run_id: &str) {
         self.runs.remove(run_id);
         self.completed_order.retain(|id| id != run_id);
+        if let Some(persistence) = &self.persistence {
+            persistence.remove(run_id);
+        }
     }
 
     fn record(&mut self, run_id: &str, frame: &ServerFrame) -> Option<u64> {
@@ -3053,7 +3243,16 @@ impl ReplayStore {
         };
         run.events.push_back(event.clone());
         run.event_bytes = run.event_bytes.saturating_add(bytes);
+        if let ServerFrame::Done { status } = frame {
+            run.status = match status.as_str() {
+                "completed" => RunStatus::Completed,
+                "cancelled" => RunStatus::Cancelled,
+                "interrupted" => RunStatus::Interrupted,
+                _ => RunStatus::Failed,
+            };
+        }
         let _ = run.live_tx.send(event);
+        let _ = self.persist_run(run_id);
         Some(seq)
     }
 
@@ -3062,12 +3261,108 @@ impl ReplayStore {
             return;
         };
         run.complete = true;
+        if run.status == RunStatus::Running {
+            run.status = RunStatus::Completed;
+        }
         self.completed_order.push_back(run_id.to_string());
         while self.completed_order.len() > self.max_runs {
             if let Some(evicted) = self.completed_order.pop_front() {
                 self.runs.remove(&evicted);
             }
         }
+        let _ = self.persist_run(run_id);
+    }
+
+    fn status(&self, run_id: &str) -> Option<(RunStatus, u64, bool, u64)> {
+        self.runs.get(run_id).map(|run| {
+            (
+                run.status,
+                run.next_seq,
+                run.status.recoverable(),
+                run.created_at_unix_secs,
+            )
+        })
+    }
+
+    fn persist_run(&self, run_id: &str) -> Result<()> {
+        let Some(persistence) = &self.persistence else {
+            return Ok(());
+        };
+        let Some(run) = self.runs.get(run_id) else {
+            return Ok(());
+        };
+        persistence.write(run_id, run)
+    }
+
+    fn with_persistence(persistence: ReplayPersistence) -> Result<Self> {
+        let mut store = Self {
+            persistence: Some(persistence.clone()),
+            ..Self::default()
+        };
+        for mut record in persistence.load()? {
+            let (live_tx, _) = broadcast::channel(REPLAY_LIVE_CHANNEL_CAPACITY);
+            let mut events = VecDeque::new();
+            let mut event_bytes = 0usize;
+            for event in record.events.drain(..) {
+                if !is_replayable_frame(&event.frame) {
+                    continue;
+                }
+                let bytes = serde_json::to_vec(&event.frame)
+                    .map(|value| value.len())
+                    .unwrap_or(0);
+                events.push_back(ReplayEvent {
+                    seq: event.seq,
+                    bytes,
+                    frame: event.frame,
+                });
+                event_bytes = event_bytes.saturating_add(bytes);
+            }
+            let was_running = record.status == RunStatus::Running;
+            if was_running {
+                record.status = RunStatus::Interrupted;
+                record.active_follow_allowed = false;
+                let done = ServerFrame::Done {
+                    status: "interrupted".to_string(),
+                };
+                let seq = record.next_seq.saturating_add(1);
+                let bytes = serde_json::to_vec(&done)
+                    .map(|value| value.len())
+                    .unwrap_or(0);
+                events.push_back(ReplayEvent {
+                    seq,
+                    bytes,
+                    frame: done,
+                });
+                event_bytes = event_bytes.saturating_add(bytes);
+                record.next_seq = seq;
+            }
+            let run = ReplayRun {
+                next_seq: record.next_seq,
+                events,
+                event_bytes,
+                complete: true,
+                live_tx,
+                active_follow_allowed: false,
+                status: record.status,
+                request_id: record.request_id,
+                cwd: record.cwd,
+                session_id: record.session_id,
+                created_at_unix_secs: record.created_at_unix_secs,
+            };
+            let run_id = record.run_id;
+            store.runs.insert(run_id.clone(), run);
+            store.completed_order.push_back(run_id.clone());
+            if was_running {
+                let _ = store.persist_run(&run_id);
+            }
+        }
+        while store.completed_order.len() > store.max_runs {
+            if let Some(evicted) = store.completed_order.pop_front() {
+                store.runs.remove(&evicted);
+                persistence.remove(&evicted);
+            }
+        }
+        Ok(store)
     }
 
     fn lookup(&self, run_id: &str, after_seq: u64) -> ReplayLookup {
@@ -3252,6 +3547,16 @@ fn socket_path() -> Result<PathBuf> {
 #[cfg(unix)]
 fn daemon_lock_path(socket: &Path) -> PathBuf {
     socket.with_extension("lock")
+}
+
+#[cfg(unix)]
+fn daemon_run_state_path() -> Result<PathBuf> {
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    let base = std::env::var_os("XDG_STATE_HOME")
+        .map(PathBuf::from)
+        .or_else(|| home.map(|path| path.join(".local").join("state")))
+        .unwrap_or_else(|| PathBuf::from(".yunxi-state"));
+    Ok(base.join("yunxi").join("runs"))
 }
 
 #[cfg(unix)]
@@ -3619,6 +3924,17 @@ async fn run_shell_intercept(
             ServerFrame::ResyncRequired { run_id, reason } => {
                 eprintln!("[yunxi resync required: {run_id}] {reason}");
             }
+            ServerFrame::RunStatus {
+                run_id,
+                status,
+                next_seq,
+                recoverable,
+                ..
+            } => {
+                eprintln!(
+                    "[yunxi run status: {run_id}] {status:?} seq={next_seq} recoverable={recoverable}"
+                );
+            }
             ServerFrame::RunAccepted { .. } | ServerFrame::CancelAccepted { .. } => {}
         }
     }
@@ -3865,7 +4181,8 @@ async fn run_daemon(
         .with_context(|| format!("绑定 YunXi shell socket 失败: {}", socket.display()))?;
     restrict_mode(&socket, 0o600)?;
     let sessions = Arc::new(Mutex::new(HashMap::<String, String>::new()));
-    let replays = Arc::new(Mutex::new(ReplayStore::default()));
+    let replay_state = ReplayPersistence::new(daemon_run_state_path()?)?;
+    let replays = Arc::new(Mutex::new(ReplayStore::with_persistence(replay_state)?));
     let cancellations = Arc::new(Mutex::new(HashMap::<String, AgentRunControl>::new()));
     let mut terminate = signal(SignalKind::terminate()).context("注册 SIGTERM handler 失败")?;
     let mut interrupt = signal(SignalKind::interrupt()).context("注册 SIGINT handler 失败")?;
@@ -3980,6 +4297,8 @@ async fn handle_connection(
                 "follow_active".to_string(),
                 "detached_output_only".to_string(),
                 "detached_cancel".to_string(),
+                "run_status".to_string(),
+                "run_recovery".to_string(),
             ],
         },
     )
@@ -3993,6 +4312,31 @@ async fn handle_connection(
     match request {
         ClientFrame::Ping { request_id } => {
             write_frame(&mut writer, &ServerFrame::Pong { request_id }).await?;
+        }
+        ClientFrame::Status { run_id } => {
+            let status = replays.lock().await.status(&run_id);
+            if let Some((status, next_seq, recoverable, created_at_unix_secs)) = status {
+                write_frame(
+                    &mut writer,
+                    &ServerFrame::RunStatus {
+                        run_id,
+                        status,
+                        next_seq,
+                        recoverable,
+                        created_at_unix_secs,
+                    },
+                )
+                .await?;
+            } else {
+                write_frame(
+                    &mut writer,
+                    &ServerFrame::ResyncRequired {
+                        run_id,
+                        reason: "未知或已被回收的 run_id".to_string(),
+                    },
+                )
+                .await?;
+            }
         }
         ClientFrame::Turn {
             request_id,
@@ -4041,7 +4385,13 @@ async fn handle_connection(
                     .await?;
                 }
                 DeliveryMode::DetachedOutputOnly => {
-                    let run_id = begin_detached_run(&replays).await?;
+                    let run_id = begin_detached_run(
+                        &replays,
+                        request_id.clone(),
+                        cwd.clone(),
+                        session_id.clone(),
+                    )
+                    .await?;
                     let (control, _stream) = AgentRunControl::streaming_output_only();
                     cancellations
                         .lock()
@@ -4289,9 +4639,20 @@ async fn run_daemon_turn<W: tokio::io::AsyncWrite + Unpin>(
 }
 
 #[cfg(unix)]
-async fn begin_detached_run(replays: &Arc<Mutex<ReplayStore>>) -> Result<String> {
+async fn begin_detached_run(
+    replays: &Arc<Mutex<ReplayStore>>,
+    request_id: String,
+    cwd: String,
+    session_id: Option<String>,
+) -> Result<String> {
     let run_id = new_request_id();
-    if !replays.lock().await.begin_with_delivery(&run_id, true) {
+    if !replays.lock().await.begin_with_metadata(
+        &run_id,
+        true,
+        Some(request_id),
+        Some(cwd),
+        session_id,
+    ) {
         bail!("YunXi shell daemon 当前活动回合过多，请稍后重试");
     }
     Ok(run_id)
@@ -5064,6 +5425,53 @@ mod tests {
         );
         store.discard("aborted");
         assert!(matches!(store.lookup("aborted", 0), ReplayLookup::Unknown));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn durable_replay_marks_running_run_interrupted_after_restart() {
+        let directory = std::env::temp_dir().join(format!(
+            "yunxi-run-state-test-{}-{}",
+            std::process::id(),
+            REQUEST_ID_COUNTER.fetch_add(1, Ordering::Relaxed)
+        ));
+        let persistence = ReplayPersistence::new(directory.clone()).expect("state directory");
+        let mut store = ReplayStore {
+            persistence: Some(persistence.clone()),
+            ..ReplayStore::default()
+        };
+        assert!(store.begin_with_metadata(
+            "restart-run",
+            true,
+            Some("request-1".to_string()),
+            Some("/workspace".to_string()),
+            None,
+        ));
+        store.record(
+            "restart-run",
+            &ServerFrame::Message {
+                content: "partial output".to_string(),
+            },
+        );
+        drop(store);
+
+        let restored = ReplayStore::with_persistence(persistence).expect("restore state");
+        assert_eq!(
+            restored.status("restart-run"),
+            Some((
+                RunStatus::Interrupted,
+                2,
+                true,
+                restored.status("restart-run").unwrap().3
+            ))
+        );
+        let ReplayLookup::Events(events) = restored.lookup("restart-run", 0) else {
+            panic!("interrupted run should be replayable as a terminal result");
+        };
+        assert!(
+            matches!(events.last().map(|event| &event.frame), Some(ServerFrame::Done { status }) if status == "interrupted")
+        );
+        fs::remove_dir_all(directory).expect("remove test state");
     }
 
     #[cfg(target_os = "linux")]

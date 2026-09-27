@@ -36,7 +36,7 @@
 | 剪贴板/附件 | fish hook 内置粘贴处理 | 暂无 Linux 版附件协议 | 需要先定义 YunXi 附件模型 |
 | 历史记录 | 接管输入可写入 Miyu 历史 | Runtime 有会话历史 | 需要统一 fish 历史与 YunXi 会话记录的边界 |
 | 提示符与光标 | Miyu 处理光标隐藏、提示符重绘、AI 输入回放 | 基础输出已实现 | 可移植，但需单独做终端兼容性测试 |
-| Unix socket | 已有成熟 IPC、协议版本和单例生命周期 | 已实现版本化 socket daemon、有界完成回合回放、`detached_output_only`、active Follow、Ping、attached Cancel，以及 run 级 detached Cancel | 持久化 run 和真实客户端矩阵仍不在本切片 |
+| Unix socket | 已有成熟 IPC、协议版本和单例生命周期 | 已实现版本化 socket daemon、有界完成回合回放、`detached_output_only`、active Follow、Ping、attached Cancel、run 级 detached Cancel，以及用户级 durable run manifest/Status | 真正跨重启 resume 仍需显式设计；不自动伪造 provider 继续执行 |
 | 断线继续 | 可重连客户端继续；one-shot CLI/shellhook 断线取消 | 当前连接断开时生命周期不完整 | 按客户端类型分别实现，不能统一写成“断线继续” |
 | 会话续接 | 终端会话、命名会话、Normal/Dev 车道 | YunXi 父子 session 与本地存储 | 需要建立 fish origin → YunXi session 的持久映射 |
 
@@ -124,7 +124,7 @@
 - 知识风险 provenance：`man/help` 文档同时记录采集风险 `risk_level` 与被描述命令的 `risk_class`，并由 Planner 诊断透传；它只做提示，不能绕过 Approval/Sandbox。
 - 知识访问主体：`knowledge-principal` 从当前 UID/用户名生成稳定 principal；project/private 的初始化、导入、查询、向量查询、撤回和空间列表均绑定当前主体，不能仅修改 `--owner` 越权；system public 空间使用内部 `system` principal。
 - Unix socket daemon：已补齐协议版本、frame 上限、单例锁、Ping、attached Cancel、完成回合有界 Follow、detached output-only active Follow，以及独立连接的 run 级 detached Cancel。
-- 持久化 run 和跨重启续跑：待实现。
+- 持久化 run：detached run 的元数据、事件游标和有界事件环保存于当前用户 `$XDG_STATE_HOME/yunxi/runs/`；daemon 重启会把运行中记录标为 `interrupted`，Status/Follow 可见并带 `recoverable` 标记。provider 不会被隐式重跑，显式 resume 仍待设计。
 - Miyu Linux 专用 Skills：待评估，不在核心 Runtime 中硬编码。
 
 这份矩阵不是把两个项目合并成一个产品，而是定义 YunXi Native 的适配边界：宿主层可以借鉴成熟实现，Runtime、人格、记忆和安全语义仍由 YunXi 负责，避免 Linux 版在扩展时失去一致性。
