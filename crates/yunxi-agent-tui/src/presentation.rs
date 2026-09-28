@@ -141,7 +141,10 @@ impl TuiPresentation {
     pub(crate) fn present_agent_event(&mut self, event: &AgentEvent) -> TuiEvent {
         if !matches!(
             event,
-            AgentEvent::PatchCompleted { .. } | AgentEvent::FileChanged { .. }
+            AgentEvent::PatchCompleted { .. }
+                | AgentEvent::FileChanged { .. }
+                | AgentEvent::ToolCallStarted { .. }
+                | AgentEvent::ToolCallCompleted { .. }
         ) {
             self.active_progress_group = None;
         }
@@ -376,7 +379,7 @@ impl TuiPresentation {
                 let phase = approval_phase(*approved, reason.as_deref());
                 let mut event = self.tool_event(
                     id.as_deref(),
-                    "approval",
+                    "批准",
                     phase,
                     TuiCellKind::ToolStatusSummary,
                     reason
@@ -1122,7 +1125,7 @@ fn stable_hash(value: &str) -> u64 {
 }
 
 fn approval_label(approved: bool) -> &'static str {
-    if approved { "approved" } else { "declined" }
+    if approved { "已确认" } else { "已拒绝" }
 }
 
 fn command_exit_phase(exit_code: i32) -> ToolPhase {

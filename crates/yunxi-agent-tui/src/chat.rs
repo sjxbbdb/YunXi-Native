@@ -478,6 +478,76 @@ mod tests {
     }
 
     #[test]
+    fn patch_progress_stays_coalesced_when_tool_events_interleave() {
+        let mut presentation = TuiPresentation::default();
+        let mut transcript = Transcript::default();
+        for event in [
+            AgentEvent::ToolCallStarted {
+                id: Some("patch-1".to_string()),
+                name: "patch".to_string(),
+                arguments_json: None,
+            },
+            AgentEvent::PatchCompleted {
+                status: yunxi_agent_core::PatchStatus::InProgress,
+            },
+            AgentEvent::ToolCallCompleted {
+                id: Some("patch-1".to_string()),
+                name: "patch".to_string(),
+                output: String::new(),
+                status: yunxi_agent_core::CommandStatus::Completed,
+            },
+            AgentEvent::FileChanged {
+                path: "src/main.rs".to_string(),
+                kind: yunxi_agent_core::FileChangeKind::Update,
+            },
+            AgentEvent::PatchCompleted {
+                status: yunxi_agent_core::PatchStatus::Completed,
+            },
+        ] {
+            push_event(&mut presentation, &mut transcript, event);
+        }
+
+        let progress = transcript
+            .cells()
+            .iter()
+            .filter(|cell| {
+                matches!(
+                    cell.kind(),
+                    HistoryCellKind::Event { kind, .. } if kind == "progress"
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(progress.len(), 1);
+        assert!(cell_text(progress[0]).contains("修改已完成"));
+    }
+
+    #[test]
+    fn approval_completion_uses_a_human_visible_chinese_label() {
+        let mut presentation = TuiPresentation::default();
+        let mut transcript = Transcript::default();
+        push_event(
+            &mut presentation,
+            &mut transcript,
+            AgentEvent::ApprovalCompleted {
+                id: Some("approval-1".to_string()),
+                approved: true,
+                reason: Some("用户已确认".to_string()),
+            },
+        );
+
+        let visible = transcript
+            .cells()
+            .iter()
+            .find_map(|cell| match cell.kind() {
+                HistoryCellKind::Tool(entry) => Some(entry.display_text()),
+                _ => None,
+            })
+            .expect("approval completion should render a tool activity");
+        assert!(visible.starts_with("批准 · 已确认"));
+        assert!(!visible.contains("approval"));
+    }
+
+    #[test]
     fn progress_group_does_not_cross_a_new_user_turn() {
         let mut presentation = TuiPresentation::default();
         let mut transcript = Transcript::default();

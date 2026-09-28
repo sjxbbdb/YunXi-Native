@@ -243,47 +243,88 @@ fn render_welcome(
         .provider_live()
         .map(|provider_live| if provider_live { "live" } else { "offline" })
         .unwrap_or("starting");
+    let centered_line = |text: String, style: TuiSemanticStyle| {
+        let text = TextLayout::truncate(&text, content_width);
+        let padding = content_width
+            .saturating_sub(TextLayout::measure(&text))
+            .saturating_div(2);
+        Line::from(vec![
+            Span::raw(" ".repeat(padding)),
+            Span::styled(text, styles.style(style)),
+        ])
+    };
     let mut lines = vec![
-        Line::from(Span::styled(
-            TextLayout::truncate("YUNXI", content_width),
-            styles.style(TuiSemanticStyle::Header),
-        )),
-        Line::from(Span::styled(
-            TextLayout::truncate("自然语言终端", content_width),
-            styles.style(TuiSemanticStyle::Subheader),
-        )),
+        centered_line("YUNXI".to_string(), TuiSemanticStyle::Header),
+        centered_line("自然语言终端".to_string(), TuiSemanticStyle::Subheader),
         Line::from(""),
-        Line::from(Span::styled(
-            TextLayout::truncate("把目标交给云熙，直接开始。", content_width),
-            styles.style(TuiSemanticStyle::Muted),
-        )),
-        Line::from(Span::styled(
-            TextLayout::truncate(
-                &format!("{mode} · /help  /capabilities  /status"),
-                content_width,
-            ),
-            styles.style(TuiSemanticStyle::Footer),
-        )),
+        centered_line(
+            "把目标交给云熙，直接开始。".to_string(),
+            TuiSemanticStyle::Muted,
+        ),
+        centered_line(
+            format!("{mode} · /help  /capabilities  /status"),
+            TuiSemanticStyle::Footer,
+        ),
     ];
     if !app.welcome_checklist().is_empty() {
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled(
-            TextLayout::truncate("首次启动检查", content_width),
+            TextLayout::truncate("  首次启动检查", content_width),
             styles.style(TuiSemanticStyle::Subheader),
         )));
-        lines.extend(app.welcome_checklist().iter().map(|item| {
-            Line::from(Span::styled(
-                TextLayout::truncate(item, content_width),
+        let mut checklist = Vec::new();
+        let mut completion = None;
+        for item in app.welcome_checklist() {
+            let item = item.trim();
+            if item.starts_with("完成。") {
+                completion = Some(item.to_string());
+                continue;
+            }
+            let Some((marker_offset, marker)) = item
+                .find('✓')
+                .map(|offset| (offset, '✓'))
+                .or_else(|| item.find('-').map(|offset| (offset, '-')))
+            else {
+                checklist.push((item.to_string(), ' ', String::new()));
+                continue;
+            };
+            checklist.push((
+                item[..marker_offset].trim().to_string(),
+                marker,
+                item[marker_offset + marker.len_utf8()..].trim().to_string(),
+            ));
+        }
+        let label_width = checklist
+            .iter()
+            .map(|(label, _, _)| TextLayout::measure(label))
+            .max()
+            .unwrap_or_default();
+        for (label, marker, value) in checklist {
+            let line = if marker == ' ' {
+                format!("  {label}")
+            } else {
+                let padding = " ".repeat(label_width.saturating_sub(TextLayout::measure(&label)));
+                format!("  {label}{padding} {marker} {value}")
+            };
+            lines.push(Line::from(Span::styled(
+                TextLayout::truncate(&line, content_width),
                 styles.style(TuiSemanticStyle::Muted),
-            ))
-        }));
+            )));
+        }
+        if let Some(completion) = completion {
+            lines.push(Line::from(""));
+            lines.push(Line::from(Span::styled(
+                TextLayout::truncate(&format!("  {completion}"), content_width),
+                styles.style(TuiSemanticStyle::Muted),
+            )));
+        }
     }
     // The composer can leave only a few transcript rows on a short terminal.
     // Keep the card's leading title/content and only render checklist rows that
     // fit inside the transcript viewport, rather than letting them reach the
     // bottom pane.
     lines.truncate(inner.height as usize);
-    let welcome = Paragraph::new(lines).alignment(Alignment::Center).block(
+    let welcome = Paragraph::new(lines).alignment(Alignment::Left).block(
         Block::default()
             .title(Span::styled(
                 "YunXi | ready",
@@ -662,6 +703,38 @@ mod tests {
         assert!(rendered.contains("首次启动检查"));
         assert!(rendered.contains("/tmp/yunxi"));
         assert!(app.transcript().cells().is_empty());
+    }
+
+    #[test]
+    fn welcome_checklist_markers_align_as_a_left_aligned_block() {
+        let mut app = YunxiTuiApp::default();
+        app.set_banner(banner());
+        app.set_welcome_checklist(vec![
+            "  工作区                 ✓ /tmp/yunxi".to_string(),
+            "  YunXi 状态目录         ✓ /home/yunxi/.local/state".to_string(),
+            "  Provider / 模型        ✓ deepseek / static".to_string(),
+            "  默认知识库             - 未配置，稍后可接入".to_string(),
+            "  完成。直接输入目标即可开始，/help 查看帮助".to_string(),
+        ]);
+
+        let rendered = render_full_frame_snapshot(&app, 100, 30);
+        let marker_columns = rendered
+            .lines()
+            .filter_map(|line| line.split_once('|').map(|(_, content)| content))
+            .filter_map(|content| {
+                content
+                    .find('✓')
+                    .or_else(|| content.find("- 未"))
+                    .map(|offset| UnicodeWidthStr::width(&content[..offset]))
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(marker_columns.len(), 4);
+        assert!(
+            marker_columns
+                .windows(2)
+                .all(|columns| columns[0] == columns[1])
+        );
     }
 
     #[test]
