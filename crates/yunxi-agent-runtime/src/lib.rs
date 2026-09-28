@@ -3668,6 +3668,17 @@ async fn emit_memory_extraction_events(
         workspace_fingerprint: Some(persona.workspace_fingerprint.clone()),
         memory_enabled: persona.settings.memory_enabled,
     });
+    memory_extraction_debug(
+        session_id,
+        pipeline
+            .stages
+            .iter()
+            .map(|stage| stage.generated_count)
+            .sum(),
+        pipeline.candidates.len(),
+        pipeline.diagnostics.len(),
+        pipeline.warnings.len(),
+    );
     for warning in pipeline.warnings {
         sink.emit(AgentEvent::MemoryWarning {
             schema_version: SCHEMA_VERSION,
@@ -3758,6 +3769,41 @@ async fn emit_memory_extraction_events(
         .await?;
     }
     Ok(())
+}
+
+fn memory_extraction_debug(
+    session_id: &SessionId,
+    generated: usize,
+    retained: usize,
+    diagnostics: usize,
+    warnings: usize,
+) {
+    let enabled = std::env::var("YUNXI_MEMORY_EXTRACTION_DEBUG")
+        .ok()
+        .is_some_and(|value| {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        });
+    if !enabled {
+        return;
+    }
+    let session = session_id
+        .0
+        .chars()
+        .filter(|character| character.is_ascii_alphanumeric() || matches!(character, '-' | '_'))
+        .take(32)
+        .collect::<String>();
+    let session = if session.is_empty() {
+        "unknown"
+    } else {
+        session.as_str()
+    };
+    eprintln!(
+        "yunxi memory extraction: session={session} generated={generated} retained={retained} dropped={} diagnostics={diagnostics} warnings={warnings}",
+        generated.saturating_sub(retained),
+    );
 }
 
 async fn provider_memory_response(

@@ -967,15 +967,16 @@ fn canonical_memory_cwd(cwd: PathBuf) -> Result<PathBuf> {
 
 fn run_linux_undo_list(cwd: PathBuf) -> Result<()> {
     let cwd = canonical_memory_cwd(cwd)?;
-    let journals = yunxi_agent_tools::linux_apply::list_journals(&cwd)
+    let journal_list = yunxi_agent_tools::linux_apply::list_journals_with_warnings(&cwd)
         .map_err(|error| anyhow::anyhow!(error.to_string()))?;
     println!(
         "{}",
         serde_json::to_string_pretty(&serde_json::json!({
             "schema_version": 1,
             "workspace": cwd,
-            "journal_count": journals.len(),
-            "journals": journals,
+            "journal_count": journal_list.journals.len(),
+            "journals": journal_list.journals,
+            "warnings": journal_list.warnings,
         }))?
     );
     Ok(())
@@ -5504,6 +5505,7 @@ async fn run_detached_turn_inner(
 ) -> Result<()> {
     let cwd_path = PathBuf::from(&cwd);
     let mut config = AgentConfig::new(cwd_path.clone());
+    crate::config::apply_linux_runtime_settings(&mut config);
     if let Some(provider) = provider {
         config.provider = Some(provider);
     }
@@ -5742,6 +5744,7 @@ async fn run_daemon_turn_inner<W: tokio::io::AsyncWrite + Unpin>(
     .await?;
     let cwd_path = PathBuf::from(&cwd);
     let mut config = AgentConfig::new(cwd_path.clone());
+    crate::config::apply_linux_runtime_settings(&mut config);
     if let Some(provider) = provider {
         config.provider = Some(provider);
     }

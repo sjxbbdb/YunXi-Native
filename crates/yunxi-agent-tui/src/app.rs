@@ -43,6 +43,9 @@ pub(crate) struct YunxiTuiApp {
     spinner_frame: usize,
     last_usage: Option<TokenUsage>,
     active_context_tokens: Option<i64>,
+    context_token_limit_reached: bool,
+    context_compacted: bool,
+    context_dropped_messages: usize,
 }
 
 impl Default for YunxiTuiApp {
@@ -67,6 +70,9 @@ impl Default for YunxiTuiApp {
             spinner_frame: 0,
             last_usage: None,
             active_context_tokens: None,
+            context_token_limit_reached: false,
+            context_compacted: false,
+            context_dropped_messages: 0,
         }
     }
 }
@@ -126,12 +132,34 @@ impl YunxiTuiApp {
             }
             AgentEvent::ContextStatus {
                 active_context_tokens,
-                ..
+                token_limit_reached,
+                compacted,
+                dropped_messages,
             } => {
                 self.active_context_tokens = Some((*active_context_tokens).max(0));
+                self.context_token_limit_reached = *token_limit_reached;
+                self.context_compacted = *compacted;
+                self.context_dropped_messages = *dropped_messages;
             }
             _ => {}
         }
+    }
+
+    fn context_status_label(&self) -> Option<String> {
+        let active_context_tokens = self.active_context_tokens?;
+        if self.context_compacted {
+            if self.context_dropped_messages > 0 {
+                return Some(format!(
+                    "上下文已压缩 · 保留 {active_context_tokens} · 丢弃 {}",
+                    self.context_dropped_messages
+                ));
+            }
+            return Some(format!("上下文已压缩 · 当前 {active_context_tokens}"));
+        }
+        if self.context_token_limit_reached {
+            return Some(format!("上下文接近上限 · {active_context_tokens}"));
+        }
+        Some(format!("上下文 {active_context_tokens}"))
     }
 
     pub(crate) fn transcript(&self) -> &Transcript {
@@ -294,9 +322,7 @@ impl YunxiTuiApp {
                         usage.output_tokens.max(0)
                     )
                 });
-                let context_label = self
-                    .active_context_tokens
-                    .map(|context| format!("上下文 {context}"));
+                let context_label = self.context_status_label();
                 let mut segments =
                     vec![PrioritySegment::new(&running_label, ClipPriority::MustKeep)];
                 if let Some(model) = self.banner.as_ref().map(|banner| banner.model.as_str()) {
@@ -316,6 +342,7 @@ impl YunxiTuiApp {
                 TextLayout::priority_line(&segments, width)
             }
             _ => {
+                let context_label = self.context_status_label();
                 let mut segments = vec![
                     PrioritySegment::new("Enter submit", ClipPriority::MustKeep),
                     PrioritySegment::new("Ctrl+C exit", ClipPriority::Important),
@@ -327,6 +354,12 @@ impl YunxiTuiApp {
                     segments.insert(
                         2,
                         PrioritySegment::new("试着说说你想做什么", ClipPriority::Optional),
+                    );
+                }
+                if let Some(context_label) = context_label.as_deref() {
+                    segments.insert(
+                        segments.len().saturating_sub(1),
+                        PrioritySegment::new(context_label, ClipPriority::Optional),
                     );
                 }
                 TextLayout::priority_line(&segments, width)
@@ -693,6 +726,23 @@ mod tests {
         assert!(footer.contains("↑1200 ↓340"));
         assert!(footer.contains("上下文 180"));
         assert!(footer.contains("Ctrl+C 取消"));
+    }
+
+    #[test]
+    fn idle_footer_explains_context_compaction() {
+        let mut app = YunxiTuiApp::default();
+        app.set_banner(banner());
+        app.record_agent_status(&AgentEvent::ContextStatus {
+            active_context_tokens: 4096,
+            token_limit_reached: true,
+            compacted: true,
+            dropped_messages: 3,
+        });
+
+        let footer = app.footer_for_width(160);
+
+        assert!(footer.contains("上下文已压缩"));
+        assert!(footer.contains("丢弃 3"));
     }
 
     #[test]

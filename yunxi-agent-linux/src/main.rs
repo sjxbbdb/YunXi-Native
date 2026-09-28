@@ -16,6 +16,7 @@ use yunxi_agent_tui::{
     ApprovalRequestView, TuiTickAction, UserInputRequestView, YunxiTui, YunxiTuiBanner,
 };
 
+mod config;
 mod shell;
 
 use shell::LinuxShellCommand;
@@ -49,6 +50,14 @@ struct Args {
     /// 覆盖 Provider 模型名。
     #[arg(long)]
     model: Option<String>,
+
+    /// 上下文窗口估算上限（token）；未指定时读取 YUNXI_CONTEXT_WINDOW_TOKENS。
+    #[arg(long, value_name = "TOKENS")]
+    context_window_tokens: Option<i64>,
+
+    /// 自动压缩阈值（token）；未指定时读取 YUNXI_AUTO_COMPACT_THRESHOLD_TOKENS。
+    #[arg(long, value_name = "TOKENS")]
+    auto_compact_threshold_tokens: Option<i64>,
 
     /// 打印 Linux/XDG 与工作区路径后退出，不进入 TUI。
     #[arg(long)]
@@ -123,6 +132,12 @@ async fn main() -> Result<()> {
     }
 
     let mut base_config = AgentConfig::new(cwd.clone());
+    config::apply_linux_runtime_settings(&mut base_config);
+    config::apply_context_budget(
+        &mut base_config,
+        args.context_window_tokens,
+        args.auto_compact_threshold_tokens,
+    );
     if let Some(provider) = &args.provider {
         base_config.provider = Some(provider.clone());
     }

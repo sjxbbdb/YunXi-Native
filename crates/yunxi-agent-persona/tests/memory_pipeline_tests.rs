@@ -34,6 +34,24 @@ fn pipeline_generates_l1_candidate_from_language_preference() {
 }
 
 #[test]
+fn pipeline_recognizes_common_chinese_self_disclosures() {
+    for prompt in [
+        "我叫阿远，是个 Rust 后端工程师",
+        "我住在杭州",
+        "我平时喜欢骑行，周末会骑 50 公里",
+    ] {
+        let output = MemoryPipeline::new().run(input(prompt));
+        assert!(
+            output
+                .candidates
+                .iter()
+                .any(|candidate| candidate.proposed_record.kind == MemoryKind::PersonalFact),
+            "expected a personal fact candidate for {prompt:?}, got {output:#?}"
+        );
+    }
+}
+
+#[test]
 fn pipeline_auto_saves_explicit_chinese_remembered_preference_without_provider() {
     let output = MemoryPipeline::new().run(input(
         "请记住一个测试偏好：YUNXI_MEMORY_TEST_AUTOSEQ_20260801。我希望以后测试报告标题包含‘自动顺序测试’。请只回复“已记录测试偏好”。",

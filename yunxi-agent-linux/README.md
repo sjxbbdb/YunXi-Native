@@ -69,6 +69,27 @@ export YUNXI_MEMORY_REFLECTION_IDLE_SECONDS=1800
 等前置条件诊断。默认空闲阈值为 30 分钟，范围为 60 秒至 24 小时。反思结果写入工作区
 `.yunxi/memory/` 与长期记忆向量库，不会写入 `knowledge.sqlite3`。
 
+### 上下文预算与记忆抽取诊断
+
+Linux 宿主默认启用上下文保护：估算窗口为 `32000` token，达到 `24000` token
+时自动压缩历史，压缩后的状态会显示在 TUI 底部。不同 Provider 可以通过环境变量调整：
+
+```bash
+export YUNXI_CONTEXT_WINDOW_TOKENS=64000
+export YUNXI_AUTO_COMPACT_THRESHOLD_TOKENS=48000
+```
+
+也可以在启动 TUI 时使用 `--context-window-tokens` 与
+`--auto-compact-threshold-tokens` 覆盖默认值。阈值不会超过上下文窗口。
+
+需要排查“为什么这句话没有进入记忆候选”时，临时打开：
+
+```bash
+export YUNXI_MEMORY_EXTRACTION_DEBUG=true
+```
+
+它只输出会话标识和候选数量、丢弃数量、诊断/警告数量，不输出用户原文或记忆内容。
+
 ## 构建与启动
 
 在主仓库根目录执行：

@@ -144,7 +144,7 @@ fn detect_prompt_memories(prompt: &str) -> Vec<(MemoryKind, String, String)> {
             "rule:project-hard-constraint".to_string(),
         ));
     }
-    if trimmed.contains("我的") || lower.contains("my ") {
+    if is_self_disclosure(trimmed, &lower) {
         out.push((
             MemoryKind::PersonalFact,
             format!("用户自述事实候选：{}", compact(trimmed, 160)),
@@ -178,6 +178,46 @@ fn detect_prompt_memories(prompt: &str) -> Vec<(MemoryKind, String, String)> {
     }
 
     out
+}
+
+fn is_self_disclosure(value: &str, lower: &str) -> bool {
+    const CHINESE_PREFIXES: &[&str] = &[
+        "我的",
+        "我叫",
+        "我是",
+        "我住在",
+        "我来自",
+        "我平时",
+        "我喜欢",
+        "我用",
+        "我使用",
+        "我有",
+        "我会",
+        "我从事",
+        "我做",
+        "我目前",
+        "我正在",
+        "我习惯",
+        "我负责",
+    ];
+    const ENGLISH_PREFIXES: &[&str] = &[
+        "my ",
+        "i am ",
+        "i'm ",
+        "i live ",
+        "i use ",
+        "i like ",
+        "i work ",
+        "i prefer ",
+    ];
+
+    CHINESE_PREFIXES
+        .iter()
+        .any(|prefix| value.starts_with(prefix))
+        || ENGLISH_PREFIXES
+            .iter()
+            .any(|prefix| lower.starts_with(prefix))
+        || lower.contains("my ")
 }
 
 fn detect_explicit_remembered_memory(

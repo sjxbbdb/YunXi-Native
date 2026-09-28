@@ -57,6 +57,12 @@ pub struct LinuxUndoJournalSummary {
     pub paths: Vec<String>,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct LinuxUndoJournalList {
+    pub journals: Vec<LinuxUndoJournalSummary>,
+    pub warnings: Vec<String>,
+}
+
 #[derive(Debug)]
 pub struct LinuxApplyError(String);
 
@@ -306,11 +312,21 @@ pub fn undo(journal_path: &Path) -> Result<LinuxUndoReport, LinuxApplyError> {
 
 /// List valid undo journals for a workspace without changing any files.
 pub fn list_journals(cwd: &Path) -> Result<Vec<LinuxUndoJournalSummary>, LinuxApplyError> {
+    Ok(list_journals_with_warnings(cwd)?.journals)
+}
+
+/// List valid journals and retain bounded diagnostics for entries that were
+/// skipped. A malformed or symlinked entry must not hide healthy journals.
+pub fn list_journals_with_warnings(cwd: &Path) -> Result<LinuxUndoJournalList, LinuxApplyError> {
     let undo_root = cwd.join(".yunxi").join("undo");
     let Ok(entries) = fs::read_dir(&undo_root) else {
-        return Ok(Vec::new());
+        return Ok(LinuxUndoJournalList {
+            journals: Vec::new(),
+            warnings: Vec::new(),
+        });
     };
     let mut journals = Vec::new();
+    let mut warnings = Vec::new();
     for entry in entries {
         let entry = entry.map_err(|error| {
             LinuxApplyError::new(format!("read undo journal directory: {error}"))
@@ -322,13 +338,44 @@ pub fn list_journals(cwd: &Path) -> Result<Vec<LinuxUndoJournalSummary>, LinuxAp
             continue;
         }
         let path = entry.path().join("journal.json");
-        if !path.is_file() {
+        let metadata = match fs::symlink_metadata(&path) {
+            Ok(metadata) => metadata,
+            Err(error) => {
+                warnings.push(format!(
+                    "skipped {}: inspect failed: {error}",
+                    path.display()
+                ));
+                continue;
+            }
+        };
+        if metadata.file_type().is_symlink() {
+            warnings.push(format!(
+                "skipped {}: journal.json is a symlink",
+                path.display()
+            ));
             continue;
         }
-        let bytes = fs::read(&path)
-            .map_err(|error| LinuxApplyError::new(format!("read undo journal: {error}")))?;
-        let journal: Journal = serde_json::from_slice(&bytes)
-            .map_err(|error| LinuxApplyError::new(format!("parse undo journal: {error}")))?;
+        if !metadata.is_file() {
+            warnings.push(format!(
+                "skipped {}: journal.json is not a regular file",
+                path.display()
+            ));
+            continue;
+        }
+        let bytes = match fs::read(&path) {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                warnings.push(format!("skipped {}: read failed: {error}", path.display()));
+                continue;
+            }
+        };
+        let journal: Journal = match serde_json::from_slice(&bytes) {
+            Ok(journal) => journal,
+            Err(error) => {
+                warnings.push(format!("skipped {}: parse failed: {error}", path.display()));
+                continue;
+            }
+        };
         journals.push(LinuxUndoJournalSummary {
             journal_path: path.display().to_string(),
             operation: journal.operation,
@@ -341,7 +388,8 @@ pub fn list_journals(cwd: &Path) -> Result<Vec<LinuxUndoJournalSummary>, LinuxAp
         });
     }
     journals.sort_by(|left, right| right.journal_path.cmp(&left.journal_path));
-    Ok(journals)
+    warnings.sort();
+    Ok(LinuxUndoJournalList { journals, warnings })
 }
 
 fn execute_operation(
@@ -684,5 +732,61 @@ mod tests {
         assert_eq!(journals[0].journal_path, result.journal_path);
         assert_eq!(journals[0].operation, "write_file");
         assert_eq!(journals[0].paths, vec!["a.txt"]);
+    }
+
+    #[test]
+    fn skips_corrupt_undo_journals_and_keeps_valid_entries() {
+        let root = tempdir().expect("tempdir");
+        let result = apply(
+            root.path(),
+            LinuxApplyInput::WriteFile {
+                path: "a.txt".into(),
+                content: "hello".into(),
+            },
+            &policy(root.path()),
+        )
+        .expect("write");
+        let corrupt_dir = root.path().join(".yunxi/undo/corrupt");
+        fs::create_dir_all(&corrupt_dir).expect("corrupt journal directory");
+        fs::write(corrupt_dir.join("journal.json"), b"{broken").expect("corrupt journal");
+
+        let list = list_journals_with_warnings(root.path()).expect("list journals");
+
+        assert_eq!(list.journals.len(), 1);
+        assert_eq!(list.journals[0].journal_path, result.journal_path);
+        assert_eq!(list.warnings.len(), 1);
+        assert!(list.warnings[0].contains("corrupt"));
+        assert!(list.warnings[0].contains("parse failed"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn skips_inner_journal_symlinks() {
+        let root = tempdir().expect("tempdir");
+        let valid = apply(
+            root.path(),
+            LinuxApplyInput::WriteFile {
+                path: "a.txt".into(),
+                content: "hello".into(),
+            },
+            &policy(root.path()),
+        )
+        .expect("write");
+        let outside = tempdir().expect("outside tempdir");
+        let symlink_dir = root.path().join(".yunxi/undo/symlinked");
+        fs::create_dir_all(&symlink_dir).expect("symlink journal directory");
+        fs::write(outside.path().join("journal.json"), b"{}").expect("outside journal target");
+        std::os::unix::fs::symlink(
+            outside.path().join("journal.json"),
+            symlink_dir.join("journal.json"),
+        )
+        .expect("inner journal symlink");
+
+        let list = list_journals_with_warnings(root.path()).expect("list journals");
+
+        assert_eq!(list.journals.len(), 1);
+        assert_eq!(list.journals[0].journal_path, valid.journal_path);
+        assert_eq!(list.warnings.len(), 1);
+        assert!(list.warnings[0].contains("journal.json is a symlink"));
     }
 }
