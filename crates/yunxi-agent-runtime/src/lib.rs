@@ -7222,6 +7222,11 @@ mod linux_knowledge_tests {
         let config = AgentConfig::new(directory.path().to_path_buf());
         let context =
             load_linux_knowledge_context_with_diagnostic(&config, "zzzz").expect("context");
+        assert_eq!(context.diagnostic.status, KnowledgeRecallStatus::NoHit);
+        assert!(context.content.is_none());
+
+        let context = load_linux_knowledge_context_with_diagnostic(&config, "service recovery")
+            .expect("context");
         assert_eq!(context.diagnostic.status, KnowledgeRecallStatus::Evidence);
         assert_eq!(context.diagnostic.generation, Some(7));
         assert_eq!(context.diagnostic.source_version, Some(source_version));

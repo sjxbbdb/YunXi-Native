@@ -6,7 +6,7 @@
 //! approval, sandboxing, and command execution remain outside this boundary.
 
 use crate::linux_source;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::time::Instant;
 use yunxi_agent_core::AgentConfig;
 use yunxi_agent_persona::{LocalChargramEmbedding, MemoryEmbeddingProvider};
@@ -16,6 +16,7 @@ const MAX_KEYWORD_EVIDENCE: usize = 4;
 const MAX_VECTOR_EVIDENCE: usize = 4;
 const MAX_EVIDENCE_CHARS: usize = 12_000;
 const MAX_DIAGNOSTIC_PROVENANCE: usize = 8;
+const MIN_FUSED_SCORE: f64 = 0.30;
 const BM25_WEIGHT: f64 = 0.5;
 const COSINE_WEIGHT: f64 = 0.5;
 
@@ -147,7 +148,7 @@ fn normalize_bm25(rank: f64, matches: &[KnowledgeSearchResult]) -> f64 {
 
 fn normalize_cosine(score: f32) -> f64 {
     if score.is_finite() {
-        (f64::from(score.clamp(-1.0, 1.0)) + 1.0) / 2.0
+        f64::from(score.clamp(0.0, 1.0))
     } else {
         0.0
     }
@@ -401,10 +402,25 @@ pub(crate) fn build(config: &AgentConfig, prompt: &str) -> LinuxPlanResult {
         },
         None => Vec::new(),
     };
-    let fused_matches = fuse_evidence(&keyword_matches, &vector_matches);
     let vector_matches =
         crate::filter_duplicate_linux_vector_evidence(&keyword_matches, vector_matches);
-    if keyword_matches.is_empty() && vector_matches.is_empty() {
+    let fused_matches = fuse_evidence(&keyword_matches, &vector_matches)
+        .into_iter()
+        .filter(|item| item.fused_score >= MIN_FUSED_SCORE)
+        .collect::<Vec<_>>();
+    let accepted_chunk_ids = fused_matches
+        .iter()
+        .map(FusedLinuxEvidence::chunk_id)
+        .collect::<HashSet<_>>();
+    let keyword_matches = keyword_matches
+        .into_iter()
+        .filter(|item| accepted_chunk_ids.contains(item.chunk_id.as_str()))
+        .collect::<Vec<_>>();
+    let vector_matches = vector_matches
+        .into_iter()
+        .filter(|item| accepted_chunk_ids.contains(item.chunk_id.as_str()))
+        .collect::<Vec<_>>();
+    if fused_matches.is_empty() {
         let status = no_evidence_status(&failures);
         return LinuxPlanResult {
             context: None,
@@ -434,7 +450,7 @@ pub(crate) fn build(config: &AgentConfig, prompt: &str) -> LinuxPlanResult {
 
 #[cfg(test)]
 mod tests {
-    use super::{LinuxPlanContext, fuse_evidence, no_evidence_status};
+    use super::{LinuxPlanContext, fuse_evidence, no_evidence_status, normalize_cosine};
     use crate::KnowledgeRecallStatus;
     use yunxi_agent_storage::{KnowledgeSearchResult, KnowledgeVectorMatch, KnowledgeVisibility};
 
@@ -486,6 +502,14 @@ mod tests {
             no_evidence_status(&["embedding".to_string(), "vector_search".to_string()]),
             KnowledgeRecallStatus::SearchError
         );
+    }
+
+    #[test]
+    fn cosine_normalization_does_not_turn_negative_similarity_into_evidence() {
+        assert_eq!(normalize_cosine(-1.0), 0.0);
+        assert_eq!(normalize_cosine(0.0), 0.0);
+        assert_eq!(normalize_cosine(0.75), 0.75);
+        assert_eq!(normalize_cosine(2.0), 1.0);
     }
 
     #[test]
