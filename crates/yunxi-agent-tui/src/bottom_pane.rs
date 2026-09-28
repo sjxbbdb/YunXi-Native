@@ -70,6 +70,8 @@ pub(crate) struct BottomPane {
     composer_prompt: String,
     composer: EditBuffer,
     suspended_composer: Option<EditBufferSnapshot>,
+    composer_paste_summary: Option<String>,
+    suspended_paste_summary: Option<String>,
 }
 
 impl Default for BottomPane {
@@ -79,6 +81,8 @@ impl Default for BottomPane {
             composer_prompt: "yunxi> ".to_string(),
             composer: EditBuffer::default(),
             suspended_composer: None,
+            composer_paste_summary: None,
+            suspended_paste_summary: None,
         }
     }
 }
@@ -103,6 +107,10 @@ impl BottomPane {
         &self.composer
     }
 
+    pub(crate) fn composer_paste_summary(&self) -> Option<&str> {
+        self.composer_paste_summary.as_deref()
+    }
+
     #[cfg(test)]
     pub(crate) fn composer_snapshot(&self) -> EditBufferSnapshot {
         self.composer.snapshot()
@@ -112,12 +120,15 @@ impl BottomPane {
         self.composer_prompt = prompt.into();
         if let Some(snapshot) = self.suspended_composer.take() {
             self.composer.restore(snapshot);
+            self.composer_paste_summary = self.suspended_paste_summary.take();
         }
         self.mode = BottomPaneMode::Composer;
     }
 
     pub(crate) fn reset_composer(&mut self, prompt: impl Into<String>) {
         self.suspended_composer = None;
+        self.suspended_paste_summary = None;
+        self.composer_paste_summary = None;
         self.composer.clear();
         self.start_composer(prompt);
     }
@@ -143,6 +154,9 @@ impl BottomPane {
         match &mut self.mode {
             BottomPaneMode::Composer => {
                 self.composer.insert_text(value);
+                if let Some(summary) = format_paste_summary(value) {
+                    self.composer_paste_summary = Some(summary);
+                }
                 true
             }
             BottomPaneMode::UserInput { buffer, .. } => {
@@ -160,7 +174,8 @@ impl BottomPane {
         if key.kind != KeyEventKind::Press {
             return ComposerAction::None;
         }
-        match resolve_key(FocusTarget::Composer, key) {
+        let before = self.composer.snapshot();
+        let action = match resolve_key(FocusTarget::Composer, key) {
             TuiAction::InsertNewline => {
                 self.composer.insert_newline();
                 ComposerAction::None
@@ -202,7 +217,11 @@ impl BottomPane {
                 }
                 _ => ComposerAction::None,
             },
+        };
+        if before != self.composer.snapshot() {
+            self.composer_paste_summary = None;
         }
+        action
     }
 
     pub(crate) fn handle_composer_draft_key(&mut self, key: KeyEvent) -> bool {
@@ -238,7 +257,11 @@ impl BottomPane {
             KeyCode::Enter | KeyCode::Esc => {}
             _ => {}
         }
-        before != self.composer.snapshot()
+        let changed = before != self.composer.snapshot();
+        if changed {
+            self.composer_paste_summary = None;
+        }
+        changed
     }
 
     pub(crate) fn handle_approval_key(&mut self, key: KeyEvent) -> ApprovalAction {
@@ -398,7 +421,17 @@ impl BottomPane {
     fn suspend_composer(&mut self) {
         if matches!(self.mode, BottomPaneMode::Composer) {
             self.suspended_composer = Some(self.composer.snapshot());
+            self.suspended_paste_summary = self.composer_paste_summary.clone();
         }
+    }
+}
+
+fn format_paste_summary(value: &str) -> Option<String> {
+    let line_count = value.lines().count().max(1);
+    if line_count > 1 || value.chars().count() > 80 {
+        Some(format!("[粘贴 1: 约 {line_count} 行]"))
+    } else {
+        None
     }
 }
 
@@ -647,6 +680,38 @@ mod tests {
         pane.reset_composer("fresh> ");
         assert!(pane.composer_buffer().is_empty());
         assert_eq!(pane.composer_prompt(), "fresh> ");
+    }
+
+    #[test]
+    fn multiline_paste_gets_a_compact_preview_until_edited() {
+        let mut pane = BottomPane::default();
+        pane.paste("第一行\n第二行\n第三行");
+
+        assert_eq!(pane.composer_paste_summary(), Some("[粘贴 1: 约 3 行]"));
+        assert_eq!(pane.composer_buffer().text(), "第一行\n第二行\n第三行");
+
+        pane.handle_composer_key(KeyEvent::new(KeyCode::Char('!'), KeyModifiers::NONE));
+
+        assert_eq!(pane.composer_paste_summary(), None);
+        assert_eq!(pane.composer_buffer().text(), "第一行\n第二行\n第三行!");
+    }
+
+    #[test]
+    fn paste_preview_survives_an_approval_overlay_and_returns_with_draft() {
+        let mut pane = BottomPane::default();
+        pane.paste("长内容\n第二行");
+        pane.start_approval(ApprovalRequestView {
+            id: None,
+            tool_name: "shell".to_string(),
+            cwd: ".".to_string(),
+            command: Some("echo safe".to_string()),
+            reason: "test".to_string(),
+            risk_label: None,
+        });
+        pane.start_composer("yunxi> ");
+
+        assert_eq!(pane.composer_paste_summary(), Some("[粘贴 1: 约 2 行]"));
+        assert_eq!(pane.composer_buffer().text(), "长内容\n第二行");
     }
 
     #[test]

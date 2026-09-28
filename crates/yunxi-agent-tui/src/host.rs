@@ -64,8 +64,28 @@ impl YunxiTui {
         self.request_redraw(RedrawReason::StatusChanged)
     }
 
+    pub fn set_welcome_enabled(&mut self, enabled: bool) -> Result<()> {
+        self.app.set_welcome_enabled(enabled);
+        self.request_redraw(RedrawReason::StatusChanged)
+    }
+
+    pub fn set_welcome_checklist(&mut self, checklist: Vec<String>) -> Result<()> {
+        self.app.set_welcome_checklist(checklist);
+        self.request_redraw(RedrawReason::StatusChanged)
+    }
+
     pub fn set_realtime_voice_enabled(&mut self, enabled: bool) -> Result<()> {
         self.app.set_realtime_voice_enabled(enabled);
+        self.request_redraw(RedrawReason::StatusChanged)
+    }
+
+    pub fn begin_turn(&mut self) -> Result<()> {
+        self.app.begin_turn();
+        self.request_redraw(RedrawReason::StatusChanged)
+    }
+
+    pub fn end_turn(&mut self) -> Result<()> {
+        self.app.end_turn();
         self.request_redraw(RedrawReason::StatusChanged)
     }
 
@@ -123,6 +143,9 @@ impl YunxiTui {
 
     pub fn tick(&mut self) -> Result<TuiTickAction> {
         let action = self.drain_turn_events()?;
+        if self.app.advance_spinner() {
+            self.frame.request(RedrawReason::StatusChanged);
+        }
         self.flush_frame(Instant::now())?;
         Ok(action)
     }

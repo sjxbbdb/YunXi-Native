@@ -7,7 +7,10 @@ use crate::text_layout::{ClipPriority, PrioritySegment, TextLayout};
 use crate::timeline_store::TimelineStore;
 use crate::transcript_layout::WrappedTranscript;
 use crate::viewport::TranscriptViewport;
-use yunxi_agent_core::{AgentEvent, ControlSnapshot};
+use std::time::Instant;
+use yunxi_agent_core::{AgentEvent, ControlSnapshot, TokenUsage};
+
+const SPINNER_FRAMES: [&str; 8] = ["⣾", "⣽", "⣻", "⢿", "⡿", "⣟", "⣯", "⣷"];
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct YunxiTuiBanner {
@@ -23,6 +26,8 @@ pub struct YunxiTuiBanner {
 pub(crate) struct YunxiTuiApp {
     version: String,
     banner: Option<YunxiTuiBanner>,
+    welcome_enabled: bool,
+    welcome_checklist: Vec<String>,
     presentation: TuiPresentation,
     timeline: TimelineStore,
     transcript: Transcript,
@@ -34,6 +39,10 @@ pub(crate) struct YunxiTuiApp {
     details_scroll: u16,
     focus: FocusTarget,
     previous_focus: FocusTarget,
+    turn_started_at: Option<Instant>,
+    spinner_frame: usize,
+    last_usage: Option<TokenUsage>,
+    active_context_tokens: Option<i64>,
 }
 
 impl Default for YunxiTuiApp {
@@ -41,6 +50,8 @@ impl Default for YunxiTuiApp {
         Self {
             version: format!("v{}", env!("CARGO_PKG_VERSION")),
             banner: None,
+            welcome_enabled: true,
+            welcome_checklist: Vec::new(),
             presentation: TuiPresentation::default(),
             timeline: TimelineStore::default(),
             transcript: Transcript::default(),
@@ -52,6 +63,10 @@ impl Default for YunxiTuiApp {
             details_scroll: 0,
             focus: FocusTarget::Composer,
             previous_focus: FocusTarget::Composer,
+            turn_started_at: None,
+            spinner_frame: 0,
+            last_usage: None,
+            active_context_tokens: None,
         }
     }
 }
@@ -67,8 +82,56 @@ impl YunxiTuiApp {
         self.banner = Some(banner);
     }
 
+    pub(crate) fn set_welcome_enabled(&mut self, enabled: bool) {
+        self.welcome_enabled = enabled;
+    }
+
+    pub(crate) fn set_welcome_checklist(&mut self, checklist: Vec<String>) {
+        self.welcome_checklist = checklist;
+    }
+
+    pub(crate) fn welcome_enabled(&self) -> bool {
+        self.welcome_enabled
+    }
+
+    pub(crate) fn welcome_checklist(&self) -> &[String] {
+        &self.welcome_checklist
+    }
+
     pub(crate) fn set_realtime_voice_enabled(&mut self, enabled: bool) {
         self.realtime_voice_enabled = enabled;
+    }
+
+    pub(crate) fn begin_turn(&mut self) {
+        self.turn_started_at = Some(Instant::now());
+        self.spinner_frame = 0;
+    }
+
+    pub(crate) fn end_turn(&mut self) {
+        self.turn_started_at = None;
+    }
+
+    pub(crate) fn advance_spinner(&mut self) -> bool {
+        if self.turn_started_at.is_none() {
+            return false;
+        }
+        self.spinner_frame = (self.spinner_frame + 1) % SPINNER_FRAMES.len();
+        true
+    }
+
+    pub(crate) fn record_agent_status(&mut self, event: &AgentEvent) {
+        match event {
+            AgentEvent::Completed { usage, .. } => {
+                self.last_usage = *usage;
+            }
+            AgentEvent::ContextStatus {
+                active_context_tokens,
+                ..
+            } => {
+                self.active_context_tokens = Some((*active_context_tokens).max(0));
+            }
+            _ => {}
+        }
     }
 
     pub(crate) fn transcript(&self) -> &Transcript {
@@ -217,25 +280,57 @@ impl YunxiTuiApp {
                 ],
                 width,
             ),
-            _ if self.timeline.has_active_sessions() => TextLayout::priority_line(
-                &[
-                    PrioritySegment::new("Ctrl+C cancel", ClipPriority::MustKeep),
-                    PrioritySegment::new("typing saves draft", ClipPriority::Important),
-                    PrioritySegment::new("Enter waits for turn", ClipPriority::Optional),
-                    PrioritySegment::new("history scroll available", ClipPriority::DebugOnly),
-                ],
-                width,
-            ),
-            _ => TextLayout::priority_line(
-                &[
+            _ if self.timeline.has_active_sessions() || self.turn_started_at.is_some() => {
+                let spinner = SPINNER_FRAMES[self.spinner_frame % SPINNER_FRAMES.len()];
+                let elapsed = self
+                    .turn_started_at
+                    .map(|started| started.elapsed().as_secs())
+                    .unwrap_or_default();
+                let running_label = format!("{spinner} 运行中 · {elapsed}s");
+                let usage_label = self.last_usage.map(|usage| {
+                    format!(
+                        "↑{} ↓{}",
+                        usage.input_tokens.max(0),
+                        usage.output_tokens.max(0)
+                    )
+                });
+                let context_label = self
+                    .active_context_tokens
+                    .map(|context| format!("上下文 {context}"));
+                let mut segments =
+                    vec![PrioritySegment::new(&running_label, ClipPriority::MustKeep)];
+                if let Some(model) = self.banner.as_ref().map(|banner| banner.model.as_str()) {
+                    segments.push(PrioritySegment::new(model, ClipPriority::Important));
+                }
+                if let Some(usage_label) = usage_label.as_deref() {
+                    segments.push(PrioritySegment::new(usage_label, ClipPriority::Optional));
+                }
+                if let Some(context_label) = context_label.as_deref() {
+                    segments.push(PrioritySegment::new(context_label, ClipPriority::Optional));
+                }
+                segments.push(PrioritySegment::new("Ctrl+C 取消", ClipPriority::Important));
+                segments.push(PrioritySegment::new(
+                    "输入会保留草稿",
+                    ClipPriority::DebugOnly,
+                ));
+                TextLayout::priority_line(&segments, width)
+            }
+            _ => {
+                let mut segments = vec![
                     PrioritySegment::new("Enter submit", ClipPriority::MustKeep),
                     PrioritySegment::new("Ctrl+C exit", ClipPriority::Important),
                     PrioritySegment::new("/help commands", ClipPriority::Optional),
                     PrioritySegment::new("Alt+Enter newline", ClipPriority::Optional),
                     PrioritySegment::new("wheel/drag scroll", ClipPriority::DebugOnly),
-                ],
-                width,
-            ),
+                ];
+                if self.banner.is_some() && !self.has_user_round() {
+                    segments.insert(
+                        2,
+                        PrioritySegment::new("试着说说你想做什么", ClipPriority::Optional),
+                    );
+                }
+                TextLayout::priority_line(&segments, width)
+            }
         }
     }
 
@@ -333,6 +428,7 @@ impl YunxiTuiApp {
     }
 
     pub(crate) fn push_agent_event(&mut self, event: &AgentEvent) {
+        self.record_agent_status(event);
         let cancelled = matches!(event, AgentEvent::Cancelled { .. });
         let terminal = matches!(
             event,
@@ -543,6 +639,70 @@ mod tests {
         assert!(subheader.is_empty());
         assert!(footer.contains("Enter submit"));
         assert!(footer.contains("Ctrl+C exit"));
+    }
+
+    #[test]
+    fn welcome_surface_can_be_disabled_without_touching_transcript() {
+        let mut app = YunxiTuiApp::default();
+        app.set_banner(banner());
+        assert!(app.welcome_enabled());
+        app.set_welcome_enabled(false);
+        assert!(!app.welcome_enabled());
+        assert!(!app.has_user_round());
+    }
+
+    #[test]
+    fn empty_composer_footer_offers_a_natural_language_prompt() {
+        let mut app = YunxiTuiApp::default();
+        app.set_banner(banner());
+        assert!(app.footer_for_width(120).contains("试着说说你想做什么"));
+
+        app.push_user("列出当前目录");
+        assert!(!app.footer_for_width(120).contains("试着说说你想做什么"));
+    }
+
+    #[test]
+    fn active_turn_footer_shows_spinner_elapsed_model_and_usage() {
+        let mut app = YunxiTuiApp::default();
+        app.set_banner(YunxiTuiBanner {
+            provider_live: true,
+            model: "agnes-2.5-flash".to_string(),
+            ..banner()
+        });
+        app.begin_turn();
+        app.record_agent_status(&AgentEvent::ContextStatus {
+            active_context_tokens: 180,
+            token_limit_reached: false,
+            compacted: false,
+            dropped_messages: 0,
+        });
+        app.record_agent_status(&AgentEvent::Completed {
+            status: AgentRunStatus::Completed,
+            usage: Some(TokenUsage {
+                input_tokens: 1200,
+                cached_input_tokens: 100,
+                output_tokens: 340,
+                reasoning_output_tokens: 0,
+            }),
+        });
+
+        let footer = app.footer_for_width(120);
+
+        assert!(footer.contains("运行中"));
+        assert!(footer.contains("agnes-2.5-flash"));
+        assert!(footer.contains("↑1200 ↓340"));
+        assert!(footer.contains("上下文 180"));
+        assert!(footer.contains("Ctrl+C 取消"));
+    }
+
+    #[test]
+    fn spinner_advances_only_while_a_turn_is_active() {
+        let mut app = YunxiTuiApp::default();
+        assert!(!app.advance_spinner());
+        app.begin_turn();
+        assert!(app.advance_spinner());
+        app.end_turn();
+        assert!(!app.advance_spinner());
     }
 
     #[test]

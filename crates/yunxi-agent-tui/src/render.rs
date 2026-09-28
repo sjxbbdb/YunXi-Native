@@ -189,7 +189,7 @@ fn render_transcript(
     scrollbar_area: Rect,
     styles: TuiStyleSet,
 ) {
-    if !app.has_user_round() {
+    if !app.has_user_round() && app.welcome_enabled() {
         render_welcome(frame, app, area, inner, styles);
         return;
     }
@@ -238,29 +238,51 @@ fn render_welcome(
     inner: Rect,
     styles: TuiStyleSet,
 ) {
+    let content_width = inner.width as usize;
     let mode = app
         .provider_live()
         .map(|provider_live| if provider_live { "live" } else { "offline" })
         .unwrap_or("starting");
-    let lines = vec![
+    let mut lines = vec![
         Line::from(Span::styled(
-            "YUNXI",
+            TextLayout::truncate("YUNXI", content_width),
             styles.style(TuiSemanticStyle::Header),
         )),
         Line::from(Span::styled(
-            "自然语言终端",
+            TextLayout::truncate("自然语言终端", content_width),
             styles.style(TuiSemanticStyle::Subheader),
         )),
         Line::from(""),
         Line::from(Span::styled(
-            "把目标交给云熙，直接开始。",
+            TextLayout::truncate("把目标交给云熙，直接开始。", content_width),
             styles.style(TuiSemanticStyle::Muted),
         )),
         Line::from(Span::styled(
-            format!("{mode} · /help  /capabilities  /status"),
+            TextLayout::truncate(
+                &format!("{mode} · /help  /capabilities  /status"),
+                content_width,
+            ),
             styles.style(TuiSemanticStyle::Footer),
         )),
     ];
+    if !app.welcome_checklist().is_empty() {
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            TextLayout::truncate("首次启动检查", content_width),
+            styles.style(TuiSemanticStyle::Subheader),
+        )));
+        lines.extend(app.welcome_checklist().iter().map(|item| {
+            Line::from(Span::styled(
+                TextLayout::truncate(item, content_width),
+                styles.style(TuiSemanticStyle::Muted),
+            ))
+        }));
+    }
+    // The composer can leave only a few transcript rows on a short terminal.
+    // Keep the card's leading title/content and only render checklist rows that
+    // fit inside the transcript viewport, rather than letting them reach the
+    // bottom pane.
+    lines.truncate(inner.height as usize);
     let welcome = Paragraph::new(lines).alignment(Alignment::Center).block(
         Block::default()
             .title(Span::styled(
@@ -275,7 +297,6 @@ fn render_welcome(
             }),
     );
     frame.render_widget(welcome, area);
-    let _ = inner;
 }
 
 fn render_transcript_scrollbar(
@@ -326,6 +347,8 @@ fn render_bottom_pane(frame: &mut Frame<'_>, app: &YunxiTuiApp, area: Rect, styl
             "Composer",
             app.bottom_pane().composer_prompt(),
             app.bottom_pane().composer_buffer(),
+            Some("试着说说你想做什么…"),
+            app.bottom_pane().composer_paste_summary(),
             styles,
             TuiSemanticStyle::Focus,
         ),
@@ -356,6 +379,8 @@ fn render_bottom_pane(frame: &mut Frame<'_>, app: &YunxiTuiApp, area: Rect, styl
                 "Input",
                 &prompt,
                 buffer,
+                None,
+                None,
                 styles,
                 TuiSemanticStyle::ActionRequired,
             );
@@ -402,16 +427,35 @@ fn render_composer(
     title: &str,
     prompt: &str,
     buffer: &EditBuffer,
+    placeholder: Option<&str>,
+    paste_summary: Option<&str>,
     styles: TuiStyleSet,
     title_semantic: TuiSemanticStyle,
 ) {
     let prompt_width = TextLayout::measure(prompt);
     let inner_width = area.width.saturating_sub(2).max(1) as usize;
     let body_width = inner_width.saturating_sub(prompt_width).max(1);
-    let visual_lines = TextLayout::wrap(buffer.text(), body_width, WrapPolicy::CodeBlock);
+    let display_text = if let Some(summary) = paste_summary {
+        summary
+    } else if buffer.text().is_empty() {
+        placeholder.unwrap_or_default()
+    } else {
+        buffer.text()
+    };
+    let cursor_text = if paste_summary.is_some() || buffer.text().is_empty() {
+        display_text
+    } else {
+        buffer.text()
+    };
+    let cursor_offset = if paste_summary.is_some() || buffer.text().is_empty() {
+        cursor_text.len()
+    } else {
+        buffer.cursor_byte_offset()
+    };
+    let visual_lines = TextLayout::wrap(display_text, body_width, WrapPolicy::CodeBlock);
     let visual_cursor = TextLayout::cursor_position(
-        buffer.text(),
-        buffer.cursor_byte_offset(),
+        cursor_text,
+        cursor_offset,
         body_width,
         WrapPolicy::CodeBlock,
     );
@@ -427,9 +471,14 @@ fn render_composer(
         .take(visible_content_rows)
         .map(|(index, line)| {
             if index == 0 {
+                let body = if buffer.text().is_empty() || paste_summary.is_some() {
+                    Span::styled(line.text, styles.style(TuiSemanticStyle::Muted))
+                } else {
+                    Span::raw(line.text)
+                };
                 Line::from(vec![
                     Span::styled(prompt.to_string(), styles.style(TuiSemanticStyle::Focus)),
-                    Span::raw(line.text),
+                    body,
                 ])
             } else {
                 Line::from(vec![
@@ -572,11 +621,21 @@ mod tests {
         app.push_notice("status", "provider=offline turns=0 session=new");
         app.push_notice("capabilities", "已加载终端、记忆与知识库能力");
         app.push_error("本地 Runtime 尚未连接，已切换到离线模式");
+        app.set_welcome_checklist(vec![
+            "  连接到云熙             ✓ 已就绪".to_string(),
+            "  了解这台机器能做什么   □ /capabilities".to_string(),
+            "  说出你的第一个目标     □ 直接输入即可".to_string(),
+        ]);
 
         let welcome = render_app(&app, 80, 24);
         assert!(welcome.contains("YUNXI"));
         assert!(welcome.contains("自然语言终端"));
         assert!(welcome.contains("/capabilities"));
+        assert!(welcome.contains("首次启动检查"));
+        assert!(welcome.contains("连接到云熙"));
+        assert!(welcome.contains("了解这台机器能做什么"));
+        assert!(welcome.contains("说出你的第一个目标"));
+        assert!(welcome.contains("试着说说你想做什么"));
         assert!(!welcome.contains("Ready."));
 
         app.push_user("先查看当前目录");
@@ -587,6 +646,74 @@ mod tests {
         app.clear_transcript();
         let cleared = render_app(&app, 80, 24);
         assert!(cleared.contains("YUNXI"));
+    }
+
+    #[test]
+    fn welcome_checklist_is_rendered_without_becoming_transcript_content() {
+        let mut app = YunxiTuiApp::default();
+        app.set_banner(banner());
+        app.set_welcome_checklist(vec![
+            "  工作区                 ✓ /tmp/yunxi".to_string(),
+            "  Provider / 模型        ✓ deepseek / static".to_string(),
+        ]);
+
+        let rendered = render_app(&app, 100, 30);
+
+        assert!(rendered.contains("首次启动检查"));
+        assert!(rendered.contains("/tmp/yunxi"));
+        assert!(app.transcript().cells().is_empty());
+    }
+
+    #[test]
+    fn narrow_welcome_checklist_keeps_visible_rows_inside_transcript() {
+        let mut app = YunxiTuiApp::default();
+        app.set_banner(banner());
+        app.set_welcome_checklist(vec![
+            "  连接到云熙             ✓ 已就绪".to_string(),
+            "  了解这台机器能做什么   □ /capabilities".to_string(),
+            "  说出你的第一个目标     □ 直接输入即可".to_string(),
+        ]);
+
+        let rendered = render_full_frame_snapshot(&app, 24, 18);
+
+        assert!(rendered.contains("YUNXI"));
+        assert!(rendered.contains("首次启动检查"));
+        assert!(rendered.contains("连接到云熙"));
+        assert!(rendered.contains("了解这台机器能做"));
+        assert!(!rendered.contains("说出你的第一个目标"));
+        assert!(rendered.lines().all(|row| {
+            row.split_once('|')
+                .map(|(_, content)| UnicodeWidthStr::width(content) <= 24)
+                .unwrap_or(true)
+        }));
+    }
+
+    #[test]
+    fn welcome_can_be_disabled_without_affecting_transcript_state() {
+        let mut app = YunxiTuiApp::default();
+        app.set_banner(banner());
+        app.set_welcome_enabled(false);
+
+        let rendered = render_app(&app, 80, 24);
+
+        assert!(!rendered.contains("自然语言终端"));
+        assert!(!rendered.contains("YUNXI"));
+        assert!(app.transcript().cells().is_empty());
+    }
+
+    #[test]
+    fn composer_renders_placeholder_and_collapses_pasted_lines() {
+        let mut app = YunxiTuiApp::default();
+        app.set_banner(banner());
+
+        let empty = render_app(&app, 100, 24);
+        assert!(empty.contains("试着说说你想做什么"));
+
+        app.bottom_pane_mut()
+            .paste("第一行\n第二行\n第三行\n第四行");
+        let pasted = render_app(&app, 100, 24);
+        assert!(pasted.contains("[粘贴 1: 约 4 行]"));
+        assert!(!pasted.contains("第一行"));
     }
 
     fn render_full_frame_snapshot(app: &YunxiTuiApp, width: u16, height: u16) -> String {

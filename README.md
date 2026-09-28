@@ -85,6 +85,16 @@ TUI 的顶部状态行面向使用者展示云熙、当前模型与就绪/运行
 内部详情 ID、状态路径和原始调试结构只在详情面板中保留。状态行和欢迎卡片均覆盖窄终端，
 并由 TUI 快照测试与 Arch Linux 工作区测试验证。
 
+首次启动时，TUI 会在欢迎层展示一次性的环境检查清单（工作区、状态目录、Provider/模型、
+会话目录与知识库状态），清单不会写入对话记录。完成后会在 `$XDG_STATE_HOME/yunxi/`
+留下 `first-run-complete` 标记，后续启动不再重复显示；若希望重新检查，可删除该标记后重启。
+欢迎卡片可通过 `YUNXI_TUI_BANNER=0` 关闭，适合脚本化或极简终端场景。该开关只影响视觉欢迎层，
+不会关闭 TUI、Runtime、记忆或权限策略。
+
+输入区在空闲时给出自然语言占位提示；多行或较长粘贴会折叠为 `[粘贴 1: 约 N 行]`，编辑后
+自动恢复为真实草稿。模型回合运行期间，底部状态行显示盲文 spinner、已运行时间、模型、
+本轮输入/输出 token 与上下文水位；窄终端按“运行态 > 模型 > 用量”优先级裁剪，不会撑破布局。
+
 ### Linux 系统工具层（当前增量）
 
 Linux 版已经开始把系统能力接入为固定的 `linux_readonly` ToolSpec：`systemd_status`、`man_page`、`process_list`、`network_snapshot`、`filesystem_summary`、`filesystem_list`、`disk_usage` 和 `pacman_query`。它们只读本机状态，使用严格的 JSON schema、参数白名单和固定 argv 直接进程执行，不经过 `sh -c`，并沿用 YunXi 既有的 ToolRouter、ToolPolicy、审批、沙盒诊断和审计事件。缺少发行版工具时返回结构化 `unavailable`，不会自动改用任意 shell 命令。

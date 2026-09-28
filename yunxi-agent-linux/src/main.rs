@@ -1,6 +1,7 @@
 use anyhow::{Context, Result};
 use clap::Parser;
-use std::fs;
+use std::fs::{self, OpenOptions};
+use std::io::Write;
 use std::path::PathBuf;
 use std::time::Duration;
 use tokio::time::{self, MissedTickBehavior};
@@ -144,6 +145,13 @@ async fn main() -> Result<()> {
         model: selection.model.clone(),
         provider: selection.provider.clone(),
     })?;
+    let banner_enabled = tui_banner_enabled();
+    tui.set_welcome_enabled(banner_enabled)?;
+    if banner_enabled {
+        if let Some(checklist) = claim_first_run_checklist(&paths, &cwd, &selection)? {
+            tui.set_welcome_checklist(checklist)?;
+        }
+    }
     if !selection.live {
         tui.push_warning("[offline] 未找到在线凭证，当前使用本地静态 Runtime；不会调用模型")?;
     }
@@ -213,7 +221,10 @@ async fn main() -> Result<()> {
             turn_config.parent_session_id = Some(parent.clone());
         }
 
-        run_turn(&mut tui, &backend, turn_config, prompt, &mut session_id).await?;
+        tui.begin_turn()?;
+        let turn_result = run_turn(&mut tui, &backend, turn_config, prompt, &mut session_id).await;
+        tui.end_turn()?;
+        turn_result?;
     }
 
     Ok(())
@@ -264,6 +275,54 @@ fn restrict_directory_permissions(path: &std::path::Path) -> Result<()> {
     }
     let _ = path;
     Ok(())
+}
+
+fn tui_banner_enabled() -> bool {
+    !std::env::var("YUNXI_TUI_BANNER").is_ok_and(|value| {
+        matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "0" | "false" | "off" | "no"
+        )
+    })
+}
+
+fn claim_first_run_checklist(
+    paths: &StoragePaths,
+    cwd: &std::path::Path,
+    selection: &ProviderSelection,
+) -> Result<Option<Vec<String>>> {
+    let marker = paths.xdg_state.join("first-run-complete");
+    let mut file = match OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&marker)
+    {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => return Ok(None),
+        Err(error) => {
+            return Err(error)
+                .with_context(|| format!("无法写入首次启动标记: {}", marker.display()));
+        }
+    };
+    writeln!(file, "completed")
+        .with_context(|| format!("无法写入首次启动标记: {}", marker.display()))?;
+
+    let provider = if selection.live {
+        format!("{} · 已就绪", selection.provider)
+    } else {
+        "离线 Runtime · 已就绪".to_string()
+    };
+    Ok(Some(vec![
+        format!("  工作区                 ✓ {}", cwd.display()),
+        format!("  YunXi 状态目录         ✓ {}", paths.xdg_state.display()),
+        format!(
+            "  Provider / 模型        ✓ {} / {}",
+            provider, selection.model
+        ),
+        "  会话与记忆目录         ✓ 已初始化".to_string(),
+        "  默认知识库             - 未配置，稍后可接入".to_string(),
+        "  完成。直接输入目标即可开始，/help 查看帮助".to_string(),
+    ]))
 }
 
 async fn run_turn(
@@ -407,5 +466,47 @@ mod tests {
             .expect_err("conflicting provider flags must fail");
 
         assert!(error.to_string().contains("不能同时使用"));
+    }
+
+    #[test]
+    fn first_run_checklist_is_claimed_once_and_kept_out_of_session_data() {
+        let root =
+            std::env::temp_dir().join(format!("yunxi-first-run-test-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let xdg_state = root.join("state");
+        fs::create_dir_all(&xdg_state).expect("state directory");
+        let paths = StoragePaths {
+            yunxi_home: root.join("home"),
+            workspace_state: root.join("workspace"),
+            xdg_state,
+            xdg_cache: root.join("cache"),
+        };
+        let selection = ProviderSelection {
+            live: false,
+            source: "forced_offline",
+            provider: "offline".to_string(),
+            model: "static".to_string(),
+        };
+
+        let first =
+            claim_first_run_checklist(&paths, std::path::Path::new("/tmp/workspace"), &selection)
+                .expect("first claim");
+        assert!(first.is_some());
+        assert!(
+            first
+                .as_ref()
+                .expect("checklist")
+                .iter()
+                .any(|line| line.contains("会话与记忆目录"))
+        );
+
+        let second =
+            claim_first_run_checklist(&paths, std::path::Path::new("/tmp/workspace"), &selection)
+                .expect("second claim");
+        assert!(second.is_none());
+        assert!(paths.xdg_state.join("first-run-complete").is_file());
+        assert!(!paths.workspace_state.join("first-run-complete").exists());
+
+        fs::remove_dir_all(root).expect("cleanup");
     }
 }

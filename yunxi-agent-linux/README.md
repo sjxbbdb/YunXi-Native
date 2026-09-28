@@ -103,6 +103,11 @@ cargo build --release -p yunxi-agent-linux
 
 TUI 内置命令：`/help`、`/clear`、`/status`、`/exit`。工具调用仍遵循 Runtime 的审批策略；按 `Ctrl+C` 可取消当前回合。
 
+首次启动时欢迎层会显示一次环境检查清单，完成后由 `$XDG_STATE_HOME/yunxi/first-run-complete`
+记录状态；设置 `YUNXI_TUI_BANNER=0` 可关闭欢迎层而不影响 Runtime。输入区会在空闲时提示自然语言
+目标，多行或较长粘贴会折叠成 `[粘贴 1: 约 N 行]`。回合运行时底部状态行显示 spinner、耗时、模型、
+本轮 token 与上下文水位，并在窄终端按优先级自动裁剪。
+
 ## Linux 只读工具层（Phase 3 起点）
 
 自然语言请求可以由模型路由到固定的 `linux_readonly` ToolSpec。它只允许八种操作：
