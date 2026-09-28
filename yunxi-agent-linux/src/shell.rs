@@ -187,6 +187,20 @@ pub(crate) enum LinuxShellCommand {
         #[arg(long, default_value = ".")]
         cwd: PathBuf,
     },
+    /// List the file-change undo journals created by `linux_apply`.
+    LinuxUndoList {
+        /// Workspace whose `.yunxi/undo` directory is inspected.
+        #[arg(long, default_value = ".")]
+        cwd: PathBuf,
+    },
+    /// Restore one `linux_apply` journal after explicit user selection.
+    LinuxUndoApply {
+        /// Path printed by `linux-undo-list`; relative paths resolve from --cwd.
+        journal: PathBuf,
+        /// Workspace whose `.yunxi/undo` directory owns the journal.
+        #[arg(long, default_value = ".")]
+        cwd: PathBuf,
+    },
     /// Print the user-level systemd unit used to host the daemon.
     SystemdUnit,
     /// Run a bounded read-only Linux host probe.
@@ -663,6 +677,8 @@ pub(crate) async fn run_command(command: LinuxShellCommand) -> Result<()> {
         LinuxShellCommand::MemoryReject { id, cwd } => {
             run_memory_status_update(id, cwd, MemoryStatus::Rejected, "rejected")
         }
+        LinuxShellCommand::LinuxUndoList { cwd } => run_linux_undo_list(cwd),
+        LinuxShellCommand::LinuxUndoApply { journal, cwd } => run_linux_undo_apply(journal, cwd),
         LinuxShellCommand::SystemdUnit => {
             print!("{SYSTEMD_UNIT}");
             Ok(())
@@ -947,6 +963,53 @@ fn run_memory_status_update(
 
 fn canonical_memory_cwd(cwd: PathBuf) -> Result<PathBuf> {
     std::fs::canonicalize(&cwd).with_context(|| format!("无法访问记忆工作区: {}", cwd.display()))
+}
+
+fn run_linux_undo_list(cwd: PathBuf) -> Result<()> {
+    let cwd = canonical_memory_cwd(cwd)?;
+    let journals = yunxi_agent_tools::linux_apply::list_journals(&cwd)
+        .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&serde_json::json!({
+            "schema_version": 1,
+            "workspace": cwd,
+            "journal_count": journals.len(),
+            "journals": journals,
+        }))?
+    );
+    Ok(())
+}
+
+fn run_linux_undo_apply(journal: PathBuf, cwd: PathBuf) -> Result<()> {
+    let cwd = canonical_memory_cwd(cwd)?;
+    let undo_root = cwd.join(".yunxi").join("undo");
+    let undo_root = std::fs::canonicalize(&undo_root)
+        .with_context(|| format!("找不到工作区撤销目录: {}", undo_root.display()))?;
+    let journal = if journal.is_absolute() {
+        journal
+    } else {
+        cwd.join(journal)
+    };
+    let journal = std::fs::canonicalize(&journal)
+        .with_context(|| format!("找不到撤销 journal: {}", journal.display()))?;
+    if !journal.starts_with(&undo_root)
+        || journal.file_name().and_then(|name| name.to_str()) != Some("journal.json")
+    {
+        bail!("撤销 journal 必须位于当前工作区的 .yunxi/undo/*/journal.json");
+    }
+    let report = yunxi_agent_tools::linux_apply::undo(&journal)
+        .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&serde_json::json!({
+            "schema_version": report.schema_version,
+            "action": "undo",
+            "journal_path": journal,
+            "restored_paths": report.restored_paths,
+        }))?
+    );
+    Ok(())
 }
 
 fn run_knowledge_search(

@@ -24,4 +24,5 @@ yunxi-agent-provider = { path = "../crates/yunxi-agent-provider" }
 yunxi-agent-runtime = { path = "../crates/yunxi-agent-runtime" }
 yunxi-agent-sandbox = { path = "../crates/yunxi-agent-sandbox" }
 yunxi-agent-storage = { path = "../crates/yunxi-agent-storage" }
+yunxi-agent-tools = { path = "../crates/yunxi-agent-tools" }
 yunxi-agent-tui = { path = "../crates/yunxi-agent-tui" }

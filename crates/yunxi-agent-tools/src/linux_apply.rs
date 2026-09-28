@@ -49,6 +49,14 @@ pub struct LinuxUndoReport {
     pub restored_paths: Vec<String>,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct LinuxUndoJournalSummary {
+    pub journal_path: String,
+    pub operation: String,
+    pub entries: usize,
+    pub paths: Vec<String>,
+}
+
 #[derive(Debug)]
 pub struct LinuxApplyError(String);
 
@@ -294,6 +302,40 @@ pub fn undo(journal_path: &Path) -> Result<LinuxUndoReport, LinuxApplyError> {
         schema_version: 1,
         restored_paths: restored,
     })
+}
+
+/// List valid undo journals for a workspace without changing any files.
+pub fn list_journals(cwd: &Path) -> Result<Vec<LinuxUndoJournalSummary>, LinuxApplyError> {
+    let undo_root = cwd.join(".yunxi").join("undo");
+    let Ok(entries) = fs::read_dir(&undo_root) else {
+        return Ok(Vec::new());
+    };
+    let mut journals = Vec::new();
+    for entry in entries {
+        let entry = entry.map_err(|error| {
+            LinuxApplyError::new(format!("read undo journal directory: {error}"))
+        })?;
+        let path = entry.path().join("journal.json");
+        if !path.is_file() {
+            continue;
+        }
+        let bytes = fs::read(&path)
+            .map_err(|error| LinuxApplyError::new(format!("read undo journal: {error}")))?;
+        let journal: Journal = serde_json::from_slice(&bytes)
+            .map_err(|error| LinuxApplyError::new(format!("parse undo journal: {error}")))?;
+        journals.push(LinuxUndoJournalSummary {
+            journal_path: path.display().to_string(),
+            operation: journal.operation,
+            entries: journal.entries.len(),
+            paths: journal
+                .entries
+                .into_iter()
+                .map(|entry| entry.path)
+                .collect(),
+        });
+    }
+    journals.sort_by(|left, right| right.journal_path.cmp(&left.journal_path));
+    Ok(journals)
 }
 
 fn execute_operation(
@@ -617,5 +659,24 @@ mod tests {
                 .is_err()
             );
         }
+    }
+
+    #[test]
+    fn lists_valid_undo_journals() {
+        let root = tempdir().expect("tempdir");
+        let result = apply(
+            root.path(),
+            LinuxApplyInput::WriteFile {
+                path: "a.txt".into(),
+                content: "hello".into(),
+            },
+            &policy(root.path()),
+        )
+        .expect("write");
+        let journals = list_journals(root.path()).expect("list journals");
+        assert_eq!(journals.len(), 1);
+        assert_eq!(journals[0].journal_path, result.journal_path);
+        assert_eq!(journals[0].operation, "write_file");
+        assert_eq!(journals[0].paths, vec!["a.txt"]);
     }
 }
