@@ -104,6 +104,28 @@ Linux 版已经开始把系统能力接入为固定的 `linux_readonly` ToolSpec
 Sandbox，工作区变更会写入 `.yunxi/undo` journal，并可用 `undo()` 恢复；它不接受任意
 shell 文本，也不会把 systemd、package 或 network 的高风险操作偷偷变成执行。
 
+`linux_apply` 的撤销现在也有明确的 Linux CLI 入口：
+
+```bash
+yunxi-linux linux-undo-list --cwd .
+yunxi-linux linux-undo-apply <journal-path-from-list> --cwd .
+```
+
+`linux-undo-apply` 会先 canonicalize journal，并拒绝当前工作区之外的路径；它只恢复
+`linux_apply` 自己生成的 `.yunxi/undo/*/journal.json`。
+
+记忆候选同样遵循“先提出、再确认”的边界。个人事实、关系、情绪、目标和事件等需要确认的
+候选不会永久停留在 `pending`：
+
+```bash
+yunxi-linux memory-pending --cwd .
+yunxi-linux memory-confirm <memory-id> --cwd .
+yunxi-linux memory-reject <memory-id> --cwd .
+```
+
+提问轮次不会再被当作用户自述事实；显式“请记住……”请求仍按现有隐私策略处理。情书调度
+在关系阶段不足、记忆数量不足、冷却或生成失败时会输出带原因的诊断，便于确认为什么暂未生成。
+
 ### 记忆反思与自动总结（Phase 5）
 
 YunXi 现在可以在一段时间没有新对话后，对最近完成的会话做一次后台“记忆反思”。必须先启用

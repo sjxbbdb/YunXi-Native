@@ -215,6 +215,30 @@ network 动作。请求仍先经过 YunXi 的 Approval/Sandbox 链路；`ReadOnl
 成功变更会写入 `.yunxi/undo/linux-apply-*/journal.json` 与必要的备份，提供
 `yunxi_agent_tools::linux_apply::undo()` 恢复接口；执行或 journal 提交失败会回滚已发生的变更。
 
+撤销入口由 Linux CLI 暴露，避免 journal 只能增长而无法使用：
+
+```bash
+yunxi-linux linux-undo-list --cwd .
+yunxi-linux linux-undo-apply <journal-path-from-list> --cwd .
+```
+
+确认前先用 `linux-undo-list` 选择具体 journal；`linux-undo-apply` 会 canonicalize 路径并
+拒绝工作区外或非 `.yunxi/undo/*/journal.json` 的目标。
+
+### 待确认记忆与关系阶段
+
+需要用户确认的候选不会再永久停在 `pending`，可通过以下入口查看、确认或拒绝：
+
+```bash
+yunxi-linux memory-pending --cwd .
+yunxi-linux memory-confirm <memory-id> --cwd .
+yunxi-linux memory-reject <memory-id> --cwd .
+```
+
+确认后的 Active 关系记忆会参与关系阶段计算；情书调度在不满足条件时会输出
+`reason=relationship_too_new`、`insufficient_memories`、`cooldown` 等诊断，生成失败也会记录
+任务与失败原因。提问轮次会被记忆管线过滤，显式“请记住……”请求仍可进入现有策略。
+
 ## 显式 project/private 知识空间
 
 Linux 知识库现在支持由用户显式创建的 `project` 与 `private` 空间。它们不会自动扫描
