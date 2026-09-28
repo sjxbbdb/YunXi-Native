@@ -185,10 +185,15 @@ async fn main() -> Result<()> {
                 continue;
             }
             "/status" => {
+                let cwd = std::env::current_dir()
+                    .map(|path| path.display().to_string())
+                    .unwrap_or_else(|_| "unknown".to_string());
                 tui.push_notice(
                     "status",
                     &format!(
-                        "provider={} source={} model={} turns={} session={}",
+                        "version=v{} cwd={} provider={} source={} model={} turns={} session={}",
+                        env!("CARGO_PKG_VERSION"),
+                        cwd,
                         selection.provider,
                         selection.source,
                         selection.model,

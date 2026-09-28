@@ -1,10 +1,10 @@
-00|YunXi v2.3.3 | deepseek live
-01|new output below | live · deepseek/deepseek-chat-u...
+00|云熙 | deepseek-chat-ultra-long-model-name | 运行中
+01|↓ 有新输出 · End 回到最新
 02|──────────────────────────────────────────────────────────
-03|┌Transcript 74-82 / 93 | new output below────────────────┐
-04|│    answer streams.                                     ^
-05|│[assistant*] 国際化 layout 中文かな keeps one active    ║
-06|│    cell with emoji 👩‍💻 and é.                           ║
+03|┌对话 74-82 / 93─────────────────────────────────────────┐
+04|│    streams.                                            ^
+05|│[云熙·] 国際化 layout 中文かな keeps one active cell    ║
+06|│    with emoji 👩‍💻 and é.                                ║
 07|│    URL https://very-long.example.test/api/v1/items?    ║
 08|│    search=中文&sort=desc#results                       ║
 09|│    Windows C:\Users\24763\YunXi Agent\输出目录\very-   ║
@@ -14,5 +14,5 @@
 13|└────────────────────────────────────────────────────────┘
 14|┌Composer────────────────────────────────────────────────┐
 15|│yunxi> 入力 中文かな 👩‍💻 é                               │
-16|│End follow tail | new output below | wheel/drag history │
+16|│End 回到最新 | 有新输出 | wheel/drag history            │
 17|└────────────────────────────────────────────────────────┘

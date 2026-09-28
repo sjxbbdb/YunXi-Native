@@ -512,22 +512,16 @@ fn option_line(label: &str, selected: bool, styles: TuiStyleSet) -> Line<'static
 }
 
 fn transcript_title(
-    app: &YunxiTuiApp,
+    _app: &YunxiTuiApp,
     start: usize,
     end: usize,
     total: usize,
     visible: usize,
 ) -> String {
     if total <= visible.max(1) {
-        return format!("Transcript | {}", app.viewport().scroll_status());
+        return "对话".to_string();
     }
-    format!(
-        "Transcript {}-{} / {} | {}",
-        start.saturating_add(1),
-        end,
-        total,
-        app.viewport().scroll_status()
-    )
+    format!("对话 {}-{} / {}", start.saturating_add(1), end, total)
 }
 
 #[cfg(test)]
@@ -574,6 +568,10 @@ mod tests {
         app.set_banner(banner());
         app.push_warning("[offline] 使用本地静态 Runtime");
         app.push_notice("linux", "Linux 原生 TUI");
+        app.push_notice("help", "可用命令：/help /status /capabilities");
+        app.push_notice("status", "provider=offline turns=0 session=new");
+        app.push_notice("capabilities", "已加载终端、记忆与知识库能力");
+        app.push_error("本地 Runtime 尚未连接，已切换到离线模式");
 
         let welcome = render_app(&app, 80, 24);
         assert!(welcome.contains("YUNXI"));
@@ -584,7 +582,7 @@ mod tests {
         app.push_user("先查看当前目录");
         let transcript = render_app(&app, 80, 24);
         assert!(!transcript.contains("YUNXI"));
-        assert!(transcript.contains("[user] 先查看当前目录"));
+        assert!(transcript.contains("[你] 先查看当前目录"));
 
         app.clear_transcript();
         let cleared = render_app(&app, 80, 24);
@@ -713,13 +711,13 @@ mod tests {
                 <= layout.transcript.y.saturating_add(layout.transcript.height)
         );
         for required in [
-            "[assistant*]",
-            "new output below",
+            "[云熙·]",
+            "有新输出",
             "^",
             "v",
             "Composer",
             "yunxi> 入力 中文かな 👩‍💻 e\u{301}",
-            "End follow tail",
+            "End 回到最新",
             "国際化",
         ] {
             assert!(
@@ -968,7 +966,7 @@ mod tests {
 
         let rendered = render_app(&app, 58, 20);
 
-        assert!(rendered.contains(&format!("YunXi v{}", env!("CARGO_PKG_VERSION"))));
+        assert!(rendered.contains("云熙"));
         assert!(!rendered.contains("debug off"));
         assert!(!rendered.contains("|,"));
     }
@@ -1032,16 +1030,16 @@ mod tests {
 
         let mut app = YunxiTuiApp::default();
         app.set_banner(banner());
+        app.push_user("检查状态");
         app.push_warning("configuration needs attention");
         app.push_error("provider failed");
         app.push_agent_event(&yunxi_agent_core::AgentEvent::Cancelled {
             reason: Some("cancelled by user".to_string()),
         });
         let transcript = render_app_with_styles(&app, 80, 24, monochrome);
-        let lowercase = transcript.to_ascii_lowercase();
-        assert!(lowercase.contains("warning"));
-        assert!(lowercase.contains("error"));
-        assert!(lowercase.contains("cancel"));
+        assert!(transcript.contains("注意"));
+        assert!(transcript.contains("错误"));
+        assert!(transcript.contains("YX-CANCEL-001"));
     }
 
     #[test]
@@ -1051,13 +1049,15 @@ mod tests {
 
         let rendered = render_app(&app, 100, 30);
 
-        assert!(rendered.contains("deepseek live"));
-        assert!(rendered.contains("model=deepseek-chat"));
+        assert!(rendered.contains("云熙"));
+        assert!(rendered.contains("deepseek-chat"));
+        assert!(!rendered.contains("model="));
     }
 
     #[test]
     fn transcript_scroll_renders_history_window_and_scrollbar_title() {
         let mut app = YunxiTuiApp::default();
+        app.push_user("查看历史");
         for idx in 0..30 {
             app.push_notice("event", &format!("line-{idx:02}"));
         }
@@ -1066,8 +1066,8 @@ mod tests {
 
         let rendered = render_app(&app, 100, 18);
 
-        assert!(rendered.contains("Transcript"));
-        assert!(rendered.contains("history"));
+        assert!(rendered.contains("对话"));
+        assert!(rendered.contains("已上滚"));
         assert!(rendered.contains("line-00"));
         assert!(!rendered.contains("line-29"));
     }
@@ -1075,6 +1075,7 @@ mod tests {
     #[test]
     fn transcript_reports_new_output_below_when_scrolled_history_changes() {
         let mut app = YunxiTuiApp::default();
+        app.push_user("查看历史");
         for idx in 0..30 {
             app.push_notice("event", &format!("line-{idx:02}"));
         }
@@ -1084,13 +1085,14 @@ mod tests {
 
         let rendered = render_app(&app, 100, 18);
 
-        assert!(rendered.contains("new output below"));
+        assert!(rendered.contains("有新输出"));
         assert!(!rendered.contains("fresh-line"));
     }
 
     #[test]
     fn transcript_scroll_uses_wrapped_rows_for_title_and_tail() {
         let mut app = YunxiTuiApp::default();
+        app.push_user("查看对话");
         app.push_agent_event(&yunxi_agent_core::AgentEvent::Message {
             content:
                 "abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyz"
@@ -1100,14 +1102,15 @@ mod tests {
 
         let rendered = render_app(&app, 28, 12);
 
-        assert!(rendered.contains("Transcript"));
-        assert!(rendered.contains("tail"));
+        assert!(rendered.contains("对话"));
+        assert!(!rendered.contains("tail"));
         assert!(rendered.contains("/"));
     }
 
     #[test]
     fn transcript_tail_scrollbar_thumb_reaches_visual_bottom() {
         let mut app = YunxiTuiApp::default();
+        app.push_user("查看历史");
         for idx in 0..80 {
             app.push_notice("event", &format!("line-{idx:02}"));
         }
@@ -1127,7 +1130,6 @@ mod tests {
             .find(|line| line.starts_with(&prefix))
             .expect("bottom scrollbar row");
 
-        assert!(rendered.contains("tail"));
         assert!(
             row.ends_with("█"),
             "tail scrollbar thumb should occupy bottom row: {row}"

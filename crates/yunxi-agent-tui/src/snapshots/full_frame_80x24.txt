@@ -1,17 +1,17 @@
-00|YunXi v2.3.3 | deepseek live
-01|new output below | live · deepseek/deepseek-chat-u... | running
+00|云熙 | deepseek-chat-ultra-long-model-name | 运行中
+01|↓ 有新输出 · End 回到最新
 02|────────────────────────────────────────────────────────────────────────────────
-03|┌Transcript 29-43 / 51 | new output below──────────────────────────────────────┐
-04|│[notice] history 28: stable transcript row for viewport evidence              ^
-05|│[notice] history 29: stable transcript row for viewport evidence              ║
-06|│[notice] history 30: stable transcript row for viewport evidence              ║
-07|│[notice] history 31: stable transcript row for viewport evidence              ║
-08|│[notice] history 32: stable transcript row for viewport evidence              ║
-09|│[notice] history 33: stable transcript row for viewport evidence              ║
-10|│[notice] history 34: stable transcript row for viewport evidence              ║
-11|│[notice] history 35: stable transcript row for viewport evidence              ║
-12|│[user] Keep the current history position while the answer streams.            █
-13|│[assistant*] 国際化 layout 中文かな keeps one active cell with emoji 👩‍💻 and é.█
+03|┌对话 29-43 / 51───────────────────────────────────────────────────────────────┐
+04|│[提示] history 28: stable transcript row for viewport evidence                ^
+05|│[提示] history 29: stable transcript row for viewport evidence                ║
+06|│[提示] history 30: stable transcript row for viewport evidence                ║
+07|│[提示] history 31: stable transcript row for viewport evidence                ║
+08|│[提示] history 32: stable transcript row for viewport evidence                ║
+09|│[提示] history 33: stable transcript row for viewport evidence                ║
+10|│[提示] history 34: stable transcript row for viewport evidence                ║
+11|│[提示] history 35: stable transcript row for viewport evidence                ║
+12|│[你] Keep the current history position while the answer streams.              █
+13|│[云熙·] 国際化 layout 中文かな keeps one active cell with emoji 👩‍💻 and é.     █
 14|│    URL https://very-long.example.test/api/v1/items?search=中文&sort=desc#    █
 15|│    results                                                                   █
 16|│    Windows C:\Users\24763\YunXi Agent\输出目录\very-long-file-name.txt       █
@@ -20,5 +20,5 @@
 19|└──────────────────────────────────────────────────────────────────────────────┘
 20|┌Composer──────────────────────────────────────────────────────────────────────┐
 21|│yunxi> 入力 中文かな 👩‍💻 é                                                     │
-22|│End follow tail | new output below | wheel/drag history                       │
+22|│End 回到最新 | 有新输出 | wheel/drag history                                  │
 23|└──────────────────────────────────────────────────────────────────────────────┘

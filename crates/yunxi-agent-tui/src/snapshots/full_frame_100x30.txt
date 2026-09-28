@@ -1,24 +1,24 @@
-00|YunXi Agent v2.3.3 | deepseek live | model=deepseek-chat-ultra-long-model-name
-01|new output below | live · deepseek/deepseek-chat-ultra-long-mode... | running
+00|云熙 | deepseek-chat-ultra-long-model-name | 运行中
+01|↓ 有新输出 · End 回到最新
 02|────────────────────────────────────────────────────────────────────────────────────────────────────
-03|┌Transcript 22-42 / 49 | new output below──────────────────────────────────────────────────────────┐
-04|│[notice] history 21: stable transcript row for viewport evidence                                  ^
-05|│[notice] history 22: stable transcript row for viewport evidence                                  ║
-06|│[notice] history 23: stable transcript row for viewport evidence                                  ║
-07|│[notice] history 24: stable transcript row for viewport evidence                                  ║
-08|│[notice] history 25: stable transcript row for viewport evidence                                  ║
-09|│[notice] history 26: stable transcript row for viewport evidence                                  ║
-10|│[notice] history 27: stable transcript row for viewport evidence                                  ║
-11|│[notice] history 28: stable transcript row for viewport evidence                                  ║
-12|│[notice] history 29: stable transcript row for viewport evidence                                  ║
-13|│[notice] history 30: stable transcript row for viewport evidence                                  █
-14|│[notice] history 31: stable transcript row for viewport evidence                                  █
-15|│[notice] history 32: stable transcript row for viewport evidence                                  █
-16|│[notice] history 33: stable transcript row for viewport evidence                                  █
-17|│[notice] history 34: stable transcript row for viewport evidence                                  █
-18|│[notice] history 35: stable transcript row for viewport evidence                                  █
-19|│[user] Keep the current history position while the answer streams.                                █
-20|│[assistant*] 国際化 layout 中文かな keeps one active cell with emoji 👩‍💻 and é.                    █
+03|┌对话 22-42 / 49───────────────────────────────────────────────────────────────────────────────────┐
+04|│[提示] history 21: stable transcript row for viewport evidence                                    ^
+05|│[提示] history 22: stable transcript row for viewport evidence                                    ║
+06|│[提示] history 23: stable transcript row for viewport evidence                                    ║
+07|│[提示] history 24: stable transcript row for viewport evidence                                    ║
+08|│[提示] history 25: stable transcript row for viewport evidence                                    ║
+09|│[提示] history 26: stable transcript row for viewport evidence                                    ║
+10|│[提示] history 27: stable transcript row for viewport evidence                                    ║
+11|│[提示] history 28: stable transcript row for viewport evidence                                    ║
+12|│[提示] history 29: stable transcript row for viewport evidence                                    ║
+13|│[提示] history 30: stable transcript row for viewport evidence                                    █
+14|│[提示] history 31: stable transcript row for viewport evidence                                    █
+15|│[提示] history 32: stable transcript row for viewport evidence                                    █
+16|│[提示] history 33: stable transcript row for viewport evidence                                    █
+17|│[提示] history 34: stable transcript row for viewport evidence                                    █
+18|│[提示] history 35: stable transcript row for viewport evidence                                    █
+19|│[你] Keep the current history position while the answer streams.                                  █
+20|│[云熙·] 国際化 layout 中文かな keeps one active cell with emoji 👩‍💻 and é.                         █
 21|│    URL https://very-long.example.test/api/v1/items?search=中文&sort=desc#results                 █
 22|│    Windows C:\Users\24763\YunXi Agent\输出目录\very-long-file-name.txt                           ║
 23|│    ```rust                                                                                       ║
@@ -26,5 +26,5 @@
 25|└──────────────────────────────────────────────────────────────────────────────────────────────────┘
 26|┌Composer──────────────────────────────────────────────────────────────────────────────────────────┐
 27|│yunxi> 入力 中文かな 👩‍💻 é                                                                         │
-28|│End follow tail | new output below | wheel/drag history                                           │
+28|│End 回到最新 | 有新输出 | wheel/drag history                                                      │
 29|└──────────────────────────────────────────────────────────────────────────────────────────────────┘

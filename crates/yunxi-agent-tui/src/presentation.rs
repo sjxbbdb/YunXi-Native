@@ -4,7 +4,7 @@ use crate::timeline::{ToolPhase, ToolTimelineUpdate, phase_from_command_status, 
 use std::fmt;
 use yunxi_agent_core::{
     AgentEvent, AgentMessageSequence, AgentMessageStream, AgentMessageStreamPhase, AgentRunStatus,
-    McpToolStatus,
+    FileChangeKind, McpToolStatus, PatchStatus,
 };
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
@@ -566,19 +566,19 @@ impl TuiPresentation {
             AgentEvent::FileChanged { path, kind } => self.visible_with_detail(
                 TuiCellKind::ProgressSummary,
                 "file",
-                format!("file change: {kind:?}"),
+                file_change_summary(*kind),
                 "file change",
                 format!("kind={kind:?} path={path}"),
             ),
             AgentEvent::PatchCompleted { status } => self.simple_visible(
                 TuiCellKind::ProgressSummary,
                 "patch",
-                format!("patch {}", format!("{status:?}").to_ascii_lowercase()),
+                patch_summary(*status),
             ),
             AgentEvent::TodoUpdated { id, items } => self.visible_with_detail(
                 TuiCellKind::ProgressSummary,
                 "todo",
-                format!("todo updated: {} item(s)", items.len()),
+                format!("待办已更新 · {} 项", items.len()),
                 "todo update",
                 format!("id={id:?} items={items:?}"),
             ),
@@ -591,11 +591,7 @@ impl TuiPresentation {
             } => self.visible_with_detail(
                 TuiCellKind::ProgressSummary,
                 "child-agent",
-                format!(
-                    "child agent {} {}",
-                    safe_identifier(agent_id),
-                    safe_identifier(status)
-                ),
+                format!("子任务状态已更新 · {}", safe_identifier(status)),
                 "child agent event",
                 format!(
                     "agent_id={agent_id} child_session_id={child_session_id} status={status} message={message:?}"
@@ -1030,6 +1026,23 @@ fn display_tool_name(name: &str) -> String {
     )
 }
 
+fn file_change_summary(kind: FileChangeKind) -> String {
+    match kind {
+        FileChangeKind::Add => "文件已添加".to_string(),
+        FileChangeKind::Delete => "文件已删除".to_string(),
+        FileChangeKind::Update => "文件已更新".to_string(),
+        FileChangeKind::Move => "文件已移动".to_string(),
+    }
+}
+
+fn patch_summary(status: PatchStatus) -> String {
+    match status {
+        PatchStatus::InProgress => "正在应用修改".to_string(),
+        PatchStatus::Completed => "修改已完成".to_string(),
+        PatchStatus::Failed => "修改失败".to_string(),
+    }
+}
+
 fn safe_identifier(value: &str) -> String {
     truncate_chars(&redact_secrets(value.trim()), 80)
 }
@@ -1189,6 +1202,29 @@ mod tests {
                 .expect("output detail")
                 .content
                 .contains("stdout")
+        );
+    }
+
+    #[test]
+    fn file_and_patch_events_use_human_readable_visible_copy() {
+        let mut presentation = TuiPresentation::default();
+        let file = presentation.present_agent_event(&AgentEvent::FileChanged {
+            path: "workspace/src/main.rs".to_string(),
+            kind: FileChangeKind::Update,
+        });
+        let patch = presentation.present_agent_event(&AgentEvent::PatchCompleted {
+            status: PatchStatus::Completed,
+        });
+
+        assert_eq!(file.visible_text, "文件已更新");
+        assert_eq!(patch.visible_text, "修改已完成");
+        assert!(!file.visible_text.contains("Debug"));
+        assert!(!file.visible_text.contains("Update"));
+        assert!(
+            file.detail
+                .expect("file detail")
+                .content
+                .contains("main.rs")
         );
     }
 

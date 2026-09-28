@@ -86,10 +86,10 @@ fn push_cell_rows(
 ) {
     match cell.kind() {
         HistoryCellKind::User(content) => {
-            push_labeled(rows, "user", TuiSemanticStyle::User, content, width, styles)
+            push_labeled(rows, "你", TuiSemanticStyle::User, content, width, styles)
         }
         HistoryCellKind::Assistant { content, active } => {
-            let label = if *active { "assistant*" } else { "assistant" };
+            let label = if *active { "云熙·" } else { "云熙" };
             push_labeled(
                 rows,
                 label,
@@ -101,7 +101,7 @@ fn push_cell_rows(
         }
         HistoryCellKind::Tool(entry) => push_labeled(
             rows,
-            "tool",
+            "工具",
             tool_semantic(entry.phase),
             &entry.display_text(),
             width,
@@ -109,7 +109,7 @@ fn push_cell_rows(
         ),
         HistoryCellKind::Event { kind, message } => push_labeled(
             rows,
-            kind,
+            event_display_label(kind, message),
             event_semantic(kind, message),
             message,
             width,
@@ -117,7 +117,7 @@ fn push_cell_rows(
         ),
         HistoryCellKind::Debug { id, label, message } => push_labeled(
             rows,
-            "debug",
+            "调试",
             TuiSemanticStyle::Muted,
             &format!("#{id} {label}: {message}"),
             width,
@@ -125,7 +125,7 @@ fn push_cell_rows(
         ),
         HistoryCellKind::Error(message) => push_labeled(
             rows,
-            "error",
+            "错误",
             TuiSemanticStyle::Error,
             message,
             width,
@@ -264,6 +264,35 @@ fn event_semantic(label: &str, message: &str) -> TuiSemanticStyle {
     }
 }
 
+fn event_label(label: &str) -> &str {
+    match label {
+        "notice" => "提示",
+        "warning" => "注意",
+        "progress" => "进展",
+        "approval" => "需要确认",
+        "escalation" => "需要升级",
+        "cancelled" => "已取消",
+        "provider" => "服务错误",
+        "file" => "文件",
+        "patch" => "修改",
+        "context" => "上下文",
+        "session" => "会话",
+        "usage" => "用量",
+        "debug" => "调试",
+        "details" => "详情",
+        "linux" => "系统",
+        other => other,
+    }
+}
+
+fn event_display_label<'a>(label: &'a str, message: &str) -> &'a str {
+    if label == "notice" && message.to_ascii_lowercase().starts_with("warning") {
+        "注意"
+    } else {
+        event_label(label)
+    }
+}
+
 fn tool_semantic(phase: ToolPhase) -> TuiSemanticStyle {
     match phase {
         ToolPhase::ApprovalRequired => TuiSemanticStyle::ActionRequired,
@@ -306,7 +335,7 @@ mod tests {
         let wrapped = build_wrapped_transcript(&cells, 12);
 
         assert!(wrapped.rows.len() > 1);
-        assert!(row_text(&wrapped.rows[0]).starts_with("[assistant] "));
+        assert!(row_text(&wrapped.rows[0]).starts_with("[云熙] "));
         assert!(row_text(&wrapped.rows[1]).starts_with(CONTINUATION_GUTTER));
     }
 
@@ -319,7 +348,7 @@ mod tests {
         let wrapped = build_wrapped_transcript(&cells, 14);
 
         assert!(wrapped.rows.len() > 1);
-        assert!(row_text(&wrapped.rows[0]).contains("[user] "));
+        assert!(row_text(&wrapped.rows[0]).contains("[你] "));
         assert!(row_text(&wrapped.rows[1]).starts_with(CONTINUATION_GUTTER));
     }
 
@@ -332,7 +361,7 @@ mod tests {
 
         let wrapped = build_wrapped_transcript(&cells, 80);
 
-        assert_eq!(row_text(&wrapped.rows[0]), "[progress] first");
+        assert_eq!(row_text(&wrapped.rows[0]), "[进展] first");
         assert_eq!(row_text(&wrapped.rows[1]), "    second");
     }
 
@@ -437,7 +466,7 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
 
-        for marker in ["[warning]", "[approval]", "[cancelled]", "[error]"] {
+        for marker in ["[注意]", "[需要确认]", "[已取消]", "[错误]"] {
             assert!(rendered.contains(marker));
         }
     }

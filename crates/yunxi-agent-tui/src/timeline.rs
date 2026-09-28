@@ -88,19 +88,13 @@ impl ToolTimelineEntry {
     }
 
     pub(crate) fn display_text(&self) -> String {
-        let mut header = format!("{}: {}", self.name, self.phase.label());
+        let mut header = format!("{} · {}", self.name, self.phase.ui_label());
         if let Some(status) = &self.status {
             header.push_str(&format!(" ({status})"));
         }
-        if self.steps.len() > 1 {
-            header.push_str("; path=");
-            header.push_str(&self.steps.join(" -> "));
-        }
         if let Some(output_summary) = &self.output_summary {
-            header.push_str("; ");
+            header.push_str(" · ");
             header.push_str(&truncate_chars(output_summary, 180));
-        } else if let Some(id) = self.detail_id {
-            header.push_str(&format!("; details #{id}"));
         }
         header
     }
@@ -185,6 +179,20 @@ impl ToolPhase {
             ToolPhase::Declined => "declined",
             ToolPhase::Cancelled => "cancelled",
             ToolPhase::PolicyDeclined => "policy declined",
+        }
+    }
+
+    pub(crate) fn ui_label(self) -> &'static str {
+        match self {
+            ToolPhase::Requested => "已请求",
+            ToolPhase::ApprovalRequired => "等待确认",
+            ToolPhase::Approved => "已确认",
+            ToolPhase::Running => "执行中",
+            ToolPhase::Completed => "已完成",
+            ToolPhase::Failed => "失败",
+            ToolPhase::Declined => "已拒绝",
+            ToolPhase::Cancelled => "已取消",
+            ToolPhase::PolicyDeclined => "策略拒绝",
         }
     }
 
@@ -326,5 +334,24 @@ mod tests {
             .count()
                 <= MAX_TOOL_OUTPUT_SUMMARY_GRAPHEMES
         );
+    }
+
+    #[test]
+    fn display_text_humanizes_phase_without_leaking_detail_id_or_path() {
+        let mut update =
+            ToolTimelineUpdate::new(Some("tool-1".to_string()), "shell", ToolPhase::Running)
+                .detail_id(42);
+        update.status = Some("running".to_string());
+        let mut activity = ToolActivity::new(update);
+        activity.apply(
+            ToolTimelineUpdate::new(Some("tool-1".to_string()), "shell", ToolPhase::Completed)
+                .detail_id(42),
+        );
+
+        let visible = activity.display_text();
+        assert!(visible.contains("已完成"));
+        assert!(!visible.contains("details #42"));
+        assert!(!visible.contains("path="));
+        assert_eq!(activity.detail_id, Some(42));
     }
 }

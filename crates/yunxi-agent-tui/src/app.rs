@@ -76,21 +76,14 @@ impl YunxiTuiApp {
     }
 
     pub(crate) fn has_user_round(&self) -> bool {
-        self.transcript
-            .cells()
-            .iter()
-            .any(|cell| match cell.kind() {
-                crate::chat::HistoryCellKind::Event { kind, message } => {
-                    !(kind == "linux"
-                        || message.contains("[offline]")
-                        || message.starts_with("Linux 原生 TUI"))
-                }
+        self.transcript.cells().iter().any(|cell| {
+            matches!(
+                cell.kind(),
                 crate::chat::HistoryCellKind::User(_)
-                | crate::chat::HistoryCellKind::Assistant { .. }
-                | crate::chat::HistoryCellKind::Tool(_)
-                | crate::chat::HistoryCellKind::Debug { .. }
-                | crate::chat::HistoryCellKind::Error(_) => true,
-            })
+                    | crate::chat::HistoryCellKind::Assistant { .. }
+                    | crate::chat::HistoryCellKind::Tool(_)
+            )
+        })
     }
 
     pub(crate) fn provider_live(&self) -> Option<bool> {
@@ -210,16 +203,16 @@ impl YunxiTuiApp {
         match self.viewport.scroll_status() {
             "new output below" => TextLayout::priority_line(
                 &[
-                    PrioritySegment::new("End follow tail", ClipPriority::MustKeep),
-                    PrioritySegment::new("new output below", ClipPriority::Important),
+                    PrioritySegment::new("End 回到最新", ClipPriority::MustKeep),
+                    PrioritySegment::new("有新输出", ClipPriority::Important),
                     PrioritySegment::new("wheel/drag history", ClipPriority::Optional),
                 ],
                 width,
             ),
             "history" => TextLayout::priority_line(
                 &[
-                    PrioritySegment::new("End follow tail", ClipPriority::MustKeep),
-                    PrioritySegment::new("history view", ClipPriority::Important),
+                    PrioritySegment::new("End 回到最新", ClipPriority::MustKeep),
+                    PrioritySegment::new("已上滚", ClipPriority::Important),
                     PrioritySegment::new("wheel/drag PgUp/PgDown", ClipPriority::Optional),
                 ],
                 width,
@@ -254,62 +247,24 @@ impl YunxiTuiApp {
     pub(crate) fn header_for_width(&self, width: usize) -> String {
         match &self.banner {
             Some(banner) => {
-                let mode = mode_label(banner.provider_live);
-                let product = if width < 90 {
-                    format!("YunXi {}", self.version)
+                let model = TextLayout::truncate(&banner.model, width.saturating_sub(20).max(8));
+                let state = if self.timeline.has_active_sessions() {
+                    "运行中"
+                } else if banner.provider_live {
+                    "就绪"
                 } else {
-                    format!("YunXi Agent {}", self.version)
+                    "离线"
                 };
-                let provider = format!("{} {}", banner.provider, mode);
-
-                // Header tiers are semantic: lower tiers never receive hidden context.
-                if width < 90 {
-                    return TextLayout::priority_line(
-                        &[
-                            PrioritySegment::new(&product, ClipPriority::MustKeep),
-                            PrioritySegment::new(&provider, ClipPriority::Important),
-                        ],
-                        width,
-                    );
-                }
-
-                let model = model_label(&banner.model, if width < 100 { 24 } else { 44 });
-                if width < 120 {
-                    return TextLayout::priority_line(
-                        &[
-                            PrioritySegment::new(&product, ClipPriority::MustKeep),
-                            PrioritySegment::new(&provider, ClipPriority::Important),
-                            PrioritySegment::new(&model, ClipPriority::Optional),
-                        ],
-                        width,
-                    );
-                }
-
-                let separator_width = TextLayout::measure(" | ");
-                let fixed_width = TextLayout::measure(&product)
-                    .saturating_add(TextLayout::measure(&provider))
-                    .saturating_add(separator_width.saturating_mul(3));
-                let detail_width = width.saturating_sub(fixed_width);
-                let model_width = detail_width.saturating_sub(28).clamp(14, 44);
-                let model = model_label(&banner.model, model_width);
-                let cwd_width = detail_width
-                    .saturating_sub(TextLayout::measure(&model))
-                    .clamp(14, 72);
-                let cwd = compact_path(&banner.cwd, cwd_width);
                 TextLayout::priority_line(
                     &[
-                        PrioritySegment::new(&product, ClipPriority::MustKeep),
-                        PrioritySegment::new(&provider, ClipPriority::Important),
-                        PrioritySegment::new(&model, ClipPriority::Optional),
-                        PrioritySegment::new(&cwd, ClipPriority::DebugOnly),
+                        PrioritySegment::new("云熙", ClipPriority::MustKeep),
+                        PrioritySegment::new(&model, ClipPriority::Important),
+                        PrioritySegment::new(state, ClipPriority::Optional),
                     ],
                     width,
                 )
             }
-            None => TextLayout::truncate(
-                &format!("YunXi Agent {} interactive CLI", self.version),
-                width,
-            ),
+            None => TextLayout::truncate("云熙 · 初始化中", width),
         }
     }
 
@@ -319,31 +274,21 @@ impl YunxiTuiApp {
     }
 
     pub(crate) fn subheader_for_width(&self, width: usize) -> String {
-        match &self.banner {
-            Some(banner) => {
-                let view = self.viewport.scroll_status();
-                let mode = mode_label(banner.provider_live);
-                let provider =
-                    TextLayout::truncate(&banner.provider, if width < 90 { 16 } else { 24 });
-                let model = TextLayout::truncate(&banner.model, if width < 90 { 18 } else { 32 });
-                let mode_provider = format!("{mode} · {provider}/{model}");
-                let state = if self.timeline.has_active_sessions() {
-                    "running"
-                } else {
-                    "ready"
-                };
-                let mut segments = vec![
-                    PrioritySegment::new(view, ClipPriority::MustKeep),
-                    PrioritySegment::new(&mode_provider, ClipPriority::Important),
-                    PrioritySegment::new(state, ClipPriority::Important),
-                ];
-                if self.realtime_voice_enabled {
-                    segments.push(PrioritySegment::new("voice", ClipPriority::Optional));
-                }
-                TextLayout::priority_line(&segments, width)
-            }
-            None => "initializing".to_string(),
+        let view = match self.viewport.scroll_status() {
+            "history" => "↑ 已上滚 · End 回到最新",
+            "new output below" => "↓ 有新输出 · End 回到最新",
+            _ => "",
+        };
+        if !view.is_empty() {
+            return TextLayout::truncate(view, width);
         }
+        if self.timeline.has_active_sessions() {
+            return TextLayout::truncate("处理中 · Ctrl+C 取消", width);
+        }
+        if self.realtime_voice_enabled {
+            return TextLayout::truncate("语音已开启", width);
+        }
+        String::new()
     }
 
     #[allow(dead_code)]
@@ -531,34 +476,6 @@ impl YunxiTuiApp {
     }
 }
 
-fn mode_label(provider_live: bool) -> &'static str {
-    if provider_live { "live" } else { "offline" }
-}
-
-fn model_label(model: &str, width: usize) -> String {
-    let prefix = "model=";
-    let value_width = width.saturating_sub(TextLayout::measure(prefix)).max(8);
-    format!("{prefix}{}", TextLayout::truncate(model, value_width))
-}
-
-fn compact_path(path: &str, width: usize) -> String {
-    if TextLayout::measure(path) <= width {
-        return path.to_string();
-    }
-    let normalized = path.replace('\\', "/");
-    let tail = normalized
-        .rsplit('/')
-        .find(|part| !part.is_empty())
-        .unwrap_or(normalized.as_str());
-    let prefix = if normalized.contains(':') {
-        normalized.split('/').next().unwrap_or("...")
-    } else {
-        "..."
-    };
-    let compact = format!("{prefix}/.../{tail}");
-    TextLayout::truncate(&compact, width)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -604,7 +521,7 @@ mod tests {
     }
 
     #[test]
-    fn narrow_header_keeps_complete_status_tokens() {
+    fn narrow_header_keeps_human_status_summary() {
         let mut app = YunxiTuiApp::default();
         app.set_banner(banner());
 
@@ -615,34 +532,32 @@ mod tests {
         assert!(TextLayout::measure(&header) <= 80);
         assert!(TextLayout::measure(&subheader) <= 80);
         assert!(TextLayout::measure(&footer) <= 80);
-        assert!(header.contains(&format!("YunXi v{}", env!("CARGO_PKG_VERSION"))));
-        assert!(header.contains("offline"));
+        assert!(header.contains("云熙"));
+        assert!(header.contains("deepseek-chat"));
+        assert!(header.contains("离线"));
+        assert!(!header.contains("v2."));
         assert!(!header.contains("model="));
         assert!(!header.contains("D:/"));
         assert!(!header.contains("yunxi-agent-cli"));
         assert!(!header.contains(".../"));
-        assert!(subheader.contains("tail"));
-        assert!(!subheader.ends_with('|'));
-        assert!(!subheader.ends_with("| d"));
+        assert!(subheader.is_empty());
         assert!(footer.contains("Enter submit"));
         assert!(footer.contains("Ctrl+C exit"));
     }
 
     #[test]
-    fn wide_header_preserves_provider_and_model_details() {
+    fn wide_header_avoids_repeating_diagnostic_details() {
         let mut app = YunxiTuiApp::default();
         app.set_banner(banner());
 
         let header = app.header_for_width(120);
         let subheader = app.subheader_for_width(120);
 
-        assert!(header.contains(&format!("YunXi Agent v{}", env!("CARGO_PKG_VERSION"))));
-        assert!(header.contains("model=deepseek-chat"));
-        assert!(header.contains("D:/"));
-        assert!(header.contains("yunxi-agent-cli"));
-        assert!(subheader.contains("offline · static"));
-        assert!(subheader.contains("deepseek-chat"));
-        assert!(subheader.contains("ready"));
+        assert_eq!(header, "云熙 | deepseek-chat | 离线");
+        assert!(!header.contains("model="));
+        assert!(!header.contains("D:/"));
+        assert!(!header.contains("yunxi-agent-cli"));
+        assert!(subheader.is_empty());
         assert!(!subheader.contains("backend="));
         assert!(!subheader.contains("source="));
     }
@@ -651,17 +566,17 @@ mod tests {
     fn realtime_voice_state_is_visible_without_changing_the_banner_contract() {
         let mut app = YunxiTuiApp::default();
         app.set_banner(banner());
-        assert!(!app.subheader_for_width(120).contains("voice"));
+        assert!(!app.subheader_for_width(120).contains("语音"));
 
         app.set_realtime_voice_enabled(true);
 
-        assert!(app.subheader_for_width(120).contains("voice"));
-        assert!(app.subheader_for_width(70).contains("voice"));
+        assert!(app.subheader_for_width(120).contains("语音"));
+        assert!(app.subheader_for_width(70).contains("语音"));
         assert!(app.footer_for_width(120).contains("q + Enter stop"));
     }
 
     #[test]
-    fn medium_header_keeps_model_before_cwd() {
+    fn medium_header_truncates_model_without_cwd_or_provider() {
         let mut app = YunxiTuiApp::default();
         app.set_banner(YunxiTuiBanner {
             model: "deepseek-chat-ultra-long-model-name".to_string(),
@@ -673,8 +588,9 @@ mod tests {
         let header = app.header_for_width(100);
 
         assert!(TextLayout::measure(&header) <= 100);
-        assert!(header.contains("deepseek live"));
-        assert!(header.contains("model=deepseek-chat"));
+        assert!(header.contains("deepseek-chat"));
+        assert!(!header.contains("deepseek live"));
+        assert!(!header.contains("model="));
         assert!(!header.contains("D:/"));
         assert!(!header.contains("yunxi-agent-cli"));
         assert!(!header.contains(".../"));
@@ -698,12 +614,11 @@ mod tests {
             assert!(TextLayout::measure(&header) <= width, "width={width}");
             assert!(TextLayout::measure(&subheader) <= width, "width={width}");
             assert!(TextLayout::measure(&footer) <= width, "width={width}");
-            assert!(
-                header.contains(&format!("v{}", env!("CARGO_PKG_VERSION"))),
-                "width={width}"
-            );
-            assert!(header.contains("deepseek live"), "width={width}");
-            assert!(subheader.contains("tail"), "width={width}");
+            assert!(header.contains("云熙"), "width={width}");
+            assert!(header.contains("deepseek-chat"), "width={width}");
+            assert!(!header.contains("model="), "width={width}");
+            assert!(!header.contains("deepseek live"), "width={width}");
+            assert!(subheader.is_empty(), "width={width}");
             assert!(footer.contains("Enter submit"), "width={width}");
         }
         let narrow = app.header_for_width(80);
@@ -713,23 +628,23 @@ mod tests {
         assert!(!narrow.contains(".../"));
 
         let tight_subheader = app.subheader_for_width(58);
-        assert!(tight_subheader.contains("tail"));
+        assert!(tight_subheader.is_empty());
         assert!(!tight_subheader.contains("cells="));
         assert!(!tight_subheader.contains("backend="));
         assert!(!tight_subheader.contains("source="));
         assert!(!tight_subheader.contains("debug"));
-        assert!(tight_subheader.contains("live"));
+        assert!(!tight_subheader.contains("live"));
 
         let medium = app.header_for_width(100);
-        assert!(medium.contains("model=deepseek-chat"));
+        assert!(medium.contains("deepseek-chat"));
         assert!(!medium.contains("C:"));
         assert!(!medium.contains("very-long-workspace"));
         assert!(!medium.contains(".../"));
 
         for width in [120, 200] {
             let wide = app.header_for_width(width);
-            assert!(wide.contains("model=deepseek-chat"), "width={width}");
-            assert!(wide.contains("very-long-workspace"), "width={width}");
+            assert!(wide.contains("deepseek-chat"), "width={width}");
+            assert!(!wide.contains("very-long-workspace"), "width={width}");
         }
     }
 
@@ -817,7 +732,7 @@ mod tests {
 
         let footer = app.footer_for_width(100);
 
-        assert!(footer.contains("history view"));
+        assert!(footer.contains("已上滚"));
         assert!(!footer.starts_with("streaming current turn"));
     }
 

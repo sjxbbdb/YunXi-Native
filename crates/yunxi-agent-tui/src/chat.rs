@@ -422,8 +422,7 @@ mod tests {
             );
         }
         assert!(visible.contains("skill using-superpowers"));
-        assert!(visible.contains("running"));
-        assert!(visible.contains("completed"));
+        assert!(visible.contains("已完成"));
         assert!(visible.contains("output captured"));
         assert!(visible.contains("agent operation failed"));
         assert!(transcript.debug_status().contains("hidden="));
@@ -616,7 +615,7 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(tool_cells.len(), 1);
         let visible = cell_text(tool_cells[0]);
-        assert!(visible.contains("shell: cancelled"));
+        assert!(visible.contains("shell · 已取消"));
         assert!(visible.contains("YX-CANCEL-001"));
         assert!(visible.contains("retryable=yes"));
         assert!(!visible.contains("YX-APPROVAL-001"));
