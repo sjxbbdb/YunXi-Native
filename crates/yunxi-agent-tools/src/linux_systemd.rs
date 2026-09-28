@@ -215,12 +215,17 @@ fn mutation_event(report: &LinuxSystemdReport) -> ToolRuntimeEvent {
 }
 
 fn validate_unit(unit: &str) -> Result<(), String> {
-    if unit.is_empty()
-        || unit.len() > MAX_UNIT_BYTES
-        || unit.starts_with('-')
-        || unit.chars().any(char::is_control)
-    {
-        return Err("systemd unit must be a non-empty token of at most 256 bytes".to_string());
+    if unit.is_empty() {
+        return Err("systemd unit must not be empty".to_string());
+    }
+    if unit.len() > MAX_UNIT_BYTES {
+        return Err("systemd unit must be at most 256 bytes".to_string());
+    }
+    if unit.starts_with('-') {
+        return Err("systemd unit must not start with '-'".to_string());
+    }
+    if unit.chars().any(char::is_control) {
+        return Err("systemd unit must not contain control characters".to_string());
     }
     if !unit
         .chars()
@@ -268,6 +273,26 @@ mod tests {
                 .is_err()
             );
         }
+    }
+
+    #[test]
+    fn systemd_unit_validation_reports_the_rejected_condition() {
+        assert_eq!(
+            validate_unit(""),
+            Err("systemd unit must not be empty".to_string())
+        );
+        assert_eq!(
+            validate_unit("--now"),
+            Err("systemd unit must not start with '-'".to_string())
+        );
+        assert_eq!(
+            validate_unit("foo\nbar"),
+            Err("systemd unit must not contain control characters".to_string())
+        );
+        assert_eq!(
+            validate_unit(&"a".repeat(MAX_UNIT_BYTES + 1)),
+            Err("systemd unit must be at most 256 bytes".to_string())
+        );
     }
 
     #[cfg(unix)]
