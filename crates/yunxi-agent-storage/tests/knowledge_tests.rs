@@ -1631,6 +1631,49 @@ fn mixed_system_search_can_filter_by_source_version() {
 }
 
 #[test]
+fn knowledge_keyword_search_matches_cjk_substrings_without_rebuilding_fts() {
+    let dir = tempdir().expect("tempdir");
+    let store = SqliteKnowledgeStore::new(dir.path().join("knowledge.sqlite3"));
+    store
+        .upsert_space(&space(
+            "system-linux",
+            KnowledgeSpaceKind::System,
+            "system",
+            KnowledgeVisibility::Public,
+            1,
+        ))
+        .expect("system space");
+    let mut document = document("system-linux", "system", KnowledgeVisibility::Public);
+    document.title = "中文测试文档".to_string();
+    store.upsert_document(&document).expect("document");
+    let chunk = chunk(
+        &document.document_id,
+        "system",
+        KnowledgeVisibility::Public,
+        "这是一条独一无二的测试标记：紫罗兰色的大象在雨中跳舞。",
+    );
+    store.upsert_chunk(&chunk).expect("chunk");
+    let scope = KnowledgeSearchScope {
+        space_id: "system-linux".to_string(),
+        owner: "system".to_string(),
+        generation: 1,
+        visibility: KnowledgeVisibility::Public,
+    };
+
+    let exact = store
+        .search_versioned("紫罗兰色", &scope, None, 10)
+        .expect("CJK exact substring search");
+    assert_eq!(exact.len(), 1);
+    assert_eq!(exact[0].chunk_id, chunk.chunk_id);
+
+    let partial = store
+        .search_versioned("紫罗兰", &scope, None, 10)
+        .expect("CJK partial substring search");
+    assert_eq!(partial.len(), 1);
+    assert_eq!(partial[0].chunk_id, chunk.chunk_id);
+}
+
+#[test]
 fn knowledge_retraction_is_scoped_atomic_and_removes_derived_rows() {
     let dir = tempdir().expect("tempdir");
     let store = SqliteKnowledgeStore::new(dir.path().join("knowledge.sqlite3"));

@@ -3775,8 +3775,19 @@ impl SqliteKnowledgeStore {
         if fts_query.is_empty() {
             return Ok(Vec::new());
         }
+        // SQLite's default unicode61 tokenizer treats a contiguous CJK run as
+        // one token. Keep the FTS index for English and mixed-language search,
+        // but add a literal substring branch for CJK queries so existing
+        // databases do not require a destructive FTS rebuild or an extension.
+        let like_pattern = contains_cjk(query).then(|| make_like_pattern(query));
+        let search_value = like_pattern.as_deref().unwrap_or(&fts_query);
+        let search_predicate = if like_pattern.is_some() {
+            "(c.content LIKE ?1 ESCAPE '\\' OR d.title LIKE ?1 ESCAPE '\\')"
+        } else {
+            "knowledge_chunks_fts MATCH ?1"
+        };
         let mut statement = connection
-            .prepare(
+            .prepare(&format!(
                 "SELECT c.chunk_id, c.document_id, c.space_id, d.title, c.content,
                         d.metadata_json, c.source, c.version, c.generation, c.owner, c.visibility,
                         bm25(knowledge_chunks_fts) AS rank
@@ -3784,7 +3795,7 @@ impl SqliteKnowledgeStore {
                  JOIN knowledge_chunks c ON c.chunk_id = f.chunk_id
                  JOIN knowledge_documents d ON d.document_id = c.document_id
                  JOIN knowledge_spaces s ON s.space_id = c.space_id
-                 WHERE knowledge_chunks_fts MATCH ?1
+                 WHERE {search_predicate}
                    AND c.space_id = ?2
                    AND c.generation = ?3
                    AND c.owner = ?4
@@ -3799,12 +3810,12 @@ impl SqliteKnowledgeStore {
                    AND (?6 IS NULL OR c.version = ?6)
                  ORDER BY rank ASC, c.ordinal ASC
                  LIMIT ?7",
-            )
+            ))
             .map_err(|error| sqlite_error(&self.database, "prepare knowledge search", error))?;
         let rows = statement
             .query_map(
                 params![
-                    fts_query,
+                    search_value,
                     scope.space_id,
                     scope.generation,
                     scope.owner,
@@ -4688,6 +4699,31 @@ fn make_fts_query(query: &str) -> String {
         .map(|token| format!("\"{}\"", token.replace('"', "\"\"")))
         .collect::<Vec<_>>()
         .join(" AND ")
+}
+
+fn contains_cjk(value: &str) -> bool {
+    value.chars().any(|character| {
+        matches!(
+            character as u32,
+            0x3400..=0x4DBF
+                | 0x4E00..=0x9FFF
+                | 0xF900..=0xFAFF
+                | 0x20000..=0x2FA1F
+        )
+    })
+}
+
+fn make_like_pattern(query: &str) -> String {
+    let compact = query.chars().filter(|character| !character.is_whitespace());
+    let mut pattern = String::from("%");
+    for character in compact {
+        if matches!(character, '%' | '_' | '\\') {
+            pattern.push('\\');
+        }
+        pattern.push(character);
+    }
+    pattern.push('%');
+    pattern
 }
 
 fn parse_visibility(value: &str) -> Result<KnowledgeVisibility, String> {
