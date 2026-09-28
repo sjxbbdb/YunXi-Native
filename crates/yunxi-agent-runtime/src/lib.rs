@@ -6946,6 +6946,28 @@ mod companion_input_tests {
     }
 
     #[test]
+    fn confirming_pending_relationship_memory_advances_familiarity() {
+        let pending = MemoryRecord::new(
+            "pending-relationship",
+            yunxi_agent_persona::MemoryScope::Relationship,
+            MemoryKind::RelationshipNote,
+            "用户愿意持续与 YunXi 一起推进项目。",
+            10,
+        )
+        .with_status(MemoryStatus::Pending);
+        assert_eq!(
+            derive_relationship_state(std::slice::from_ref(&pending)).familiarity,
+            RelationshipFamiliarity::New
+        );
+
+        let confirmed = pending.with_status(MemoryStatus::Active);
+        assert_eq!(
+            derive_relationship_state(std::slice::from_ref(&confirmed)).familiarity,
+            RelationshipFamiliarity::Familiar
+        );
+    }
+
+    #[test]
     fn companion_context_uses_prompt_emotion_and_persona_style_without_extra_signal() {
         let mut persona = persona_with_relationship_explanation(false);
         persona.relationship = RelationshipState {

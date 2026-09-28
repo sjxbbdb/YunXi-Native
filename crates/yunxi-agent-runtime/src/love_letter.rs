@@ -4,7 +4,8 @@ use std::sync::Arc;
 use std::time::Duration;
 use yunxi_agent_companion::{
     CompanionMailboxContent, LoveLetterEligibilityDecision, LoveLetterEligibilityInput,
-    LoveLetterEligibilityPolicy, LoveLetterMemorySelector, LoveLetterTask,
+    LoveLetterEligibilityPolicy, LoveLetterIneligibilityReason, LoveLetterMemorySelector,
+    LoveLetterTask,
 };
 use yunxi_agent_core::{AgentConfig, AgentInput, AgentResult};
 use yunxi_agent_persona::{MemoryRecord, PersonaProfileStore, PersonaSettings, now_millis};
@@ -59,20 +60,27 @@ pub(crate) fn schedule(provider: Arc<dyn AgentProvider>, config: AgentConfig) ->
             retry_after_millis: snapshot.latest_retry_after_millis(),
             now_millis: now,
         });
-        if let LoveLetterEligibilityDecision::Eligible {
-            idempotency_key, ..
-        } = decision
-        {
-            let task = LoveLetterTask::pending(
-                idempotency_key,
-                mailbox.owner_scope(),
-                profile.id.clone(),
-                profile_consistency_key,
-                &selection,
-                now,
-            );
-            match mailbox.enqueue(&task)? {
-                MailboxEnqueueOutcome::Enqueued(_) | MailboxEnqueueOutcome::Duplicate(_) => {}
+        match decision {
+            LoveLetterEligibilityDecision::Eligible {
+                idempotency_key, ..
+            } => {
+                let task = LoveLetterTask::pending(
+                    idempotency_key,
+                    mailbox.owner_scope(),
+                    profile.id.clone(),
+                    profile_consistency_key,
+                    &selection,
+                    now,
+                );
+                match mailbox.enqueue(&task)? {
+                    MailboxEnqueueOutcome::Enqueued(_) | MailboxEnqueueOutcome::Duplicate(_) => {}
+                }
+            }
+            LoveLetterEligibilityDecision::Ineligible {
+                reason,
+                retry_at_millis,
+            } => {
+                emit_eligibility_diagnostic(reason, retry_at_millis, relationship_stage);
             }
         }
     }
@@ -86,6 +94,19 @@ pub(crate) fn schedule(provider: Arc<dyn AgentProvider>, config: AgentConfig) ->
         run_one(provider, config, mailbox).await;
     });
     Ok(())
+}
+
+fn emit_eligibility_diagnostic(
+    reason: LoveLetterIneligibilityReason,
+    retry_at_millis: Option<u128>,
+    relationship_stage: yunxi_agent_companion::CompanionRelationshipStage,
+) {
+    eprintln!(
+        "yunxi love-letter eligibility: eligible=false reason={reason:?} relationship_stage={relationship_stage:?} retry_at_millis={}",
+        retry_at_millis
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "none".to_string())
+    );
 }
 
 async fn run_one(
@@ -108,6 +129,10 @@ async fn run_one(
             let _ = mailbox.complete(&task.task_id, &content, now_millis());
         }
         Err(label) => {
+            eprintln!(
+                "yunxi love-letter generation: task={} state=failed reason={label}",
+                task.task_id
+            );
             let backoff_millis = u128::from(settings.retry_backoff_seconds).saturating_mul(1_000);
             let _ = mailbox.fail(&task.task_id, label, now_millis(), backoff_millis);
         }
