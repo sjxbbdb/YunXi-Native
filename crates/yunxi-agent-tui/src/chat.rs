@@ -402,6 +402,7 @@ mod tests {
                 token_limit_reached: false,
                 compacted: false,
                 dropped_messages: 0,
+                pressure: false,
             },
             AgentEvent::ToolCallStarted {
                 id: Some("call_1".to_string()),

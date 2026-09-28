@@ -282,6 +282,8 @@ pub enum AgentEvent {
         token_limit_reached: bool,
         compacted: bool,
         dropped_messages: usize,
+        #[serde(default)]
+        pressure: bool,
     },
     StorageState {
         session_id: Option<String>,

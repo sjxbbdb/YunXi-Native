@@ -36,8 +36,8 @@ use yunxi_agent_companion::{
     DeterministicCompanionPolicy, SafeCompanionPlanner, classify_companion_emotion,
 };
 use yunxi_agent_context::{
-    ContextManagerState, ContextWindowBudget, ConversationMessage, ConversationRole,
-    PromptAssembly, PromptDebugSnapshot, RestoredHistory, extract_file_mentions,
+    ContextManagerState, ContextWindowBudget, ContextWindowPhase, ConversationMessage,
+    ConversationRole, PromptAssembly, PromptDebugSnapshot, RestoredHistory, extract_file_mentions,
     load_agents_md_hierarchy, restore_history_for_prompt,
 };
 use yunxi_agent_core::{
@@ -1035,18 +1035,20 @@ impl YunXiRuntimeBackend {
             .await?;
         let context_state = initial_messages.context_state.clone();
         let memory_diagnostic = memory_recall_diagnostic(&initial_messages.persona);
+        let compacted = initial_messages
+            .restored_history
+            .as_ref()
+            .is_some_and(|history| history.compacted);
         sink.emit(AgentEvent::ContextStatus {
             active_context_tokens: context_state.status.active_context_tokens,
             token_limit_reached: context_state.status.token_limit_reached,
-            compacted: initial_messages
-                .restored_history
-                .as_ref()
-                .is_some_and(|history| history.compacted),
+            compacted,
             dropped_messages: initial_messages
                 .restored_history
                 .as_ref()
                 .map(|history| history.dropped_messages)
                 .unwrap_or_default(),
+            pressure: context_state.status.phase(compacted) == ContextWindowPhase::Pressure,
         })
         .await?;
         emit_persona_context_events(&sink, prompt, &initial_messages.persona).await?;
@@ -1228,6 +1230,7 @@ impl YunXiRuntimeBackend {
                 token_limit_reached: history.status.token_limit_reached,
                 compacted: history.compacted,
                 dropped_messages: history.dropped_messages,
+                pressure: history.status.phase(history.compacted) == ContextWindowPhase::Pressure,
             })
             .await?;
         }
@@ -1591,7 +1594,11 @@ impl YunXiRuntimeBackend {
             runtime_config.clone(),
             Arc::clone(&self.storage),
         );
-        let _ = crate::love_letter::schedule(Arc::clone(&self.provider), runtime_config.clone());
+        if let Err(error) =
+            crate::love_letter::schedule(Arc::clone(&self.provider), runtime_config.clone())
+        {
+            eprintln!("yunxi love-letter schedule skipped: {error}");
+        }
 
         Ok(AgentRunResult {
             status: AgentRunStatus::Completed,
@@ -2633,6 +2640,7 @@ impl YunXiRuntimeBackend {
             token_limit_reached: false,
             compacted: true,
             dropped_messages: 1,
+            pressure: false,
         })
         .await?;
         sink.emit(AgentEvent::MultiAgentEvent {

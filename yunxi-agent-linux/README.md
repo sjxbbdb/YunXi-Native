@@ -69,6 +69,22 @@ export YUNXI_MEMORY_REFLECTION_IDLE_SECONDS=1800
 等前置条件诊断。默认空闲阈值为 30 分钟，范围为 60 秒至 24 小时。反思结果写入工作区
 `.yunxi/memory/` 与长期记忆向量库，不会写入 `knowledge.sqlite3`。
 
+### 情书信箱密钥
+
+Linux 情书信箱会在首次启用时自动在当前工作区的
+`.yunxi/companion-mailbox/data-key` 生成 32 字节随机密钥，并以 `0600` 权限保存；
+不同工作区使用不同密钥。密钥不会进入 Git，也不会写入知识库或普通日志。
+
+如果需要在多台机器之间迁移同一个信箱，或使用外部密钥管理流程，可以显式设置：
+
+```bash
+export YUNXI_MAILBOX_KEY_HEX="$(openssl rand -hex 32)"
+```
+
+设置后请在后续访问中持续使用同一把 64 位十六进制密钥；错误长度或格式会被明确报告，
+不会静默创建另一把密钥。情书调度初始化失败也会输出
+`yunxi love-letter schedule skipped: ...`，而不是静默丢弃。
+
 ### 上下文预算与记忆抽取诊断
 
 Linux 宿主默认启用上下文保护：估算窗口为 `32000` token，达到 `24000` token

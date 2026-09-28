@@ -46,6 +46,7 @@ pub(crate) struct YunxiTuiApp {
     context_token_limit_reached: bool,
     context_compacted: bool,
     context_dropped_messages: usize,
+    context_pressure: bool,
 }
 
 impl Default for YunxiTuiApp {
@@ -73,6 +74,7 @@ impl Default for YunxiTuiApp {
             context_token_limit_reached: false,
             context_compacted: false,
             context_dropped_messages: 0,
+            context_pressure: false,
         }
     }
 }
@@ -135,11 +137,13 @@ impl YunxiTuiApp {
                 token_limit_reached,
                 compacted,
                 dropped_messages,
+                pressure,
             } => {
                 self.active_context_tokens = Some((*active_context_tokens).max(0));
                 self.context_token_limit_reached = *token_limit_reached;
                 self.context_compacted = *compacted;
                 self.context_dropped_messages = *dropped_messages;
+                self.context_pressure = *pressure;
             }
             _ => {}
         }
@@ -155,6 +159,9 @@ impl YunxiTuiApp {
                 ));
             }
             return Some(format!("上下文已压缩 · 当前 {active_context_tokens}"));
+        }
+        if self.context_pressure {
+            return Some(format!("上下文接近压缩 · {active_context_tokens}"));
         }
         if self.context_token_limit_reached {
             return Some(format!("上下文接近上限 · {active_context_tokens}"));
@@ -708,6 +715,7 @@ mod tests {
             token_limit_reached: false,
             compacted: false,
             dropped_messages: 0,
+            pressure: false,
         });
         app.record_agent_status(&AgentEvent::Completed {
             status: AgentRunStatus::Completed,
@@ -737,12 +745,30 @@ mod tests {
             token_limit_reached: true,
             compacted: true,
             dropped_messages: 3,
+            pressure: false,
         });
 
         let footer = app.footer_for_width(160);
 
         assert!(footer.contains("上下文已压缩"));
         assert!(footer.contains("丢弃 3"));
+    }
+
+    #[test]
+    fn idle_footer_warns_before_context_compaction() {
+        let mut app = YunxiTuiApp::default();
+        app.set_banner(banner());
+        app.record_agent_status(&AgentEvent::ContextStatus {
+            active_context_tokens: 19_000,
+            token_limit_reached: false,
+            compacted: false,
+            dropped_messages: 0,
+            pressure: true,
+        });
+
+        let footer = app.footer_for_width(160);
+
+        assert!(footer.contains("上下文接近压缩"));
     }
 
     #[test]

@@ -101,7 +101,7 @@ impl FileCompanionMailboxStore {
             mailbox_error(format!("failed to create mailbox directory: {error}"))
         })?;
         let _key_init_lock = acquire_file_lock(&root.join("key-init.lock"), "mailbox key")?;
-        let data_key = load_or_create_data_key(&owner_scope)?;
+        let data_key = load_or_create_data_key(&root, &owner_scope)?;
         Ok(Self {
             root,
             owner_scope,
@@ -735,11 +735,19 @@ fn mailbox_error(message: impl Into<String>) -> AgentError {
     }
 }
 
-fn load_or_create_data_key(owner_scope: &str) -> AgentResult<[u8; 32]> {
+fn load_or_create_data_key(root: &Path, owner_scope: &str) -> AgentResult<[u8; 32]> {
     if let Ok(value) = std::env::var("YUNXI_MAILBOX_KEY_HEX") {
         return decode_hex_key(value.trim());
     }
-    system_key_store::load_or_create(owner_scope)
+    #[cfg(windows)]
+    {
+        let _ = root;
+        system_key_store::load_or_create(owner_scope)
+    }
+    #[cfg(not(windows))]
+    {
+        system_key_store::load_or_create(root, owner_scope)
+    }
 }
 
 fn decode_hex_key(value: &str) -> AgentResult<[u8; 32]> {
@@ -831,12 +839,71 @@ mod system_key_store {
 
 #[cfg(not(windows))]
 mod system_key_store {
-    use super::{AgentResult, mailbox_error};
+    use super::{AgentResult, Path, mailbox_error};
+    use std::fs::OpenOptions;
+    use std::io::Write;
 
-    pub fn load_or_create(_owner_scope: &str) -> AgentResult<[u8; 32]> {
-        Err(mailbox_error(
-            "system credential store is unavailable; set YUNXI_MAILBOX_KEY_HEX",
-        ))
+    const KEY_FILE: &str = "data-key";
+
+    pub fn load_or_create(root: &Path, owner_scope: &str) -> AgentResult<[u8; 32]> {
+        let path = root.join(KEY_FILE);
+        match std::fs::read(&path) {
+            Ok(bytes) => return decode_persisted_key(bytes, &path),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(mailbox_error(format!(
+                    "failed to read Linux mailbox key for {owner_scope}: {error}"
+                )));
+            }
+        }
+
+        let mut key = [0_u8; 32];
+        getrandom::fill(&mut key)
+            .map_err(|_| mailbox_error("Linux mailbox key generation failed"))?;
+        let mut options = OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut file = match options.open(&path) {
+            Ok(file) => file,
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                return decode_persisted_key(
+                    std::fs::read(&path).map_err(|read_error| {
+                        mailbox_error(format!(
+                            "failed to read concurrently initialized Linux mailbox key: {read_error}"
+                        ))
+                    })?,
+                    &path,
+                );
+            }
+            Err(error) => {
+                return Err(mailbox_error(format!(
+                    "failed to create Linux mailbox key for {owner_scope}: {error}"
+                )));
+            }
+        };
+        file.write_all(&key)
+            .and_then(|_| file.sync_all())
+            .map_err(|error| {
+                mailbox_error(format!("failed to persist Linux mailbox key: {error}"))
+            })?;
+        Ok(key)
+    }
+
+    fn decode_persisted_key(mut bytes: Vec<u8>, path: &Path) -> AgentResult<[u8; 32]> {
+        let mut key = [0_u8; 32];
+        if bytes.len() != key.len() {
+            return Err(mailbox_error(format!(
+                "Linux mailbox key {} has invalid length",
+                path.display()
+            )));
+        }
+        key.copy_from_slice(&bytes);
+        bytes.fill(0);
+        Ok(key)
     }
 }
 
@@ -852,6 +919,23 @@ mod tests {
             "workspace:test",
             [7_u8; 32],
         )
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn linux_mailbox_key_is_persisted_and_reused() {
+        let temp = TempDir::new().expect("tempdir");
+        let first =
+            system_key_store::load_or_create(temp.path(), "workspace:test").expect("create key");
+        let second =
+            system_key_store::load_or_create(temp.path(), "workspace:test").expect("reuse key");
+        assert_eq!(first, second);
+        let metadata = std::fs::metadata(temp.path().join("data-key")).expect("key metadata");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(metadata.permissions().mode() & 0o777, 0o600);
+        }
     }
 
     fn task(now: u128) -> LoveLetterTask {
