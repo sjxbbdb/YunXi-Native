@@ -5,7 +5,7 @@
 
 pkgname=yunxi-native
 pkgver=2.3.3.hotfix.32
-pkgrel=22
+pkgrel=23
 pkgdesc='Linux-native natural-language terminal agent host for YunXi Agent'
 arch=('x86_64' 'aarch64')
 url='https://github.com/sjxbbdb/YunXi-Native'
@@ -14,7 +14,7 @@ depends=('gcc-libs' 'glibc')
 makedepends=('cargo' 'git')
 optdepends=('fish: Miyu-style natural-language shell interception')
 
-_commit='28d54ee491594ee969f5469c0c1e6d48d332c3ac'
+_commit='7519041a579c09cd13d29ed032903009443dd8c'
 source=("${pkgname}::git+${url}.git#commit=${_commit}")
 sha256sums=('SKIP')
 
