@@ -146,6 +146,53 @@ fn pipeline_discards_secret_like_memory() {
 }
 
 #[test]
+fn pipeline_does_not_turn_user_questions_into_personal_facts() {
+    let mut pipeline_input = input("我的名字是什么？");
+    pipeline_input.assistant_response = Some("你叫 Alice。".to_string());
+    pipeline_input.provider_response = Some(
+        json!({
+            "candidates": [{
+                "kind": "personal_fact",
+                "content": "用户的名字是 Alice。",
+                "confidence": 0.99,
+                "importance": 0.9,
+                "reason": "provider:answer-derived-fact"
+            }]
+        })
+        .to_string(),
+    );
+
+    let output = MemoryPipeline::new().run(pipeline_input);
+
+    assert!(output.candidates.is_empty());
+    assert!(
+        output
+            .warnings
+            .iter()
+            .any(|warning| warning.starts_with("memory candidates skipped:"))
+    );
+    assert!(
+        output
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.action == "question_filtered")
+    );
+}
+
+#[test]
+fn pipeline_keeps_explicit_remember_request_even_when_question_marked() {
+    let output = MemoryPipeline::new().run(input("请记住我喜欢蓝色，可以吗？"));
+
+    assert!(!output.candidates.is_empty(), "{output:#?}");
+    assert!(output.candidates.iter().any(|candidate| {
+        candidate
+            .reason
+            .contains("rule:explicit-remember-preference")
+            && candidate.proposed_record.content.contains("蓝色")
+    }));
+}
+
+#[test]
 fn pipeline_downgrades_sensitive_personal_memory_to_pending() {
     let output = MemoryPipeline::new().run(input("My health condition changed recently."));
 

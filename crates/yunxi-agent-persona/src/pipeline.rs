@@ -88,6 +88,22 @@ impl MemoryPipeline {
             }
         }
 
+        // A question is a request for information, not a user self-disclosure.
+        // Provider extraction sees both sides of the turn and can otherwise
+        // mistake an answer such as “你叫 Alice” for a durable fact supplied
+        // by the user. Keep explicit “请记住……” requests eligible, but drop
+        // all other candidates from question turns before policy/scoring.
+        if is_question_like(&input.prompt) && !explicit {
+            let dropped = candidates.len();
+            candidates.retain(|candidate| candidate.reason.starts_with("rule:explicit-remember-"));
+            if dropped > candidates.len() {
+                warnings.push(format!(
+                    "memory candidates skipped: user prompt looks like a question ({} candidate(s)); explicit remember requests remain eligible",
+                    dropped - candidates.len()
+                ));
+            }
+        }
+
         for candidate in &mut candidates {
             candidate.ensure_v3_provenance();
             attach_evidence(candidate, &l0_evidence);
@@ -141,7 +157,11 @@ impl MemoryPipeline {
             .chain(warnings.iter().map(|warning| MemoryPipelineDiagnostic {
                 layer: MemoryPipelineLayer::L1StructuredFact,
                 candidate_id: None,
-                action: "provider_failed_soft".to_string(),
+                action: if warning.starts_with("memory candidates skipped:") {
+                    "question_filtered".to_string()
+                } else {
+                    "provider_failed_soft".to_string()
+                },
                 reason: warning.clone(),
             }))
             .collect();
@@ -340,6 +360,48 @@ fn explicitly_stable_memory(prompt: &str) -> bool {
         || lower.contains("remember that")
         || lower.contains("always ")
         || lower.contains("by default")
+}
+
+fn is_question_like(value: &str) -> bool {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    if trimmed.ends_with(['?', '？']) {
+        return true;
+    }
+    let lower = trimmed.to_ascii_lowercase();
+    [
+        "who ",
+        "what ",
+        "when ",
+        "where ",
+        "why ",
+        "how ",
+        "which ",
+        "can you ",
+        "could you ",
+        "do you ",
+        "does ",
+        "is ",
+        "are ",
+        "请问",
+        "什么",
+        "为什么",
+        "怎么",
+        "如何",
+        "哪里",
+        "哪儿",
+        "哪个",
+        "谁",
+        "是否",
+        "能否",
+        "是不是",
+        "有没有",
+    ]
+    .iter()
+    .any(|prefix| lower.starts_with(prefix) || trimmed.starts_with(prefix))
+        || trimmed.ends_with(['吗', '呢'])
 }
 
 fn append_reason(existing: &str, marker: &str) -> String {
