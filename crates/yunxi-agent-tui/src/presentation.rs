@@ -130,6 +130,7 @@ pub(crate) struct TuiPresentation {
     current_local_turn_id: Option<String>,
     active_stream: Option<TuiStreamIdentity>,
     offline_label: bool,
+    active_progress_group: Option<TuiCellId>,
 }
 
 impl TuiPresentation {
@@ -138,6 +139,12 @@ impl TuiPresentation {
     }
 
     pub(crate) fn present_agent_event(&mut self, event: &AgentEvent) -> TuiEvent {
+        if !matches!(
+            event,
+            AgentEvent::PatchCompleted { .. } | AgentEvent::FileChanged { .. }
+        ) {
+            self.active_progress_group = None;
+        }
         if matches!(event, AgentEvent::TurnStarted) {
             self.begin_local_turn();
         }
@@ -620,6 +627,8 @@ impl TuiPresentation {
             }
         };
 
+        self.apply_progress_group(event, &mut presented);
+
         let control_phase = match event {
             AgentEvent::Cancelled { .. }
             | AgentEvent::ProviderError { .. }
@@ -634,7 +643,37 @@ impl TuiPresentation {
         presented
     }
 
+    fn apply_progress_group(&mut self, event: &AgentEvent, presented: &mut TuiEvent) {
+        match event {
+            AgentEvent::PatchCompleted {
+                status: PatchStatus::InProgress,
+            } => {
+                let group = if let Some(group) = &self.active_progress_group {
+                    group.clone()
+                } else {
+                    let group = self.next_id("patch");
+                    self.active_progress_group = Some(group.clone());
+                    group
+                };
+                presented.id = group;
+            }
+            AgentEvent::FileChanged { .. } => {
+                if let Some(group) = &self.active_progress_group {
+                    presented.id = group.clone();
+                }
+            }
+            AgentEvent::PatchCompleted { status } => {
+                if let Some(group) = self.active_progress_group.take() {
+                    presented.id = group;
+                }
+                debug_assert!(!matches!(status, PatchStatus::InProgress));
+            }
+            _ => {}
+        }
+    }
+
     pub(crate) fn present_user(&mut self, value: impl Into<String>) -> TuiEvent {
+        self.active_progress_group = None;
         self.begin_local_turn();
         self.simple_visible(TuiCellKind::UserMessage, "user", value.into())
     }

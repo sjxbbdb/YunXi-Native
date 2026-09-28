@@ -120,15 +120,21 @@ impl Transcript {
                     self.push_tool_update(event.id, update, detail_id);
                 }
             }
-            TuiCellKind::ProgressSummary | TuiCellKind::Notice => {
+            TuiCellKind::ProgressSummary => {
+                self.push_progress_cell(HistoryCell {
+                    id: event.id,
+                    kind: HistoryCellKind::Event {
+                        kind: "progress".to_string(),
+                        message: event.visible_text,
+                    },
+                    detail_id,
+                });
+            }
+            TuiCellKind::Notice => {
                 self.push_cell(HistoryCell {
                     id: event.id,
                     kind: HistoryCellKind::Event {
-                        kind: match event.kind {
-                            TuiCellKind::ProgressSummary => "progress",
-                            _ => "notice",
-                        }
-                        .to_string(),
+                        kind: "notice".to_string(),
                         message: event.visible_text,
                     },
                     detail_id,
@@ -232,6 +238,21 @@ impl Transcript {
             let overflow = self.cells.len() - MAX_HISTORY_CELLS;
             self.cells.drain(0..overflow);
         }
+    }
+
+    fn push_progress_cell(&mut self, mut cell: HistoryCell) {
+        bound_history_cell(&mut cell);
+        if let Some(existing) = self
+            .cells
+            .iter_mut()
+            .find(|existing| existing.id == cell.id)
+            && matches!(&existing.kind, HistoryCellKind::Event { kind, .. } if kind == "progress")
+        {
+            existing.kind = cell.kind;
+            existing.detail_id = cell.detail_id.or(existing.detail_id);
+            return;
+        }
+        self.push_cell(cell);
     }
 
     fn push_tool_update(
@@ -426,6 +447,63 @@ mod tests {
         assert!(visible.contains("output captured"));
         assert!(visible.contains("agent operation failed"));
         assert!(transcript.debug_status().contains("hidden="));
+    }
+
+    #[test]
+    fn patch_and_file_progress_events_coalesce_into_one_visible_cell() {
+        let mut presentation = TuiPresentation::default();
+        let mut transcript = Transcript::default();
+        for event in [
+            AgentEvent::PatchCompleted {
+                status: yunxi_agent_core::PatchStatus::InProgress,
+            },
+            AgentEvent::FileChanged {
+                path: "src/main.rs".to_string(),
+                kind: yunxi_agent_core::FileChangeKind::Update,
+            },
+            AgentEvent::PatchCompleted {
+                status: yunxi_agent_core::PatchStatus::Completed,
+            },
+        ] {
+            push_event(&mut presentation, &mut transcript, event);
+        }
+
+        let progress = transcript
+            .cells()
+            .iter()
+            .filter(|cell| matches!(cell.kind(), HistoryCellKind::Event { kind, .. } if kind == "progress"))
+            .collect::<Vec<_>>();
+        assert_eq!(progress.len(), 1);
+        assert!(cell_text(progress[0]).contains("修改已完成"));
+    }
+
+    #[test]
+    fn progress_group_does_not_cross_a_new_user_turn() {
+        let mut presentation = TuiPresentation::default();
+        let mut transcript = Transcript::default();
+        push_event(
+            &mut presentation,
+            &mut transcript,
+            AgentEvent::PatchCompleted {
+                status: yunxi_agent_core::PatchStatus::InProgress,
+            },
+        );
+        transcript.push_tui_event(presentation.present_user("继续处理"));
+        push_event(
+            &mut presentation,
+            &mut transcript,
+            AgentEvent::FileChanged {
+                path: "src/lib.rs".to_string(),
+                kind: yunxi_agent_core::FileChangeKind::Update,
+            },
+        );
+
+        let progress = transcript
+            .cells()
+            .iter()
+            .filter(|cell| matches!(cell.kind(), HistoryCellKind::Event { kind, .. } if kind == "progress"))
+            .collect::<Vec<_>>();
+        assert_eq!(progress.len(), 2);
     }
 
     #[test]
