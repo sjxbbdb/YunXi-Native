@@ -44,7 +44,7 @@ use yunxi_agent_core::{
     Agent, AgentConfig, AgentEvent, AgentInput, AgentRunApprovalDecision, AgentRunControl,
     AgentRunStatus, AgentRunUserInputResponse,
 };
-use yunxi_agent_persona::MemoryEmbeddingProvider;
+use yunxi_agent_persona::{MemoryEmbeddingProvider, MemoryStatus};
 #[cfg(unix)]
 use yunxi_agent_protocol::linux_ipc::{
     LINUX_IPC_MAX_FRAME_BYTES, LINUX_IPC_PROTOCOL_VERSION, decode_json_frame, encode_json_frame,
@@ -164,6 +164,28 @@ pub(crate) enum LinuxShellCommand {
         provider: Option<String>,
         #[arg(long)]
         model: Option<String>,
+    },
+    /// List memory candidates that are waiting for an explicit user decision.
+    MemoryPending {
+        /// Workspace used to resolve workspace-scoped memory and the shared global store.
+        #[arg(long, default_value = ".")]
+        cwd: PathBuf,
+    },
+    /// Confirm one pending memory candidate so it becomes recallable.
+    MemoryConfirm {
+        /// Memory id printed by `memory-pending`.
+        id: String,
+        /// Workspace used to resolve workspace-scoped memory and the shared global store.
+        #[arg(long, default_value = ".")]
+        cwd: PathBuf,
+    },
+    /// Reject one pending memory candidate so it will not be recalled.
+    MemoryReject {
+        /// Memory id printed by `memory-pending`.
+        id: String,
+        /// Workspace used to resolve workspace-scoped memory and the shared global store.
+        #[arg(long, default_value = ".")]
+        cwd: PathBuf,
     },
     /// Print the user-level systemd unit used to host the daemon.
     SystemdUnit,
@@ -634,6 +656,13 @@ pub(crate) async fn run_command(command: LinuxShellCommand) -> Result<()> {
             provider,
             model,
         } => run_detached(prompt, cwd, session_id, offline, live, provider, model).await,
+        LinuxShellCommand::MemoryPending { cwd } => run_memory_pending(cwd),
+        LinuxShellCommand::MemoryConfirm { id, cwd } => {
+            run_memory_status_update(id, cwd, MemoryStatus::Active, "confirmed")
+        }
+        LinuxShellCommand::MemoryReject { id, cwd } => {
+            run_memory_status_update(id, cwd, MemoryStatus::Rejected, "rejected")
+        }
         LinuxShellCommand::SystemdUnit => {
             print!("{SYSTEMD_UNIT}");
             Ok(())
@@ -859,6 +888,65 @@ pub(crate) async fn run_command(command: LinuxShellCommand) -> Result<()> {
             .await
         }
     }
+}
+
+fn run_memory_pending(cwd: PathBuf) -> Result<()> {
+    let cwd = canonical_memory_cwd(cwd)?;
+    let store = yunxi_agent_storage::FilePersonaMemoryStore::for_workspace(&cwd);
+    let load = store.pending_records();
+    let records = load.records;
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&serde_json::json!({
+            "schema_version": 1,
+            "workspace": cwd,
+            "pending_count": records.len(),
+            "records": records,
+            "warnings": load.warnings,
+        }))?
+    );
+    Ok(())
+}
+
+fn run_memory_status_update(
+    id: String,
+    cwd: PathBuf,
+    target: MemoryStatus,
+    action: &str,
+) -> Result<()> {
+    let cwd = canonical_memory_cwd(cwd)?;
+    let store = yunxi_agent_storage::FilePersonaMemoryStore::for_workspace(&cwd);
+    let existing = store
+        .show(&id)
+        .records
+        .into_iter()
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("未找到记忆候选: {id}"))?;
+    if existing.status != MemoryStatus::Pending {
+        bail!(
+            "记忆候选 {} 当前状态为 {:?}，只有 pending 候选可以确认或拒绝",
+            id,
+            existing.status
+        );
+    }
+    let updated = store
+        .update_status(&id, target)?
+        .ok_or_else(|| anyhow::anyhow!("更新记忆候选失败: {id}"))?;
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&serde_json::json!({
+            "schema_version": 1,
+            "action": action,
+            "id": updated.id,
+            "status": updated.status,
+            "record": updated,
+        }))?
+    );
+    Ok(())
+}
+
+fn canonical_memory_cwd(cwd: PathBuf) -> Result<PathBuf> {
+    std::fs::canonicalize(&cwd).with_context(|| format!("无法访问记忆工作区: {}", cwd.display()))
 }
 
 fn run_knowledge_search(
