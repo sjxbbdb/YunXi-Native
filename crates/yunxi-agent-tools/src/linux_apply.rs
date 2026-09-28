@@ -315,6 +315,12 @@ pub fn list_journals(cwd: &Path) -> Result<Vec<LinuxUndoJournalSummary>, LinuxAp
         let entry = entry.map_err(|error| {
             LinuxApplyError::new(format!("read undo journal directory: {error}"))
         })?;
+        let file_type = entry.file_type().map_err(|error| {
+            LinuxApplyError::new(format!("inspect undo journal directory: {error}"))
+        })?;
+        if !file_type.is_dir() || file_type.is_symlink() {
+            continue;
+        }
         let path = entry.path().join("journal.json");
         if !path.is_file() {
             continue;
