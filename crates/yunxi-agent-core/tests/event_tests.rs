@@ -69,10 +69,12 @@ fn completion_event_can_include_usage() {
 fn mcp_patch_file_and_todo_events_have_stable_names() {
     let events = vec![
         AgentEvent::FileChanged {
+            id: None,
             path: "src/lib.rs".to_string(),
             kind: FileChangeKind::Update,
         },
         AgentEvent::PatchCompleted {
+            id: None,
             status: PatchStatus::Completed,
         },
         AgentEvent::McpToolCompleted {

@@ -2573,6 +2573,7 @@ impl YunXiRuntimeBackend {
         })
         .await?;
         sink.emit(AgentEvent::PatchCompleted {
+            id: None,
             status: yunxi_agent_core::PatchStatus::Completed,
         })
         .await?;
@@ -6246,6 +6247,7 @@ where
         }
         ToolRequestKind::Patch { .. } => {
             sink.emit(AgentEvent::PatchCompleted {
+                id: request.id.clone(),
                 status: yunxi_agent_core::PatchStatus::InProgress,
             })
             .await
@@ -6395,6 +6397,7 @@ where
         }
         ToolRequestKind::Patch { .. } => {
             sink.emit(AgentEvent::PatchCompleted {
+                id: response.id.clone(),
                 status: match response.status {
                     ToolStatus::Completed => yunxi_agent_core::PatchStatus::Completed,
                     ToolStatus::InProgress => yunxi_agent_core::PatchStatus::InProgress,
@@ -6658,6 +6661,7 @@ where
 {
     for change in &response.changed_files {
         sink.emit(AgentEvent::FileChanged {
+            id: response.id.clone(),
             path: change.path.display().to_string(),
             kind: match change.kind {
                 ToolFileChangeKind::Added => FileChangeKind::Add,

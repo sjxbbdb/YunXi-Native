@@ -130,7 +130,9 @@ pub(crate) struct TuiPresentation {
     current_local_turn_id: Option<String>,
     active_stream: Option<TuiStreamIdentity>,
     offline_label: bool,
-    active_progress_group: Option<TuiCellId>,
+    /// Fallback group for legacy events that predate progress identifiers.
+    /// Current runtime events carry a tool id and never depend on event order.
+    legacy_progress_group: Option<TuiCellId>,
 }
 
 impl TuiPresentation {
@@ -141,12 +143,9 @@ impl TuiPresentation {
     pub(crate) fn present_agent_event(&mut self, event: &AgentEvent) -> TuiEvent {
         if !matches!(
             event,
-            AgentEvent::PatchCompleted { .. }
-                | AgentEvent::FileChanged { .. }
-                | AgentEvent::ToolCallStarted { .. }
-                | AgentEvent::ToolCallCompleted { .. }
+            AgentEvent::PatchCompleted { .. } | AgentEvent::FileChanged { .. }
         ) {
-            self.active_progress_group = None;
+            self.legacy_progress_group = None;
         }
         if matches!(event, AgentEvent::TurnStarted) {
             self.begin_local_turn();
@@ -573,14 +572,14 @@ impl TuiPresentation {
                     self.hidden("turn-completed")
                 }
             }
-            AgentEvent::FileChanged { path, kind } => self.visible_with_detail(
+            AgentEvent::FileChanged { path, kind, .. } => self.visible_with_detail(
                 TuiCellKind::ProgressSummary,
                 "file",
                 file_change_summary(*kind),
                 "file change",
                 format!("kind={kind:?} path={path}"),
             ),
-            AgentEvent::PatchCompleted { status } => self.simple_visible(
+            AgentEvent::PatchCompleted { status, .. } => self.simple_visible(
                 TuiCellKind::ProgressSummary,
                 "patch",
                 patch_summary(*status),
@@ -648,25 +647,30 @@ impl TuiPresentation {
 
     fn apply_progress_group(&mut self, event: &AgentEvent, presented: &mut TuiEvent) {
         match event {
+            AgentEvent::PatchCompleted { id: Some(id), .. }
+            | AgentEvent::FileChanged { id: Some(id), .. } => {
+                presented.id = Self::progress_group_id(id);
+            }
             AgentEvent::PatchCompleted {
+                id: None,
                 status: PatchStatus::InProgress,
             } => {
-                let group = if let Some(group) = &self.active_progress_group {
+                let group = if let Some(group) = &self.legacy_progress_group {
                     group.clone()
                 } else {
                     let group = self.next_id("patch");
-                    self.active_progress_group = Some(group.clone());
+                    self.legacy_progress_group = Some(group.clone());
                     group
                 };
                 presented.id = group;
             }
-            AgentEvent::FileChanged { .. } => {
-                if let Some(group) = &self.active_progress_group {
+            AgentEvent::FileChanged { id: None, .. } => {
+                if let Some(group) = &self.legacy_progress_group {
                     presented.id = group.clone();
                 }
             }
-            AgentEvent::PatchCompleted { status } => {
-                if let Some(group) = self.active_progress_group.take() {
+            AgentEvent::PatchCompleted { id: None, status } => {
+                if let Some(group) = self.legacy_progress_group.take() {
                     presented.id = group;
                 }
                 debug_assert!(!matches!(status, PatchStatus::InProgress));
@@ -675,8 +679,12 @@ impl TuiPresentation {
         }
     }
 
+    fn progress_group_id(id: &str) -> TuiCellId {
+        TuiCellId(format!("patch:{:016x}", stable_hash(id)))
+    }
+
     pub(crate) fn present_user(&mut self, value: impl Into<String>) -> TuiEvent {
-        self.active_progress_group = None;
+        self.legacy_progress_group = None;
         self.begin_local_turn();
         self.simple_visible(TuiCellKind::UserMessage, "user", value.into())
     }
@@ -1251,10 +1259,12 @@ mod tests {
     fn file_and_patch_events_use_human_readable_visible_copy() {
         let mut presentation = TuiPresentation::default();
         let file = presentation.present_agent_event(&AgentEvent::FileChanged {
+            id: None,
             path: "workspace/src/main.rs".to_string(),
             kind: FileChangeKind::Update,
         });
         let patch = presentation.present_agent_event(&AgentEvent::PatchCompleted {
+            id: None,
             status: PatchStatus::Completed,
         });
 

@@ -1215,15 +1215,17 @@ async fn yunxi_runtime_executes_provider_requested_patch_tool() {
     assert!(result.events.iter().any(|event| matches!(
         event,
         AgentEvent::PatchCompleted {
+            id: Some(id),
             status: PatchStatus::Completed
-        }
+        } if id == "patch-1"
     )));
     assert!(result.events.iter().any(|event| matches!(
         event,
         AgentEvent::FileChanged {
+            id: Some(id),
             path,
             kind: FileChangeKind::Add
-        } if path == "runtime-patch.txt"
+        } if id == "patch-1" && path == "runtime-patch.txt"
     )));
     assert_eq!(store.list().await.expect("session list").len(), 1);
 }

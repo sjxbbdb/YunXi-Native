@@ -189,10 +189,22 @@ pub enum AgentEvent {
         exit_code: i32,
     },
     FileChanged {
+        /// Identifier of the tool invocation that produced this change.
+        ///
+        /// Keeping this key on the event lets interactive consumers group
+        /// progress updates without relying on the order of unrelated events.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        id: Option<String>,
         path: String,
         kind: FileChangeKind,
     },
     PatchCompleted {
+        /// Identifier of the tool invocation that produced this patch.
+        ///
+        /// Older producers may omit it; consumers should retain a legacy
+        /// fallback for those events.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        id: Option<String>,
         status: PatchStatus,
     },
     McpToolStarted {

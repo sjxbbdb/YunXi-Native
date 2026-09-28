@@ -455,13 +455,16 @@ mod tests {
         let mut transcript = Transcript::default();
         for event in [
             AgentEvent::PatchCompleted {
+                id: None,
                 status: yunxi_agent_core::PatchStatus::InProgress,
             },
             AgentEvent::FileChanged {
+                id: None,
                 path: "src/main.rs".to_string(),
                 kind: yunxi_agent_core::FileChangeKind::Update,
             },
             AgentEvent::PatchCompleted {
+                id: None,
                 status: yunxi_agent_core::PatchStatus::Completed,
             },
         ] {
@@ -488,6 +491,7 @@ mod tests {
                 arguments_json: None,
             },
             AgentEvent::PatchCompleted {
+                id: Some("patch-1".to_string()),
                 status: yunxi_agent_core::PatchStatus::InProgress,
             },
             AgentEvent::ToolCallCompleted {
@@ -497,10 +501,12 @@ mod tests {
                 status: yunxi_agent_core::CommandStatus::Completed,
             },
             AgentEvent::FileChanged {
+                id: Some("patch-1".to_string()),
                 path: "src/main.rs".to_string(),
                 kind: yunxi_agent_core::FileChangeKind::Update,
             },
             AgentEvent::PatchCompleted {
+                id: Some("patch-1".to_string()),
                 status: yunxi_agent_core::PatchStatus::Completed,
             },
         ] {
@@ -519,6 +525,66 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(progress.len(), 1);
         assert!(cell_text(progress[0]).contains("修改已完成"));
+    }
+
+    #[test]
+    fn patch_progress_uses_tool_id_across_real_runtime_event_order() {
+        let mut presentation = TuiPresentation::default();
+        let mut transcript = Transcript::default();
+        for event in [
+            AgentEvent::ToolCallStarted {
+                id: Some("patch-real-1".to_string()),
+                name: "patch".to_string(),
+                arguments_json: None,
+            },
+            AgentEvent::PatchCompleted {
+                id: Some("patch-real-1".to_string()),
+                status: yunxi_agent_core::PatchStatus::InProgress,
+            },
+            AgentEvent::Reasoning {
+                content: "准备写入文件".to_string(),
+            },
+            AgentEvent::ToolCallCompleted {
+                id: Some("patch-real-1".to_string()),
+                name: "patch".to_string(),
+                output: String::new(),
+                status: yunxi_agent_core::CommandStatus::Completed,
+            },
+            AgentEvent::PatchCompleted {
+                id: Some("patch-real-1".to_string()),
+                status: yunxi_agent_core::PatchStatus::Completed,
+            },
+            AgentEvent::ApprovalCompleted {
+                id: Some("patch-real-1".to_string()),
+                approved: true,
+                reason: None,
+            },
+            AgentEvent::EscalationCompleted {
+                id: Some("patch-real-1".to_string()),
+                approved: true,
+                reason: None,
+            },
+            AgentEvent::FileChanged {
+                id: Some("patch-real-1".to_string()),
+                path: "notes.txt".to_string(),
+                kind: yunxi_agent_core::FileChangeKind::Add,
+            },
+        ] {
+            push_event(&mut presentation, &mut transcript, event);
+        }
+
+        let progress = transcript
+            .cells()
+            .iter()
+            .filter(|cell| {
+                matches!(
+                    cell.kind(),
+                    HistoryCellKind::Event { kind, .. } if kind == "progress"
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(progress.len(), 1);
+        assert!(cell_text(progress[0]).contains("文件已添加"));
     }
 
     #[test]
@@ -555,6 +621,7 @@ mod tests {
             &mut presentation,
             &mut transcript,
             AgentEvent::PatchCompleted {
+                id: None,
                 status: yunxi_agent_core::PatchStatus::InProgress,
             },
         );
@@ -563,6 +630,7 @@ mod tests {
             &mut presentation,
             &mut transcript,
             AgentEvent::FileChanged {
+                id: None,
                 path: "src/lib.rs".to_string(),
                 kind: yunxi_agent_core::FileChangeKind::Update,
             },
