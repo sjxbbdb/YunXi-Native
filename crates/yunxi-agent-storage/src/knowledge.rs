@@ -12,7 +12,7 @@ use rusqlite::{
     Connection, OpenFlags, OptionalExtension, Transaction, TransactionBehavior, params,
 };
 use serde::Serialize;
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -3786,69 +3786,107 @@ impl SqliteKnowledgeStore {
         } else {
             "knowledge_chunks_fts MATCH ?1"
         };
-        let mut statement = connection
-            .prepare(&format!(
-                "SELECT c.chunk_id, c.document_id, c.space_id, d.title, c.content,
-                        d.metadata_json, c.source, c.version, c.generation, c.owner, c.visibility,
-                        bm25(knowledge_chunks_fts) AS rank
-                 FROM knowledge_chunks_fts f
-                 JOIN knowledge_chunks c ON c.chunk_id = f.chunk_id
-                 JOIN knowledge_documents d ON d.document_id = c.document_id
-                 JOIN knowledge_spaces s ON s.space_id = c.space_id
-                 WHERE {search_predicate}
-                   AND c.space_id = ?2
-                   AND c.generation = ?3
-                   AND c.owner = ?4
-                   AND c.visibility = ?5
-                   AND d.space_id = s.space_id
-                   AND d.generation = c.generation
-                   AND d.owner = c.owner
-                   AND d.visibility = c.visibility
-                   AND s.generation = c.generation
-                   AND s.owner = c.owner
-                   AND s.visibility = c.visibility
-                   AND (?6 IS NULL OR c.version = ?6)
-                 ORDER BY rank ASC, c.ordinal ASC
-                 LIMIT ?7",
-            ))
-            .map_err(|error| sqlite_error(&self.database, "prepare knowledge search", error))?;
-        let rows = statement
-            .query_map(
-                params![
-                    search_value,
-                    scope.space_id,
-                    scope.generation,
-                    scope.owner,
-                    scope.visibility.as_str(),
-                    source_version,
-                    i64::try_from(limit).unwrap_or(i64::MAX),
-                ],
-                |row| {
-                    Ok(KnowledgeSearchResult {
-                        chunk_id: row.get(0)?,
-                        document_id: row.get(1)?,
-                        space_id: row.get(2)?,
-                        title: row.get(3)?,
-                        content: row.get(4)?,
-                        metadata_json: row.get(5)?,
-                        source: row.get(6)?,
-                        version: row.get(7)?,
-                        generation: row.get(8)?,
-                        owner: row.get(9)?,
-                        visibility: parse_visibility(&row.get::<_, String>(10)?).map_err(
-                            |error| {
-                                rusqlite::types::FromSqlError::Other(Box::new(
-                                    std::io::Error::other(error),
-                                ))
-                            },
-                        )?,
-                        rank: row.get(11)?,
-                    })
-                },
-            )
-            .map_err(|error| sqlite_error(&self.database, "query knowledge chunks", error))?;
-        rows.collect::<Result<Vec<_>, _>>()
-            .map_err(|error| sqlite_error(&self.database, "read knowledge chunks", error))
+        let run_search = |search_value: &str,
+                          search_predicate: &str|
+         -> AgentResult<Vec<KnowledgeSearchResult>> {
+            let mut statement = connection
+                .prepare(&format!(
+                    "SELECT c.chunk_id, c.document_id, c.space_id, d.title, c.content,
+                            d.metadata_json, c.source, c.version, c.generation, c.owner, c.visibility,
+                            bm25(knowledge_chunks_fts) AS rank
+                     FROM knowledge_chunks_fts f
+                     JOIN knowledge_chunks c ON c.chunk_id = f.chunk_id
+                     JOIN knowledge_documents d ON d.document_id = c.document_id
+                     JOIN knowledge_spaces s ON s.space_id = c.space_id
+                     WHERE {search_predicate}
+                       AND c.space_id = ?2
+                       AND c.generation = ?3
+                       AND c.owner = ?4
+                       AND c.visibility = ?5
+                       AND d.space_id = s.space_id
+                       AND d.generation = c.generation
+                       AND d.owner = c.owner
+                       AND d.visibility = c.visibility
+                       AND s.generation = c.generation
+                       AND s.owner = c.owner
+                       AND s.visibility = c.visibility
+                       AND (?6 IS NULL OR c.version = ?6)
+                     ORDER BY rank ASC, c.ordinal ASC
+                     LIMIT ?7",
+                ))
+                .map_err(|error| sqlite_error(&self.database, "prepare knowledge search", error))?;
+            let rows = statement
+                .query_map(
+                    params![
+                        search_value,
+                        scope.space_id,
+                        scope.generation,
+                        scope.owner,
+                        scope.visibility.as_str(),
+                        source_version,
+                        i64::try_from(limit).unwrap_or(i64::MAX),
+                    ],
+                    |row| {
+                        Ok(KnowledgeSearchResult {
+                            chunk_id: row.get(0)?,
+                            document_id: row.get(1)?,
+                            space_id: row.get(2)?,
+                            title: row.get(3)?,
+                            content: row.get(4)?,
+                            metadata_json: row.get(5)?,
+                            source: row.get(6)?,
+                            version: row.get(7)?,
+                            generation: row.get(8)?,
+                            owner: row.get(9)?,
+                            visibility: parse_visibility(&row.get::<_, String>(10)?).map_err(
+                                |error| {
+                                    rusqlite::types::FromSqlError::Other(Box::new(
+                                        std::io::Error::other(error),
+                                    ))
+                                },
+                            )?,
+                            rank: row.get(11)?,
+                        })
+                    },
+                )
+                .map_err(|error| sqlite_error(&self.database, "query knowledge chunks", error))?;
+            rows.collect::<Result<Vec<_>, _>>()
+                .map_err(|error| sqlite_error(&self.database, "read knowledge chunks", error))
+        };
+
+        let exact = run_search(search_value, search_predicate)?;
+        if !exact.is_empty() {
+            return Ok(exact);
+        }
+
+        if like_pattern.is_some() {
+            // The default SQLite unicode61 tokenizer treats a contiguous CJK
+            // run as one token. If the full natural-language sentence did not
+            // occur verbatim, retry with bounded CJK bigram/ASCII-token
+            // substrings rather than rebuilding every existing FTS index.
+            let mut seen = BTreeSet::new();
+            let mut fallback = Vec::new();
+            for pattern in cjk_like_patterns(query) {
+                for result in run_search(&pattern, search_predicate)? {
+                    if seen.insert(result.chunk_id.clone()) {
+                        fallback.push(result);
+                    }
+                }
+            }
+            fallback.sort_by(|left, right| left.rank.total_cmp(&right.rank));
+            fallback.truncate(limit);
+            return Ok(fallback);
+        }
+
+        // Natural-language queries often contain filler words that are absent
+        // from a compact knowledge chunk. Preserve the precise AND path first,
+        // then widen only on a miss so exact command/path lookups keep their
+        // precision while paraphrases still get a useful lexical candidate.
+        let broad_fts_query = make_fts_query_with_operator(query, " OR ");
+        if broad_fts_query == fts_query {
+            return Ok(exact);
+        }
+        run_search(&broad_fts_query, "knowledge_chunks_fts MATCH ?1")
     }
 
     pub fn search_vectors(
@@ -4693,12 +4731,16 @@ fn vector_from_blob(blob: &[u8], dimensions: usize) -> Result<Vec<f32>, String> 
 }
 
 fn make_fts_query(query: &str) -> String {
+    make_fts_query_with_operator(query, " AND ")
+}
+
+fn make_fts_query_with_operator(query: &str, operator: &str) -> String {
     query
         .split_whitespace()
         .filter(|token| !token.is_empty())
         .map(|token| format!("\"{}\"", token.replace('"', "\"\"")))
         .collect::<Vec<_>>()
-        .join(" AND ")
+        .join(operator)
 }
 
 fn contains_cjk(value: &str) -> bool {
@@ -4724,6 +4766,56 @@ fn make_like_pattern(query: &str) -> String {
     }
     pattern.push('%');
     pattern
+}
+
+fn cjk_like_patterns(query: &str) -> Vec<String> {
+    let mut terms = BTreeSet::new();
+    let mut run = Vec::new();
+    let mut ascii = String::new();
+
+    let flush_ascii = |terms: &mut BTreeSet<String>, ascii: &mut String| {
+        if ascii.chars().count() >= 2 {
+            terms.insert(std::mem::take(ascii));
+        } else {
+            ascii.clear();
+        }
+    };
+    let flush_run = |terms: &mut BTreeSet<String>, run: &mut Vec<char>| {
+        for pair in run.windows(2) {
+            terms.insert(pair.iter().collect::<String>());
+        }
+        run.clear();
+    };
+
+    for character in query.chars() {
+        if character.is_ascii_alphanumeric() || matches!(character, '_' | '-' | '.' | '+' | '#') {
+            flush_run(&mut terms, &mut run);
+            ascii.push(character);
+        } else if is_cjk(character) {
+            flush_ascii(&mut terms, &mut ascii);
+            run.push(character);
+        } else {
+            flush_ascii(&mut terms, &mut ascii);
+            flush_run(&mut terms, &mut run);
+        }
+    }
+    flush_ascii(&mut terms, &mut ascii);
+    flush_run(&mut terms, &mut run);
+
+    terms
+        .into_iter()
+        .map(|term| format!("%{}%", term.replace(['%', '_', '\\'], "")))
+        .collect()
+}
+
+fn is_cjk(character: char) -> bool {
+    matches!(
+        character as u32,
+        0x3400..=0x4DBF
+            | 0x4E00..=0x9FFF
+            | 0xF900..=0xFAFF
+            | 0x20000..=0x2FA1F
+    )
 }
 
 fn parse_visibility(value: &str) -> Result<KnowledgeVisibility, String> {

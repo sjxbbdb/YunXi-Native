@@ -198,6 +198,36 @@ fn dynamic_recall_accepts_vector_score_without_keyword_overlap() {
 }
 
 #[test]
+fn dynamic_recall_matches_natural_chinese_without_whitespace() {
+    let preference = active_record(
+        "reply-style",
+        MemoryScope::GlobalUser,
+        MemoryKind::Event,
+        "用户偏好简短、温和的中文回复",
+        1,
+    );
+    let routed =
+        MemoryRecallRouter::default().route(&[preference], &request("我的回答风格偏好是什么"));
+
+    assert_eq!(routed.dynamic_recall.records.len(), 1);
+    assert_eq!(routed.dynamic_recall.records[0].id, "reply-style");
+}
+
+#[test]
+fn natural_chinese_lexical_recall_does_not_match_unrelated_records() {
+    let unrelated = active_record(
+        "editor",
+        MemoryScope::GlobalUser,
+        MemoryKind::Preference,
+        "用户偏好使用 Vim 编辑器",
+        1,
+    );
+    let routed = MemoryRecallRouter::default().route(&[unrelated], &request("我最喜欢的水果"));
+
+    assert!(routed.dynamic_recall.records.is_empty());
+}
+
+#[test]
 fn dynamic_recall_deduplicates_against_boot_context() {
     let project = active_record(
         "project",

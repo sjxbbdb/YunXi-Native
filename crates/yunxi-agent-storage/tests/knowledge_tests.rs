@@ -1414,6 +1414,47 @@ fn knowledge_store_uses_separate_database_and_searches_active_scope() {
 }
 
 #[test]
+fn knowledge_search_falls_back_to_or_for_natural_language_misses() {
+    let dir = tempdir().expect("tempdir");
+    let store = SqliteKnowledgeStore::new(dir.path().join("knowledge.sqlite3"));
+    store
+        .upsert_space(&space(
+            "system-linux",
+            KnowledgeSpaceKind::System,
+            "system",
+            KnowledgeVisibility::Public,
+            1,
+        ))
+        .expect("space");
+    let document = document("system-linux", "system", KnowledgeVisibility::Public);
+    store.upsert_document(&document).expect("document");
+    store
+        .upsert_chunk(&chunk(
+            &document.document_id,
+            "system",
+            KnowledgeVisibility::Public,
+            "systemctl status reads the active service state",
+        ))
+        .expect("chunk");
+
+    let results = store
+        .search(
+            "systemctl status restart",
+            &KnowledgeSearchScope {
+                space_id: "system-linux".to_string(),
+                owner: "system".to_string(),
+                generation: 1,
+                visibility: KnowledgeVisibility::Public,
+            },
+            5,
+        )
+        .expect("search");
+
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].chunk_id, "system-linux-doc-chunk");
+}
+
+#[test]
 fn knowledge_search_cannot_cross_owner_or_generation_boundaries() {
     let dir = tempdir().expect("tempdir");
     let store = SqliteKnowledgeStore::new(dir.path().join("knowledge.sqlite3"));
@@ -1671,6 +1712,43 @@ fn knowledge_keyword_search_matches_cjk_substrings_without_rebuilding_fts() {
         .expect("CJK partial substring search");
     assert_eq!(partial.len(), 1);
     assert_eq!(partial[0].chunk_id, chunk.chunk_id);
+}
+
+#[test]
+fn knowledge_keyword_search_falls_back_to_cjk_terms_when_sentence_misses() {
+    let dir = tempdir().expect("tempdir");
+    let store = SqliteKnowledgeStore::new(dir.path().join("knowledge.sqlite3"));
+    store
+        .upsert_space(&space(
+            "system-linux",
+            KnowledgeSpaceKind::System,
+            "system",
+            KnowledgeVisibility::Public,
+            1,
+        ))
+        .expect("system space");
+    let document = document("system-linux", "system", KnowledgeVisibility::Public);
+    store.upsert_document(&document).expect("document");
+    let chunk = chunk(
+        &document.document_id,
+        "system",
+        KnowledgeVisibility::Public,
+        "systemctl 服务状态读取说明",
+    );
+    store.upsert_chunk(&chunk).expect("chunk");
+    let scope = KnowledgeSearchScope {
+        space_id: "system-linux".to_string(),
+        owner: "system".to_string(),
+        generation: 1,
+        visibility: KnowledgeVisibility::Public,
+    };
+
+    let results = store
+        .search_versioned("请帮我查看 systemctl 服务当前状态", &scope, None, 10)
+        .expect("CJK fallback search");
+
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].chunk_id, chunk.chunk_id);
 }
 
 #[test]

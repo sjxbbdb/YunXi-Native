@@ -168,10 +168,19 @@ pub(crate) fn score_record(record: &MemoryRecord, request: &MemoryRecallRequest)
     let mut score = 0.0;
     let query = request.query.to_ascii_lowercase();
     let content = record.content.to_ascii_lowercase();
-    for term in query.split_whitespace().filter(|term| term.len() >= 2) {
+    let query_terms = recall_query_terms(&query);
+    for term in query_terms.iter().filter(|term| term.len() >= 2) {
         if content.contains(term) {
-            score += 2.0;
+            // A matched CJK bigram is a stronger signal than one broad
+            // character but slightly weaker than an exact ASCII token. This
+            // keeps Chinese paraphrases useful without making every common
+            // one-character word a recall trigger.
+            score += if term.chars().all(is_cjk) { 1.5 } else { 2.0 };
         }
+    }
+    let compact_query = query.split_whitespace().collect::<String>();
+    if compact_query.chars().count() >= 2 && content.contains(&compact_query) {
+        score += 1.5;
     }
     if matches!(record.scope, MemoryScope::Workspace { .. }) {
         score += 0.5;
@@ -183,6 +192,63 @@ pub(crate) fn score_record(record: &MemoryRecord, request: &MemoryRecallRequest)
         score += record.importance + record.confidence * 0.5;
     }
     score
+}
+
+/// Build cheap, deterministic lexical terms for recall.
+///
+/// The previous implementation split only on ASCII whitespace. That works
+/// for English, but a natural Chinese question such as "我的回答风格偏好" has
+/// no spaces and therefore scored zero unless the vector path happened to
+/// rescue it. We keep ASCII tokens intact and add adjacent CJK bigrams. The
+/// latter gives us useful phrase-level matching without introducing a large
+/// tokenizer dependency into the persona crate.
+fn recall_query_terms(query: &str) -> Vec<String> {
+    let mut terms = std::collections::BTreeSet::new();
+    let mut ascii = String::new();
+    let mut cjk = Vec::new();
+
+    let flush_ascii = |terms: &mut std::collections::BTreeSet<String>, ascii: &mut String| {
+        if ascii.chars().count() >= 2 {
+            terms.insert(std::mem::take(ascii));
+        } else {
+            ascii.clear();
+        }
+    };
+    let flush_cjk = |terms: &mut std::collections::BTreeSet<String>, cjk: &mut Vec<char>| {
+        if cjk.len() >= 2 {
+            terms.insert(cjk.iter().collect());
+            for pair in cjk.windows(2) {
+                terms.insert(pair.iter().collect());
+            }
+        }
+        cjk.clear();
+    };
+
+    for character in query.chars() {
+        if character.is_ascii_alphanumeric() || matches!(character, '_' | '-' | '.' | '+' | '#') {
+            flush_cjk(&mut terms, &mut cjk);
+            ascii.push(character);
+        } else if is_cjk(character) {
+            flush_ascii(&mut terms, &mut ascii);
+            cjk.push(character);
+        } else {
+            flush_ascii(&mut terms, &mut ascii);
+            flush_cjk(&mut terms, &mut cjk);
+        }
+    }
+    flush_ascii(&mut terms, &mut ascii);
+    flush_cjk(&mut terms, &mut cjk);
+    terms.into_iter().collect()
+}
+
+fn is_cjk(character: char) -> bool {
+    matches!(
+        character as u32,
+        0x3400..=0x4DBF
+            | 0x4E00..=0x9FFF
+            | 0xF900..=0xFAFF
+            | 0x20000..=0x2FA1F
+    )
 }
 
 pub(crate) fn score_record_with_semantic(
