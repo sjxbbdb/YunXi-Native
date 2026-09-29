@@ -137,6 +137,12 @@ impl YunxiTui {
         self.request_redraw(RedrawReason::Error)
     }
 
+    /// 推理以摘要形式进转录本（默认关）。
+    pub fn set_reasoning_expanded(&mut self, enabled: bool) -> Result<()> {
+        self.app.set_reasoning_expanded(enabled);
+        self.request_redraw(RedrawReason::ControlChanged)
+    }
+
     pub fn set_debug_events(&mut self, enabled: bool) -> Result<()> {
         self.app.set_debug_events(enabled);
         self.request_redraw(RedrawReason::ControlChanged)

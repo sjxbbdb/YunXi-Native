@@ -1,3 +1,4 @@
+use crate::terminal::chrome::{BODY_MAX, body_w, set_body_w};
 use ratatui::layout::{Margin, Rect};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -9,7 +10,27 @@ pub(crate) struct TuiLayout {
     pub(crate) bottom_pane: Rect,
 }
 
+/// 正文列的宽度与起始 x。
+///
+/// 照搬 Miyu `chrome::compose` 的版式：正文约束在**一条居中的列**里，而不是
+/// 撑满全宽。Miyu 那边的注释写得很直白 ——「不要框：内容居中，两侧空白铺极稀
+/// 的暗星」——去框、居中、两侧留白是同一个设计决定的三个面。
+///
+/// `BODY_MAX = 62` 也是从那边来的：一行中文 40 字出头就不好读了，62 列是
+/// 可读性上限；窄终端跟着视口缩，但不下于 20 列。
+pub(crate) fn content_column(area: Rect) -> (u16, u16) {
+    set_body_w(
+        BODY_MAX
+            .min(usize::from(area.width).saturating_sub(10))
+            .max(20),
+    );
+    let width = (body_w() as u16).min(area.width);
+    let x = area.x.saturating_add(area.width.saturating_sub(width) / 2);
+    (x, width)
+}
+
 pub(crate) fn compute_layout(area: Rect, bottom_pane_height: u16) -> TuiLayout {
+    let (content_x, content_width) = content_column(area);
     let (header_height, transcript_height, bottom_height) = if area.height >= 7 {
         // 视觉重设计：状态行不再用 `───` 分隔线隔开，靠明度差与留白分层，
         // 所以这里从 3 行（状态 + 副状态 + 分隔线）减到 2 行。
@@ -35,23 +56,23 @@ pub(crate) fn compute_layout(area: Rect, bottom_pane_height: u16) -> TuiLayout {
             bottom_height,
         )
     };
-    let header = Rect::new(area.x, area.y, area.width, header_height);
+    let header = Rect::new(content_x, area.y, content_width, header_height);
     let transcript = Rect::new(
-        area.x,
+        content_x,
         area.y.saturating_add(header_height),
-        area.width,
+        content_width,
         transcript_height,
     );
     let bottom_pane = Rect::new(
-        area.x,
+        content_x,
         area.y
             .saturating_add(header_height)
             .saturating_add(transcript_height),
-        area.width,
+        content_width,
         bottom_height,
     );
-    // 去框之后不再需要纵向内边距（原本那 1 行上下是边框）；横向保留 1 列留白，
-    // 让正文不贴着屏幕左缘 —— 这是新设计里唯一的「边距」。
+    // 居中列之内的横向留白：正文不贴着列的左缘。纵向不再需要内边距
+    // （原本那 1 行上下是边框）。
     let transcript_inner = transcript.inner(Margin {
         vertical: 0,
         horizontal: 1,
@@ -135,18 +156,43 @@ mod tests {
             (200, 50, 44, 44),
         ] {
             let layout = compute_layout(Rect::new(0, 0, width, height), 4);
+            // 期望值**从布局函数推导**，不硬编码 —— 正文列现在是一条居中的
+            // 62 列（照搬 Miyu 的版式），硬编码数字每次调宽度都要重算一遍。
+            let (content_x, content_width) = content_column(Rect::new(0, 0, width, height));
 
-            assert_eq!(layout.header, Rect::new(0, 0, width, 2));
-            assert_eq!(layout.transcript, Rect::new(0, 2, width, transcript_height));
+            assert_eq!(layout.header, Rect::new(content_x, 0, content_width, 2));
+            assert_eq!(
+                layout.transcript,
+                Rect::new(content_x, 2, content_width, transcript_height)
+            );
             assert_eq!(
                 layout.transcript_inner,
-                Rect::new(1, 2, width - 2, inner_height)
+                Rect::new(
+                    content_x.saturating_add(1),
+                    2,
+                    content_width.saturating_sub(2),
+                    inner_height
+                )
             );
             assert_eq!(
                 layout.transcript_scrollbar,
-                Rect::new(width - 1, 2, 1, inner_height)
+                Rect::new(content_x + content_width - 1, 2, 1, inner_height)
             );
-            assert_eq!(layout.bottom_pane, Rect::new(0, height - 4, width, 4));
+            assert_eq!(
+                layout.bottom_pane,
+                Rect::new(content_x, height - 4, content_width, 4)
+            );
+            // 正文列必须真的居中，且不撑满全宽（窄到放不下 62 列的终端除外）。
+            let left_margin = content_x;
+            let right_margin = width - content_x - content_width;
+            assert!(
+                left_margin.abs_diff(right_margin) <= 1,
+                "{width} 列下正文列没居中：左 {left_margin} 右 {right_margin}"
+            );
+            assert!(
+                content_width <= 62 || content_width == width,
+                "{width} 列下正文列宽 {content_width} 超过 BODY_MAX 且没退化成全宽"
+            );
             assert_eq!(
                 layout.transcript.y + layout.transcript.height,
                 layout.bottom_pane.y

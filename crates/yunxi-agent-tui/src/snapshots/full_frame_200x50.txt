@@ -1,50 +1,50 @@
-00|云熙 | deepseek-chat-ultra-long-model-name | 运行中
-01|↓ 有新输出 · End 回到最新
-02|对话 6-50 / 57                                                                                                                                                                                         ^
-03|› 填充第 5 行，用于加长历史                                                                                                                                                                            ║
-04|› 填充第 6 行，用于加长历史                                                                                                                                                                            ║
-05|› 填充第 7 行，用于加长历史                                                                                                                                                                            ║
-06|  history 00: stable transcript row for viewport evidence                                                                                                                                              █
-07|  history 01: stable transcript row for viewport evidence                                                                                                                                              █
-08|  history 02: stable transcript row for viewport evidence                                                                                                                                              █
-09|  history 03: stable transcript row for viewport evidence                                                                                                                                              █
-10|  history 04: stable transcript row for viewport evidence                                                                                                                                              █
-11|  history 05: stable transcript row for viewport evidence                                                                                                                                              █
-12|  history 06: stable transcript row for viewport evidence                                                                                                                                              █
-13|  history 07: stable transcript row for viewport evidence                                                                                                                                              █
-14|  history 08: stable transcript row for viewport evidence                                                                                                                                              █
-15|  history 09: stable transcript row for viewport evidence                                                                                                                                              █
-16|  history 10: stable transcript row for viewport evidence                                                                                                                                              █
-17|  history 11: stable transcript row for viewport evidence                                                                                                                                              █
-18|  history 12: stable transcript row for viewport evidence                                                                                                                                              █
-19|  history 13: stable transcript row for viewport evidence                                                                                                                                              █
-20|  history 14: stable transcript row for viewport evidence                                                                                                                                              █
-21|  history 15: stable transcript row for viewport evidence                                                                                                                                              █
-22|  history 16: stable transcript row for viewport evidence                                                                                                                                              █
-23|  history 17: stable transcript row for viewport evidence                                                                                                                                              █
-24|  history 18: stable transcript row for viewport evidence                                                                                                                                              █
-25|  history 19: stable transcript row for viewport evidence                                                                                                                                              █
-26|  history 20: stable transcript row for viewport evidence                                                                                                                                              █
-27|  history 21: stable transcript row for viewport evidence                                                                                                                                              █
-28|  history 22: stable transcript row for viewport evidence                                                                                                                                              █
-29|  history 23: stable transcript row for viewport evidence                                                                                                                                              █
-30|  history 24: stable transcript row for viewport evidence                                                                                                                                              █
-31|  history 25: stable transcript row for viewport evidence                                                                                                                                              █
-32|  history 26: stable transcript row for viewport evidence                                                                                                                                              █
-33|  history 27: stable transcript row for viewport evidence                                                                                                                                              █
-34|  history 28: stable transcript row for viewport evidence                                                                                                                                              █
-35|  history 29: stable transcript row for viewport evidence                                                                                                                                              █
-36|  history 30: stable transcript row for viewport evidence                                                                                                                                              █
-37|  history 31: stable transcript row for viewport evidence                                                                                                                                              █
-38|  history 32: stable transcript row for viewport evidence                                                                                                                                              █
-39|  history 33: stable transcript row for viewport evidence                                                                                                                                              █
-40|  history 34: stable transcript row for viewport evidence                                                                                                                                              █
-41|  history 35: stable transcript row for viewport evidence                                                                                                                                              █
-42|› Keep the current history position while the answer streams.                                                                                                                                          ║
-43|▌ 国際化 layout 中文かな keeps one active cell with emoji 👩‍💻 and é.                                                                                                                                    ║
-44|  URL https://very-long.example.test/api/v1/items?search=中文&sort=desc#results                                                                                                                        ║
-45|  Windows C:\Users\24763\YunXi Agent\输出目录\very-long-file-name.txt                                                                                                                                  ║
-46|  ```rust                                                                                                                                                                                              v
-47|yunxi> 入力 中文かな 👩‍💻 é
-48|End 回到最新 | 有新输出 | wheel/drag history
-49|
+00|                               .  .       +               +      .   云熙 | deepseek-chat-ultra-long-model-name | 运行中            +                       + ✦ ✶   .       ✦                          .
+01|        .                 +                                          ↓ 有新输出 · End 回到最新                                                   ✶   . ✦         .                      +  ✦         +
+02|.  ✶   +   +    ✶ .  ✶    +       ✶      ✦                           对话 10-54 / 65                                              ^ ✶    .                               .     +   ✦       ✦
+03|                      ✶       +      ✶               .   ✦          +  history 01: stable transcript row for viewport evidence    ║    +                 +         +                            .
+04|.             ✶          ✶         +      ✶✦                ✦ +  ✶     history 02: stable transcript row for viewport evidence    ║  +          + ✦                ..✦     .    ✦
+05|✦   + ✦                                     ✦ ✶      +  ✦        +     history 03: stable transcript row for viewport evidence    ║                  ✦                  ✶         ✦ +   ✶
+06|                       +          ✦           .           +  ✶         history 04: stable transcript row for viewport evidence    ║✦  ✦        ✶           .    ✦               ✶        .+          ✦
+07|  .              .   +.                             .    +        ✦    history 05: stable transcript row for viewport evidence    ║       .     ✶   ✦          ✦                               +
+08|     . .      +      ✶     .     ✶    ✦   +    . +  ✦   .              history 06: stable transcript row for viewport evidence    █ ✶  +              ✦ +            .     ✦                     +    ✶
+09|+         .✦        .✦          .           ✶           +  ✶           history 07: stable transcript row for viewport evidence    █              ✦       ✦     ✦   +             +           ✦✦
+10|      .                                         .   .                  history 08: stable transcript row for viewport evidence    █                   +  ✶                                      . ✶ +
+11|   ✦         ✦          ✦                +              ✦              history 09: stable transcript row for viewport evidence    █                    .                  ✶
+12|                    ✦ .                                 ✦✶          .  history 10: stable transcript row for viewport evidence    █           +      +         ✦  ++          + .               .  ✶
+13|                ✦.      ✦                        ✶                .    history 11: stable transcript row for viewport evidence    █+      .        ✦                         + ✶               ✶   +
+14|           .                   ✦                 ✶          +          history 12: stable transcript row for viewport evidence    █   +                   +                             .   ✦
+15|                             ✦        ✦                                history 13: stable transcript row for viewport evidence    █  ✶                                      ✦            +      .
+16|✦       ✦  ✶   ✦                      +                      ✦         history 14: stable transcript row for viewport evidence    █ .              .                      ✦     ✶            ✦       ✦
+17|                 ✦       .                 ✦     .  +    +     ✶       history 15: stable transcript row for viewport evidence    █                          ✶        .         +
+18| .          +                                  ✶ ✦                     history 16: stable transcript row for viewport evidence    █                           +        +             .             ✦
+19| .                          +             .✦                           history 17: stable transcript row for viewport evidence    █                         ✶    ✦ ✶  .        .✶               +   .
+20|     .       +                .      ✶          ✶                 +    history 18: stable transcript row for viewport evidence    █          .                          +
+21|      +             +       .  +  ✶           +                        history 19: stable transcript row for viewport evidence    █                    ✦     ✶   ✦ ✦     ✶  +✶ .         +
+22|        . ✶     +  .  +                                             ✦  history 20: stable transcript row for viewport evidence    █+     ✦         ++           .++  +                    .
+23|  +       ✦     .   .                ✦         ✦                       history 21: stable transcript row for viewport evidence    █✦✶     ✦✦ + ✦          ✦ .
+24|  . ✦              +                                                   history 22: stable transcript row for viewport evidence    █+ ✦    .                        ✦              .      .   +   ✦
+25|                . ✶                                                    history 23: stable transcript row for viewport evidence    █     +       ✦                 ✦             ✦          .
+26|              ✦           .                  ✦   .                     history 24: stable transcript row for viewport evidence    █     .                    +  ✦
+27|                  +                ✦         ✶                         history 25: stable transcript row for viewport evidence    █      ✶     ✦             +                   .                   .
+28|                           +          +                     +          history 26: stable transcript row for viewport evidence    █  ✦        +            +                                ✦     .
+29|                      ✦   .   +                           +    +    ✦  history 27: stable transcript row for viewport evidence    █      ✶  +                       ✶                  ✦
+30|                ✶       +          ✦+                                  history 28: stable transcript row for viewport evidence    █                     +               .    +✶  +             ✦
+31|                      ✶..                               +    ✦   +     history 29: stable transcript row for viewport evidence    █                          ✦         ✶       ✦             ++
+32|                     ✶   .         ✦ +     ✦       ✶   .               history 30: stable transcript row for viewport evidence    █
+33|                ✦                +      +   ✦     +   .          .     history 31: stable transcript row for viewport evidence    █  .                 .   ✶.✦  .             ✦    ✶  .+          ✦
+34|✦                          ✶ ✦            ✶    .               +       history 32: stable transcript row for viewport evidence    █               ✦          +  .                           ✶
+35|               +      .  ✦                ✦      + .                   history 33: stable transcript row for viewport evidence    █                +              .   ✦        ✦              .  ✶
+36|        ✦ ✦   ✦   +                     ✶✶                         ✶   history 34: stable transcript row for viewport evidence    █      ✶.   .       .   ✦            ✶✶                 ✦
+37|             ✦   .         ✶      ✦      ✦         .         +         history 35: stable transcript row for viewport evidence    █                                         +                    ✦
+38|                          ✦             ✦ +   +            ++    + ✦ › Keep the current history position while the answer         █   .         +         ✦+   +           ✶      +       +         ✦
+39|     + +                  ✦         ✶ ✶                       ✶  ✶       streams.                                                 █+    +                                    ✦  .✦ + + ✦.  .    ✦
+40|✦     +         .                                      .            ✶▌ 国際化 layout 中文かな keeps one active cell with emoji 👩‍💻 ║       ✦            ✦       .       ✦          ✦         ✦
+41|.  +        ✶             ✦     +     +                     ✦            and é.                                                   ║                            +   ✦  +✶      ✶             +   ✦
+42|                                        ✶                              URL https://very-long.example.test/api/v1/items?search=    ║                         + .          +
+43|                         .  ✦+                 .  +  ✦                   中文&sort=desc#results                                   ║ ✦    . ✦       .                  +✶        .     +     ✦         .
+44|    .       .      ✦ ✦       +  +      .   ✶.              +           Windows C:\Users\24763\YunXi Agent\输出目录\very-long-     ║ . .      .+✦         +      +                         .     ✦
+45|                    .                        ✦.   ✦        ✦             file-name.txt                                            ║   ✦                                      ✦✦           ✦
+46|                       ✦                  ✶                            ```rust                                                    v                . .   ✦    ✦                .    +       .       ✶
+47| ✶       +         +    ✦                      ✦.✶      ✦.     ✦   . yunxi> 入力 中文かな 👩‍💻 é                                                     ✶+                               ✦   + +
+48|  +  +  ✦         ✦                              ✦                   End 回到最新 | 有新输出 | wheel/drag history                        .                                .✶    +                 ✦ ✦
+49| +    ✦✦ ✦                   ✦    ✦              .         ✦                                                                                  .                    +                  ✦       ✦

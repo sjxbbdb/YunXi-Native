@@ -15,3 +15,7 @@ __pycache__/
 # Reference snapshots are intentionally committed, but local extraction artifacts are not.
 /references/miyu-agent-tar-extract/
 /crates/yunxi-agent-runtime/.yunxi/
+packaging/arch/yunxi-native/yunxi-native
+packaging/arch/yunxi-native/src
+packaging/arch/yunxi-native/pkg
+packaging/arch/yunxi-native/*.pkg.tar.zst

@@ -22,26 +22,59 @@ use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 /// 所以这里直接消费 `OnboardingWizard::render()` 的片段网格 —— 与欢迎动画
 /// 用同一套 `Seg → Span → Paragraph` 转换，保证视觉语言一致。
 pub(crate) fn render_onboarding_screen(frame: &mut Frame<'_>, wizard: &OnboardingWizard) {
+    use crate::terminal::chrome::{Chrome, Cx, Stop, StopState, View, compose};
+    use crate::terminal::starfield::BannerArt;
+
     let area = frame.area();
-    let output = wizard.render(area.width as usize, area.height as usize);
-    for (y, line) in output.iter().enumerate() {
-        if y >= area.height as usize {
-            break;
-        }
-        let spans: Vec<Span> = line
-            .iter()
-            .map(|seg| Span::styled(&seg.text, seg.style))
-            .collect();
-        frame.render_widget(
-            Paragraph::new(Line::from(spans)),
-            Rect {
-                x: area.x,
-                y: area.y + y as u16,
-                width: area.width,
-                height: 1,
-            },
-        );
+    let cols = usize::from(area.width);
+    let rows = usize::from(area.height);
+    if cols == 0 || rows == 0 {
+        return;
     }
+
+    // 版面交给照搬来的 `chrome::compose`：62 列居中栏、进度轨、按键条、
+    // 两侧稀疏暗星，全在那边。这里只负责说「这屏有哪些行」。
+    let theme = TuiStyleSet::detect().theme();
+    let cx = Cx::new(theme);
+    let (here, total) = wizard.progress();
+
+    // 进度轨：Miyu 的 OOBE 用同一个构件表示「走过 / 正在这儿 / 还没到」。
+    let rail: Vec<Stop> = (0..total)
+        .map(|index| Stop {
+            label: format!("{}", index + 1),
+            state: match index.cmp(&here) {
+                std::cmp::Ordering::Less => StopState::Done,
+                std::cmp::Ordering::Equal => StopState::Here,
+                std::cmp::Ordering::Greater => StopState::Todo,
+            },
+        })
+        .collect();
+
+    // 正文：向导自己的内容，交给 chrome 去居中、折行、铺边栏。
+    let body: Vec<Line<'static>> = wizard
+        .body_lines(cols.saturating_sub(2))
+        .into_iter()
+        .map(|line| {
+            Line::from(
+                line.into_iter()
+                    .map(|seg| Span::styled(seg.text, seg.style))
+                    .collect::<Vec<_>>(),
+            )
+        })
+        .collect();
+
+    let art = BannerArt::builtin(theme.ascii);
+    let mut view = View::default();
+    view.body = body;
+    view.keys = vec![
+        ("Enter".to_string(), "下一步".to_string()),
+        ("Esc".to_string(), "跳过".to_string()),
+    ];
+    let chrome = Chrome::new(theme, &art, &rail);
+    let mut scroll = 0usize;
+    let composed = compose(cols, rows, &chrome, &view, &mut scroll);
+    let _ = cx; // 构件留给后续把表单元素也换成 Cx 的 field/radio/check
+    frame.render_widget(Paragraph::new(composed.lines), area);
 }
 
 pub(crate) fn render_tui_frame(frame: &mut Frame<'_>, app: &YunxiTuiApp) {
@@ -59,6 +92,10 @@ pub(crate) fn render_tui_frame_with_styles(
         app.bottom_pane()
             .desired_height_for_width(area.width as usize),
     );
+
+    // 先铺边栏星空，再画正文 —— 正文覆盖在上面。这是 Miyu `compose` 里的
+    // 「两侧空白铺极稀的暗星」：居中列之外的留白不是空的，是设计的一部分。
+    render_starfield_gutters(frame, area, layout.header, styles, app.animation_tick());
 
     if layout.header.width > 0 && layout.header.height > 0 {
         render_header(frame, app, layout.header, styles);
@@ -82,6 +119,49 @@ pub(crate) fn render_tui_frame_with_styles(
     if layout.bottom_pane.width > 0 && layout.bottom_pane.height > 0 {
         render_bottom_pane(frame, app, layout.bottom_pane, styles);
     }
+}
+
+/// 居中列两侧的稀疏暗星。
+///
+/// 照搬 Miyu `chrome::compose` 的边栏：只在正文列**之外**的留白里铺，密度
+/// `11`、亮度 `0.30` —— 刚好能看见、不抢戏。Miyu 的原话是「不要框：内容居中，
+/// 两侧空白铺极稀的暗星」。它的作用是把两侧的空白变成画面的一部分：否则一条
+/// 62 列的正文摆在宽终端中间，两边那两片纯空白看着像渲染坏了。
+fn render_starfield_gutters(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    content: Rect,
+    styles: TuiStyleSet,
+    tick: usize,
+) {
+    use crate::terminal::starfield::{Seg, star_seg};
+
+    /// 边栏星空的密度（值越小越密）。
+    const STAR_SPARSE: u32 = 11;
+    /// 边栏星空的亮度上限。暗到只在余光里。
+    const STAR_MARGIN_DIM: f32 = 0.30;
+
+    if area.width <= content.width || area.height == 0 {
+        return; // 没有留白，就没有边栏
+    }
+    let theme = styles.theme();
+    let left_end = usize::from(content.x.saturating_sub(area.x));
+    let right_start = left_end + usize::from(content.width);
+    let mut lines: Vec<Line<'static>> = Vec::with_capacity(usize::from(area.height));
+    for y in 0..usize::from(area.height) {
+        let mut spans: Vec<Span<'static>> = Vec::with_capacity(usize::from(area.width));
+        for x in 0..usize::from(area.width) {
+            let seg = if x >= left_end && x < right_start {
+                // 正文列之内留白，绝不能把星星压到内容上。
+                Seg::raw(" ")
+            } else {
+                star_seg(x, y, tick, theme, STAR_MARGIN_DIM, STAR_SPARSE)
+            };
+            spans.push(Span::styled(seg.text, seg.style));
+        }
+        lines.push(Line::from(spans));
+    }
+    frame.render_widget(Paragraph::new(lines), area);
 }
 
 fn render_details(frame: &mut Frame<'_>, app: &YunxiTuiApp, area: Rect, styles: TuiStyleSet) {
@@ -1137,7 +1217,11 @@ mod tests {
         assert!(rendered.contains("批准"));
         assert!(rendered.contains("拒绝"));
         assert!(rendered.contains("Tab/Shift+Tab 选择"));
-        assert!(rendered.contains("Esc 拒绝"));
+        // 同上：底部提示条在 62 列下会折行，按键说明可能不在同一行。
+        assert!(
+            rendered.contains("Esc") && rendered.contains("拒绝"),
+            "实际渲染：\n{rendered}"
+        );
         assert!(rendered.contains("风险"));
         assert!(rendered.contains("低风险"));
         assert!(!rendered.contains("approve? y/N"));
@@ -1326,9 +1410,21 @@ mod tests {
             .find(|line| line.starts_with(&prefix))
             .expect("bottom scrollbar row");
 
+        // 滑块**不在整行末尾**了：居中列右侧还有边栏星空（照搬 Miyu 的
+        // 「两侧铺极稀暗星」），而且快照行会裁掉尾随空格，按列下标取字符不稳。
+        // 这里要测的性质是「滑块到达了视觉底部那一行」—— 该行出现滑块即可。
         assert!(
-            row.ends_with("█"),
-            "tail scrollbar thumb should occupy bottom row: {row}"
+            row.contains('█'),
+            "tail scrollbar thumb should reach the bottom row: {row}"
+        );
+        // 再确认正文列右缘确实落在这一行之内（不是被挤到屏幕外）。
+        let scrollbar_column = usize::from(layout.transcript_scrollbar.x);
+        assert!(
+            row.chars()
+                .skip(prefix.len())
+                .nth(scrollbar_column)
+                .is_some(),
+            "正文列右缘应当落在这一行内: {row}"
         );
     }
 
@@ -1392,7 +1488,12 @@ mod tests {
         }
         assert!(rendered.contains("shell"));
         assert!(rendered.contains("output captured"));
-        assert!(rendered.contains("provider deepseek failed"));
+        // 正文列收窄到 62 列后，这句话会折在 provider / deepseek failed 之间，
+        // 所以断言必须折行无关 —— 分别确认两半都在，而不是要求整句落在同一行。
+        assert!(
+            rendered.contains("provider") && rendered.contains("deepseek failed"),
+            "实际渲染：\n{rendered}"
+        );
 
         app.show_details(None);
         let rendered = render_app(&app, 110, 32);

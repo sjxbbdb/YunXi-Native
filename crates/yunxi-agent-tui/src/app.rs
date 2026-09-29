@@ -11,8 +11,6 @@ use crate::welcome::WelcomeScene;
 use std::time::Instant;
 use yunxi_agent_core::{AgentEvent, ControlSnapshot, TokenUsage};
 
-const SPINNER_FRAMES: [&str; 8] = ["⣾", "⣽", "⣻", "⢿", "⡿", "⣟", "⣯", "⣷"];
-
 /// 欢迎界面的淡入帧数，与 `WelcomeScene::tick()` 内部那个 24 帧淡入保持一致。
 const WELCOME_FADE_IN_FRAMES: usize = 24;
 
@@ -108,6 +106,12 @@ pub(crate) struct YunxiTuiApp {
     focus: FocusTarget,
     previous_focus: FocusTarget,
     turn_started_at: Option<Instant>,
+    /// 最近一次工具调用的阶段。`None` = 这一轮还没出现过工具调用。
+    ///
+    /// 状态行要区分「工具在跑」和「等模型回话」—— 见 `footer_for_width` 里的
+    /// 注释（照搬 Miyu 的设计要点）。原来没有这个字段，因为工具状态只活在
+    /// presentation 层，app 拿不到。
+    last_tool_phase: Option<crate::timeline::ToolPhase>,
     spinner_frame: usize,
     last_usage: Option<TokenUsage>,
     active_context_tokens: Option<i64>,
@@ -139,6 +143,7 @@ impl Default for YunxiTuiApp {
             focus: FocusTarget::Composer,
             previous_focus: FocusTarget::Composer,
             turn_started_at: None,
+            last_tool_phase: None,
             spinner_frame: 0,
             last_usage: None,
             active_context_tokens: None,
@@ -194,7 +199,12 @@ impl YunxiTuiApp {
         if self.turn_started_at.is_none() {
             return false;
         }
-        self.spinner_frame = (self.spinner_frame + 1) % SPINNER_FRAMES.len();
+        // 帧数按样式自己的周期取模：盲文 10 帧。表在
+        // `terminal::spinner`（照搬 Miyu），这里只管推进。
+        self.spinner_frame = (self.spinner_frame + 1)
+            % crate::terminal::spinner::total_frames_for_style(
+                crate::terminal::spinner::SpinnerStyle::Braille,
+            );
         true
     }
 
@@ -218,6 +228,15 @@ impl YunxiTuiApp {
             && !self.has_user_round()
             && !self.intro_finished
             && self.welcome_animation_frames < WELCOME_ANIMATION_FRAMES
+    }
+
+    /// 动画帧号。边栏星空的闪烁跟着它走。
+    ///
+    /// 用固定增量而不是读时钟：渲染必须是**确定的**，否则每一帧都不一样，
+    /// 快照测试就没法比了。
+    pub(crate) fn animation_tick(&self) -> usize {
+        self.welcome_animation_frames
+            .saturating_add(self.spinner_frame)
     }
 
     /// 开场（欢迎动画）是否已经结束：播完预算或被任意键跳过。
@@ -478,12 +497,23 @@ impl YunxiTuiApp {
                 width,
             ),
             _ if self.timeline.has_active_sessions() || self.turn_started_at.is_some() => {
-                let spinner = SPINNER_FRAMES[self.spinner_frame % SPINNER_FRAMES.len()];
+                let spinner = crate::terminal::spinner::braille_frame(self.spinner_frame);
                 let elapsed = self
                     .turn_started_at
                     .map(|started| started.elapsed().as_secs())
                     .unwrap_or_default();
-                let running_label = format!("{spinner} 运行中 · {elapsed}s");
+                // 阶段文案照搬 Miyu 的设计（`render/stream/reasoning_phase.rs` 模块头）：
+                //
+                //   「等待」有好几种，显示的字不一样：刚发出请求、模型在推理、工具在
+                //   流参数。用户看的是这一行，**用错阶段会让人以为卡住了**。
+                //
+                // YunXi 原来这一行永远是「运行中」，把这个区分吞掉了。工具在跑和等
+                // 模型回话是两件不同的事：前者说明还有动作在进行，后者说明轮到对面了。
+                let phase = match self.last_tool_phase {
+                    Some(p) if !p.is_terminal() => "执行中",
+                    _ => "思考中",
+                };
+                let running_label = format!("{spinner} {phase} · {elapsed}s");
                 let usage_label = self.last_usage.map(|usage| {
                     format!(
                         "↑{} ↓{}",
@@ -630,6 +660,30 @@ impl YunxiTuiApp {
     }
 
     pub(crate) fn push_agent_event(&mut self, event: &AgentEvent) {
+        // 记下工具阶段，供状态行区分「执行中 / 思考中」。
+        match event {
+            AgentEvent::ToolCallStarted { .. } => {
+                self.last_tool_phase = Some(crate::timeline::ToolPhase::Running);
+            }
+            AgentEvent::ToolCallCompleted { status, .. } => {
+                self.last_tool_phase = Some(match status {
+                    yunxi_agent_core::CommandStatus::InProgress => {
+                        crate::timeline::ToolPhase::Running
+                    }
+                    yunxi_agent_core::CommandStatus::Completed => {
+                        crate::timeline::ToolPhase::Completed
+                    }
+                    yunxi_agent_core::CommandStatus::Failed => crate::timeline::ToolPhase::Failed,
+                    yunxi_agent_core::CommandStatus::Declined => {
+                        crate::timeline::ToolPhase::Declined
+                    }
+                    yunxi_agent_core::CommandStatus::Cancelled => {
+                        crate::timeline::ToolPhase::Cancelled
+                    }
+                });
+            }
+            _ => {}
+        }
         self.record_agent_status(event);
         let cancelled = matches!(event, AgentEvent::Cancelled { .. });
         let terminal = matches!(
@@ -671,6 +725,14 @@ impl YunxiTuiApp {
         if changed {
             self.on_transcript_changed();
         }
+    }
+
+    /// 推理要不要以**摘要**形式进转录本。
+    ///
+    /// 默认关（`--reasoning` 才开）：YunXi 的「安静转录本」是刻意的默认，
+    /// 照搬 Miyu 的摘要档不等于要改掉它。
+    pub(crate) fn set_reasoning_expanded(&mut self, enabled: bool) {
+        self.presentation.set_reasoning_expanded(enabled);
     }
 
     pub(crate) fn set_debug_events(&mut self, enabled: bool) {
@@ -957,7 +1019,10 @@ mod tests {
 
         let footer = app.footer_for_width(120);
 
-        assert!(footer.contains("运行中"));
+        assert!(
+            footer.contains("思考中"),
+            "没有工具在跑时应当是「思考中」（等模型回话），而不是笼统的「运行中」：{footer}"
+        );
         assert!(footer.contains("agnes-2.5-flash"));
         assert!(footer.contains("↑1200 ↓340"));
         assert!(footer.contains("上下文 180"));
@@ -1485,5 +1550,35 @@ mod tests {
             .count();
         assert_eq!(assistant_cells, 1);
         assert_eq!(app.bottom_pane().composer_snapshot(), expected);
+    }
+
+    #[test]
+    fn running_tool_and_waiting_model_read_differently() {
+        // 照搬 Miyu 的设计要点：工具在跑 vs 等模型回话，是两个阶段，
+        // 用同一个词会让人以为卡住了。
+        let mut app = YunxiTuiApp::default();
+        app.set_banner(banner());
+        app.begin_turn();
+        let waiting = app.footer_for_width(120);
+        assert!(
+            waiting.contains("思考中"),
+            "只有轮次在跑时是「思考中」：{waiting}"
+        );
+
+        // 推一个工具调用，让它处于运行中。
+        app.push_agent_event(&AgentEvent::ToolCallStarted {
+            id: Some("t1".to_string()),
+            name: "shell".to_string(),
+            arguments_json: Some("{\"command\":\"df -h\"}".to_string()),
+        });
+        let running = app.footer_for_width(120);
+        assert!(
+            running.contains("执行中"),
+            "工具在跑时应当是「执行中」：{running}"
+        );
+        assert!(
+            !running.contains("思考中"),
+            "两个阶段不能同时出现：{running}"
+        );
     }
 }

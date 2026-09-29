@@ -700,7 +700,11 @@ impl OnboardingWizard {
     // ─────────── 渲染 ───────────
 
     /// 框内正文（不含圆角框与页脚）
-    fn body_lines(&self, inner_width: usize) -> Vec<Vec<Seg>> {
+    /// 当前一步的正文行（不含外框）。
+    ///
+    /// 用 `pub(crate)` 暴露出来，好让宿主把正文交给 Miyu 那套 `chrome::compose`
+    /// 排版 —— 版面归 chrome，内容归这里，两边不互相抄。
+    pub(crate) fn body_lines(&self, inner_width: usize) -> Vec<Vec<Seg>> {
         let mut lines: Vec<Vec<Seg>> = Vec::new();
         let (current, total) = self.progress();
         if total == 0 {

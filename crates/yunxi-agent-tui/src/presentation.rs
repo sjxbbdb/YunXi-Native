@@ -47,6 +47,25 @@ pub enum TuiCellKind {
     DebugDetail,
 }
 
+/// 推理内容的**摘要**：取头一段，压成一行。
+///
+/// 照搬 Miyu 把推理分成「摘要 / 全文」两档的设计意图：点开看全文，不点开
+/// 也能知道它在往哪儿想。这里不做花哨的摘要算法 —— 推理文本本身就是模型
+/// 写的散文，取首个非空段落并按显示宽度截断，比任何正则都稳。
+pub(crate) fn reasoning_summary(content: &str) -> String {
+    let first = content
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .unwrap_or("")
+        .trim_end_matches(['。', '.', '，', ',']);
+    if first.is_empty() {
+        return "（这段推理没有可显示的内容）".to_string();
+    }
+    // 用照搬进来的 Miyu 文本工具：按**显示宽度**裁，中文不会被切半个。
+    crate::terminal::text::clip_to_display_width(first, 72)
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PresentationDetail {
     pub id: TuiCellId,
@@ -124,6 +143,12 @@ pub struct TuiEvent {
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(crate) struct TuiPresentation {
+    /// 推理要不要以**摘要**形式进转录本。
+    ///
+    /// 默认 `false`：YunXi 的「安静转录本」是刻意的默认（推理只进详情），
+    /// 照搬 Miyu 的摘要档不等于要改掉它。Miyu 那边这一位同样是配置项
+    /// （`ReasoningDisplayMode::from_expand`）。
+    pub(crate) reasoning_expanded: bool,
     next_cell_sequence: u64,
     next_local_turn_sequence: u64,
     next_local_source_sequence: u64,
@@ -136,6 +161,11 @@ pub(crate) struct TuiPresentation {
 }
 
 impl TuiPresentation {
+    /// 推理是否展开为转录本里的一行摘要。
+    pub(crate) fn set_reasoning_expanded(&mut self, enabled: bool) {
+        self.reasoning_expanded = enabled;
+    }
+
     pub(crate) fn set_offline_label(&mut self, enabled: bool) {
         self.offline_label = enabled;
     }
@@ -156,7 +186,22 @@ impl TuiPresentation {
                 return self.present_assistant_message(content, stream.as_ref());
             }
             AgentEvent::Reasoning { content } => {
-                self.debug_only("reasoning", content.clone(), "reasoning")
+                if self.reasoning_expanded {
+                    // 照搬 Miyu 的 `ReasoningDisplayMode` 设计（`render/mod.rs`）：
+                    // 推理默认只给**摘要**，展开才看全文；`Hidden` 那档留给
+                    // 「屏幕只该有正文」的场景。YunXi 原来只有「隐藏」一档
+                    // （推理只进详情），这里补上摘要档，而且**默认仍是隐藏**——
+                    // 「安静转录本」是 YunXi 刻意的默认，不因为照搬而改掉。
+                    self.visible_with_detail(
+                        TuiCellKind::ProgressSummary,
+                        "reasoning",
+                        reasoning_summary(&content),
+                        "reasoning",
+                        content.clone(),
+                    )
+                } else {
+                    self.debug_only("reasoning", content.clone(), "reasoning")
+                }
             }
             AgentEvent::CommandStarted { id, command } => self.tool_event(
                 id.as_deref(),
@@ -277,7 +322,9 @@ impl TuiPresentation {
                 arguments_json
                     .as_ref()
                     .filter(|value| !value.trim().is_empty())
-                    .map(|value| ("tool arguments", value.clone())),
+                    // 进详情视图前脱敏：终端内容会被截图、会进日志，
+                    // 而工具参数里带 token/密钥是常事。
+                    .map(|value| ("tool arguments", crate::redact::redact_secrets(value))),
             ),
             AgentEvent::ToolCallCompleted {
                 id,
@@ -290,7 +337,11 @@ impl TuiPresentation {
                     &display_tool_name(name),
                     phase_from_command_status(*status),
                     TuiCellKind::ToolStatusSummary,
-                    (!output.trim().is_empty()).then(|| ("tool output", output.clone())),
+                    (!output.trim().is_empty()).then(|| {
+                        // 输出和参数是同一类泄露面：`cat .env`、`env`、
+                        // `printenv` 的输出里就是密钥。同一个保守脱敏。
+                        ("tool output", crate::redact::redact_secrets(output))
+                    }),
                 );
                 if let Some(summary) = quiet_output_summary(output)
                     && let Some(update) = event.tool_update.take()
@@ -1488,5 +1539,61 @@ mod tests {
 
         assert_eq!(before_tool.id, after_tool.id);
         assert_eq!(after_tool.visible_text, "after");
+    }
+
+    #[test]
+    fn reasoning_can_be_summarised_into_the_transcript_without_changing_the_default() {
+        let event = AgentEvent::Reasoning {
+            content: "先看用户的目录结构。\n再决定用哪个工具。".to_string(),
+        };
+
+        // 默认（安静转录本）：推理只进详情，转录本上不留行。
+        let mut quiet = TuiPresentation::default();
+        let quiet_event = quiet.present_agent_event(&event);
+        assert_eq!(
+            quiet_event.kind,
+            TuiCellKind::DebugDetail,
+            "默认必须是「安静转录本」——这是 YunXi 刻意的默认，不因照搬而改"
+        );
+
+        // 开了摘要档：转录本上出现一行，全文仍在详情里。
+        let mut expanded = TuiPresentation::default();
+        expanded.set_reasoning_expanded(true);
+        let expanded_event = expanded.present_agent_event(&event);
+        assert_eq!(
+            expanded_event.kind,
+            TuiCellKind::ProgressSummary,
+            "开了摘要档后推理应当以进展行的形式进转录本"
+        );
+        // 摘要本身由 `reasoning_summary` 负责（下面单独测），这里确认
+        // 事件确实带着摘要而不是把全文塞进转录本。
+        let summary = reasoning_summary("先看用户的目录结构。\n再决定用哪个工具。");
+        assert!(
+            summary.contains("先看用户的目录结构"),
+            "摘要要能看出它在往哪儿想：{summary}"
+        );
+        assert!(!summary.contains('\n'), "摘要必须是一行：{summary}");
+        assert!(
+            expanded_event
+                .detail
+                .as_ref()
+                .is_some_and(|detail| detail.content.contains("再决定用哪个工具")),
+            "全文必须留在详情里，点开还能看到"
+        );
+    }
+
+    #[test]
+    fn reasoning_summary_handles_empty_and_unicode_content() {
+        // 空内容不该崩，也不该吐空行 —— 转录本上留一行空白比不显示更糟。
+        assert!(!reasoning_summary("").is_empty());
+        assert!(!reasoning_summary("\n\n   \n").is_empty());
+        // 中文按显示宽度截断，不能切出半个字。
+        let long = "这个问题的关键在于——".repeat(20);
+        let summary = reasoning_summary(&long);
+        assert!(summary.chars().count() > 0);
+        assert!(
+            summary.chars().all(|ch| ch != '\u{fffd}'),
+            "截断切坏了字符：{summary}"
+        );
     }
 }

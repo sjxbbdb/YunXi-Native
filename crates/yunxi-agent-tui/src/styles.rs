@@ -7,6 +7,28 @@ pub(crate) enum TuiColorCapability {
     Monochrome,
 }
 
+impl TuiColorCapability {
+    /// 转成终端层的 [`Theme`](crate::terminal::palette::Theme)。
+    ///
+    /// 星空边栏走的是从 Miyu 照搬来的 `starfield`，它按四档色深降级；
+    /// 这里的映射让边栏和正文**按同一个能力档位**上色，否则 Mono 终端上
+    /// 正文没色、边栏还在发星星。
+    pub(crate) fn theme(self) -> crate::terminal::palette::Theme {
+        use crate::terminal::palette::{Depth, Theme};
+        let depth = match self {
+            TuiColorCapability::Full => Depth::True,
+            TuiColorCapability::Ansi16 => Depth::Ansi16,
+            TuiColorCapability::Monochrome => Depth::Mono,
+        };
+        Theme {
+            depth,
+            ascii: std::env::var("YUNXI_ASCII")
+                .map(|value| value != "0" && !value.is_empty())
+                .unwrap_or(false),
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum TuiSemanticStyle {
     User,
@@ -59,6 +81,11 @@ pub(crate) struct TuiStyleSet {
 impl TuiStyleSet {
     pub(crate) const fn new(capability: TuiColorCapability) -> Self {
         Self { capability }
+    }
+
+    /// 终端层色深。边栏星空等「不语义、纯装饰」的东西按它上色。
+    pub(crate) fn theme(self) -> crate::terminal::palette::Theme {
+        self.capability.theme()
     }
 
     pub(crate) fn detect() -> Self {

@@ -47,6 +47,12 @@ struct Args {
     #[arg(long, value_name = "PATH", default_value = ".")]
     cwd: PathBuf,
 
+    /// 把模型的推理过程以一行摘要显示在会话里（默认不显示）。
+    ///
+    /// 默认关闭是刻意的：转录本只留正文与工具状态，推理进详情。
+    #[arg(long)]
+    reasoning: bool,
+
     /// 强制使用本地离线 Runtime，不调用 Provider。
     #[arg(long)]
     offline: bool,
@@ -254,6 +260,7 @@ async fn main() -> Result<()> {
         provider: selection.provider.clone(),
     })?;
     tui.set_welcome_enabled(banner_enabled)?;
+    tui.set_reasoning_expanded(args.reasoning)?;
     // The checklist is rendered inside the welcome card, so it is only handed to
     // the TUI when the card is on.  "First run" itself is independent of the card:
     // with YUNXI_TUI_BANNER=0 there is no card, and the orientation notice below
