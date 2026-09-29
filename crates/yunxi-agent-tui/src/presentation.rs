@@ -760,7 +760,7 @@ impl TuiPresentation {
         TuiEvent {
             id,
             kind: TuiCellKind::AssistantMessage,
-            visible_text: content.to_string(),
+            visible_text: display_assistant_text(content),
             detail: None,
             stream: Some(TuiStreamState {
                 stable_source: String::new(),
@@ -961,6 +961,26 @@ impl TuiPresentation {
             identity,
             offline_label: self.offline_label,
         })
+    }
+}
+
+/// 离线静态 Runtime 会把一个协议哨兵写在回复开头：
+///
+/// ```text
+/// YunXi autonomous runtime accepted prompt: <用户输入>
+/// ```
+///
+/// 那个字符串是**判据，不是文案**：provider 用 `response_prefix == "…"` 识别静态
+/// 回复，persona 的 extractor 用 `contains("…")` 决定走哪条路，还有 17 处测试断言
+/// 它。所以在源头翻译它会打断这些判断 —— 用户看到的这句话只能在**显示层**换一个
+/// 说法。
+///
+/// `[offline]` 前缀由对话区自己按 `offline_label` 加上，这里不重复标一次离线。
+fn display_assistant_text(content: &str) -> String {
+    const OFFLINE_SENTINEL: &str = "YunXi autonomous runtime accepted prompt:";
+    match content.strip_prefix(OFFLINE_SENTINEL) {
+        Some(rest) => format!("已接收目标：{}", rest.trim_start()),
+        None => content.to_string(),
     }
 }
 
