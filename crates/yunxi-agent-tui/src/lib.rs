@@ -24,6 +24,7 @@ mod timeline_store;
 mod transcript_layout;
 mod viewport;
 pub mod yunxi_starfield;
+pub mod welcome;
 
 pub use app::YunxiTuiBanner;
 pub use bottom_pane::{
