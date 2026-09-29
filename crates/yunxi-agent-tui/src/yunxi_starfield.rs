@@ -12,14 +12,14 @@ use ratatui::style::{Color, Style};
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 
-/// 云熙的独立配色系统（陪伴型、温暖）
+/// 云汐角色配色系统（从角色设定图提取）
 pub type Rgb = (u8, u8, u8);
 
-pub const YUNXI_PRIMARY: Rgb = (0xC8, 0xA8, 0x9C);    // 主色：温柔粉灰
-pub const YUNXI_ACCENT: Rgb = (0xD4, 0xB4, 0xA0);     // 辅色：暖杏色
-pub const YUNXI_WARM: Rgb = (0xE4, 0xD0, 0xC0);       // 温暖浅色
-pub const YUNXI_HIGHLIGHT: Rgb = (0xF0, 0xC8, 0xA8);  // 高亮：温暖橙粉
-pub const YUNXI_SUCCESS: Rgb = (0xA8, 0xC8, 0xB0);    // 成功：柔和绿
+pub const YUNXI_GOLD: Rgb = (0xE8, 0xD4, 0xB8);       // 发色：柔和暖金
+pub const YUNXI_LAVENDER: Rgb = (0xD4, 0xC8, 0xE0);   // 服饰装饰：淡薰衣草
+pub const YUNXI_CREAM: Rgb = (0xF4, 0xF0, 0xE8);      // 服饰主色：奶白
+pub const YUNXI_CYAN: Rgb = (0xB8, 0xD8, 0xD8);       // 眼色：清澈青蓝
+pub const YUNXI_PINK: Rgb = (0xE8, 0xC8, 0xD0);       // 柔和粉色
 pub const YUNXI_TEXT: Rgb = (0x2C, 0x2C, 0x2C);       // 主文字
 pub const YUNXI_DIM: Rgb = (0x88, 0x88, 0x88);        // 次要文字
 pub const YUNXI_INK: Rgb = (0x18, 0x18, 0x18);        // 深色背景
@@ -155,13 +155,13 @@ pub fn star_seg(
 ) -> Seg {
     match star_at(x as u32, y as u32, frame as u32, false, sparsity) {
         Some((glyph, bright)) => {
-            // 温暖色调轮换
+            // 云汐配色轮换：金色、薰衣草、青蓝
             let color = if x % 3 == 0 {
-                YUNXI_PRIMARY
+                YUNXI_GOLD      // 暖金色
             } else if x % 3 == 1 {
-                YUNXI_ACCENT
+                YUNXI_LAVENDER  // 薰衣草
             } else {
-                YUNXI_WARM
+                YUNXI_CYAN      // 清澈青蓝
             };
 
             let final_bright = (bright * scale).clamp(0.0, 1.0);
