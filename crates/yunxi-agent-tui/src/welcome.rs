@@ -7,8 +7,8 @@
 //! - 40ms 一帧的流畅动画
 
 use crate::yunxi_starfield::{
-    BannerArt, Seg, gradient_t, lerp_color, star_seg,
-    YUNXI_SILVER, YUNXI_PURPLE, YUNXI_LAVENDER, YUNXI_INK,
+    BannerArt, Seg, YUNXI_INK, YUNXI_LAVENDER, YUNXI_PURPLE, YUNXI_SILVER, gradient_t, lerp_color,
+    star_seg,
 };
 use ratatui::style::Modifier;
 
@@ -22,7 +22,7 @@ const STAR_PAD_X: usize = 14;
 pub struct WelcomeScene {
     art: BannerArt,
     tick: usize,
-    born: usize,  // 淡入帧数
+    born: usize, // 淡入帧数
 }
 
 impl WelcomeScene {
@@ -151,23 +151,10 @@ impl WelcomeScene {
 
         vec![
             Vec::new(), // 空行
-            self.center(
-                vec![Seg::new(&self.art.subtitle, dim_style)],
-                cols,
-            ),
+            self.center(vec![Seg::new(&self.art.subtitle, dim_style)], cols),
             Vec::new(), // 空行
-            self.center(
-                vec![
-                    Seg::new("直接说出你的想法就好", dim_style),
-                ],
-                cols,
-            ),
-            self.center(
-                vec![
-                    Seg::new("不需要记住任何命令", dim_style),
-                ],
-                cols,
-            ),
+            self.center(vec![Seg::new("直接说出你的想法就好", dim_style)], cols),
+            self.center(vec![Seg::new("不需要记住任何命令", dim_style)], cols),
             Vec::new(), // 空行
             self.center(
                 vec![

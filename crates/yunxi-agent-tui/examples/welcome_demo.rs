@@ -4,7 +4,7 @@
 
 use crossterm::{
     cursor::{Hide, MoveTo, Show},
-    event::{poll, read, Event, KeyCode},
+    event::{Event, KeyCode, poll, read},
     execute,
     style::Print,
     terminal::{
