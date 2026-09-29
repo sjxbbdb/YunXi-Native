@@ -12,14 +12,26 @@ use yunxi_agent_core::{
 use yunxi_agent_persona::{PersonaSettings, yunxi_home_dir};
 use yunxi_agent_provider::ProviderBootstrap;
 use yunxi_agent_runtime::YunXiRuntimeBackend;
+use yunxi_agent_storage::FileSessionStore;
+use yunxi_agent_tools::CompositeToolRuntime;
 use yunxi_agent_tui::{
-    ApprovalRequestView, TuiTickAction, UserInputRequestView, YunxiTui, YunxiTuiBanner,
+    ApprovalRequestView, OnboardingOutcome, OnboardingStep, TuiTickAction, UserInputRequestView,
+    YunxiTui, YunxiTuiBanner,
 };
 
 mod config;
+mod onboarding;
 mod shell;
 
+use onboarding::{OnboardingPaths, WizardDriver};
 use shell::LinuxShellCommand;
+
+/// 开场动画的宿主预算（帧）。
+///
+/// TUI 侧还有自己的全局预算（`WELCOME_ANIMATION_FRAMES` = 120 帧 ≈ 4.0s），
+/// `play_intro()` 取两者的小值，所以这里给 135（≈4.5s）只是表达了
+/// 「方案要求 4-5 秒」的上界，真正的时长以 TUI 的编译期断言为准。
+const INTRO_BUDGET_FRAMES: usize = 135;
 
 #[derive(Debug, Parser)]
 #[command(
@@ -73,13 +85,32 @@ struct ProviderSelection {
 }
 
 impl ProviderSelection {
+    /// shell 子命令用的入口：只看进程环境（保持既有行为不变）。
     fn resolve(config: &AgentConfig, offline: bool, force_live: bool) -> Result<Self> {
+        Self::resolve_with_env(config, offline, force_live, &process_environment)
+    }
+
+    /// 解析本次会话用在线还是离线 Provider。
+    ///
+    /// `env` 是**分层环境查找**：进程环境优先，其次 `~/.config/yunxi/environment`。
+    /// 判据②（[`onboarding::credentials_available`]）已经承认那个文件是合法凭证来源，
+    /// 运行时就必须用同一套来源 —— 否则会出现「判据说已配置、这一秒却按离线跑」
+    /// 的自相矛盾：向导刚把 key 写进文件，用户却发现自己还在静态 Runtime 里。
+    fn resolve_with_env<F>(
+        config: &AgentConfig,
+        offline: bool,
+        force_live: bool,
+        env: &F,
+    ) -> Result<Self>
+    where
+        F: Fn(&str) -> Option<String>,
+    {
         if offline && force_live {
             anyhow::bail!("--offline 与 --live 不能同时使用");
         }
 
-        let bootstrap = ProviderBootstrap::from_agent_config(config);
-        let credentials = bootstrap.credentials_configured();
+        let bootstrap = ProviderBootstrap::from_agent_config_with_env(config, env);
+        let credentials = bootstrap.credentials_configured_with_env(env);
         if force_live && !credentials {
             anyhow::bail!(
                 "在线 Provider {} 未配置凭证；请设置 YUNXI_PROVIDER_API_KEY、DEEPSEEK_API_KEY 或 OPENAI_API_KEY",
@@ -110,6 +141,21 @@ impl ProviderSelection {
                 "static".to_string()
             },
         })
+    }
+}
+
+/// 宿主侧看到的向导就是 TUI 的那一个入口（方案第三节「宿主导入接口」）。
+///
+/// 这层 `impl` 里没有任何逻辑：步骤怎么排、验证失败怎么重试、跳过提示什么，
+/// 全在 `onboarding` 模块里，换成假向导就能单测。这里只做转发，
+/// 加上「验证失败要说给用户听」这一件事（`push_warning` 落在会话区）。
+impl WizardDriver for YunxiTui {
+    fn run_onboarding(&mut self, steps: Vec<OnboardingStep>) -> Result<OnboardingOutcome> {
+        YunxiTui::run_onboarding(self, steps)
+    }
+
+    fn report_retry(&mut self, message: &str) -> Result<()> {
+        self.push_warning(message)
     }
 }
 
@@ -145,13 +191,60 @@ async fn main() -> Result<()> {
         base_config.model = Some(model.clone());
     }
 
-    let selection = ProviderSelection::resolve(&base_config, args.offline, args.live)?;
+    let mut tui = YunxiTui::enter().context("无法进入终端 TUI；请在真实终端中运行")?;
+    let banner_enabled = tui_banner_enabled();
+
+    // ── 首次配置向导 ────────────────────────────────────────────────
+    //
+    // 方案第一节：三者全满足才算「已配置」——
+    //   ① `~/.local/state/yunxi/onboarding-complete`（新标记，不复用 first-run-complete）
+    //   ② Provider 凭证（进程环境或 `~/.config/yunxi/environment`）
+    //   ③ `PersonaSettings` 存在（人格选过）
+    // 未配置就走向导；`YUNXI_TUI_BANNER=0` 时整个开场（向导 + 动画）都不出现。
+    let onboarding_paths = OnboardingPaths::resolve(&paths.xdg_state);
+    let onboarding_status = onboarding::detect_from_process(&onboarding_paths);
+    let mut onboarding_notice: Option<String> = None;
+    if banner_enabled && !onboarding_status.is_configured() {
+        match onboarding::run_first_time_flow(&mut tui, &onboarding_paths, &cwd, |probe| {
+            let cwd = cwd.clone();
+            async move { onboarding::verify_provider(&probe, &cwd).await }
+        })
+        .await?
+        {
+            onboarding::FlowOutcome::Completed(report) => {
+                onboarding_notice = Some(onboarding::completion_notice(&report));
+            }
+            // 跳过不写任何东西（包括完成标记），只把「哪些没配、后果、怎么补」讲清楚。
+            onboarding::FlowOutcome::Skipped(report) => {
+                onboarding_notice = Some(report.notice);
+            }
+        }
+    }
+
+    // 向导可能刚把凭证写进 environment 文件，运行时按同一套来源重新解析一次。
+    let environment_vars = onboarding::read_environment_vars(&onboarding_paths.environment_file);
+    let env_lookup = |name: &str| -> Option<String> {
+        std::env::var(name)
+            .ok()
+            .filter(|value| !value.trim().is_empty())
+            .or_else(|| environment_vars.get(name).cloned())
+    };
+
+    let selection =
+        ProviderSelection::resolve_with_env(&base_config, args.offline, args.live, &env_lookup)?;
     let backend = if selection.live {
-        YunXiRuntimeBackend::for_workspace_with_live_provider(&cwd, &base_config)
+        // 与 `for_workspace_with_live_provider` 同一条装配路径，只是把凭证来源
+        // 换成「进程环境 + environment 文件」，这样向导写完 key 当场就能用上。
+        let bootstrap = ProviderBootstrap::from_agent_config_with_env(&base_config, &env_lookup);
+        YunXiRuntimeBackend::with_parts(
+            bootstrap.into_openai_transport_provider(),
+            CompositeToolRuntime::default(),
+            FileSessionStore::for_workspace(&cwd),
+        )
+        .with_inherited_child_provider()
     } else {
         YunXiRuntimeBackend::for_workspace(&cwd)
     };
-    let mut tui = YunxiTui::enter().context("无法进入终端 TUI；请在真实终端中运行")?;
     tui.set_banner(YunxiTuiBanner {
         cwd: cwd.display().to_string(),
         backend: "yunxi-linux".to_string(),
@@ -160,7 +253,6 @@ async fn main() -> Result<()> {
         model: selection.model.clone(),
         provider: selection.provider.clone(),
     })?;
-    let banner_enabled = tui_banner_enabled();
     tui.set_welcome_enabled(banner_enabled)?;
     // The checklist is rendered inside the welcome card, so it is only handed to
     // the TUI when the card is on.  "First run" itself is independent of the card:
@@ -183,6 +275,20 @@ async fn main() -> Result<()> {
             "linux",
             "本机为 Linux 原生 TUI · /help 查看命令 · 不含 Web / 语音 / 微信模块",
         )?;
+    }
+
+    // ── 开场动画 ────────────────────────────────────────────────────
+    //
+    // 方案第一节：已配置（或刚配完）→ 4-5 秒开场动画（任意键跳过）→ 会话界面。
+    // 动画预算由 TUI 侧决定（编译期断言 4-5 秒），这里只写宿主的追加上限。
+    // `YUNXI_TUI_BANNER=0` 时既没有欢迎卡也没有动画，宿主连调都不调。
+    if banner_enabled {
+        let _skipped = tui.play_intro(INTRO_BUDGET_FRAMES)?;
+    }
+    // 向导的结论放在动画之后说：先让开场把界面带进会话态，再把「配好了什么」
+    // 或「跳过了什么、代价是什么」留在最上面这一条。
+    if let Some(notice) = onboarding_notice {
+        tui.push_notice("onboarding", &notice)?;
     }
 
     let mut session_id: Option<String> = None;
@@ -297,6 +403,11 @@ fn restrict_directory_permissions(path: &std::path::Path) -> Result<()> {
     }
     let _ = path;
     Ok(())
+}
+
+/// 真实进程环境（shell 子命令那条路径用的就是它，语义与改动前一致）。
+fn process_environment(name: &str) -> Option<String> {
+    std::env::var(name).ok()
 }
 
 fn tui_banner_enabled() -> bool {
@@ -575,7 +686,8 @@ mod tests {
     #[test]
     fn offline_mode_never_selects_a_live_provider() {
         let config = AgentConfig::new(".").with_provider("deepseek");
-        let selection = ProviderSelection::resolve(&config, true, false).expect("offline mode");
+        let selection = ProviderSelection::resolve_with_env(&config, true, false, &no_environment)
+            .expect("offline mode");
 
         assert!(!selection.live);
         assert_eq!(selection.source, "forced_offline");
@@ -586,10 +698,38 @@ mod tests {
     #[test]
     fn live_and_offline_flags_are_rejected_together() {
         let config = AgentConfig::new(".");
-        let error = ProviderSelection::resolve(&config, true, true)
+        let error = ProviderSelection::resolve_with_env(&config, true, true, &no_environment)
             .expect_err("conflicting provider flags must fail");
 
         assert!(error.to_string().contains("不能同时使用"));
+    }
+
+    /// 测试用的空环境：不读进程环境，也不读 environment 文件。
+    fn no_environment(_name: &str) -> Option<String> {
+        None
+    }
+
+    /// 只提供 `YUNXI_PROVIDER_API_KEY` 的假环境（模拟 environment 文件里的凭证）。
+    fn key_only(name: &str) -> Option<String> {
+        (name == onboarding::ENV_API_KEY).then(|| "sk-from-file".to_string())
+    }
+
+    #[test]
+    fn provider_selection_honours_credentials_from_the_environment_file() {
+        let config = AgentConfig::new(".");
+
+        // 进程环境与文件都没有 → 离线
+        let offline = ProviderSelection::resolve_with_env(&config, false, false, &no_environment)
+            .expect("auto offline");
+        assert!(!offline.live);
+        assert_eq!(offline.source, "auto_offline");
+
+        // 判据②承认 environment 文件是凭证来源，运行时就必须认它
+        let live = ProviderSelection::resolve_with_env(&config, false, false, &key_only)
+            .expect("auto live");
+        assert!(live.live);
+        assert_eq!(live.source, "auto_live");
+        assert_ne!(live.provider, "offline");
     }
 
     #[test]

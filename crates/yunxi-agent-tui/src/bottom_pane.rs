@@ -436,13 +436,15 @@ fn format_paste_summary(value: &str) -> Option<String> {
 }
 
 pub(crate) fn composer_desired_height(prompt: &str, buffer: &str, width: usize) -> u16 {
-    let inner_width = width.saturating_sub(2).max(1);
+    // 去框：可用宽度不再减去左右各 1 列的边框。
+    let inner_width = width.max(1);
     let prompt_width = TextLayout::measure(prompt);
     let body_width = inner_width.saturating_sub(prompt_width).max(1);
     let display_rows = TextLayout::wrap(buffer, body_width, WrapPolicy::CodeBlock)
         .len()
         .max(1);
-    3u16.saturating_add(display_rows.min(6) as u16)
+    // 内容行 + 页脚 1 行；不再有上下边框的 2 行。
+    1u16.saturating_add(display_rows.min(6) as u16)
 }
 
 impl ApprovalRequestView {
@@ -568,7 +570,7 @@ mod tests {
     fn empty_composer_uses_compact_height() {
         let pane = BottomPane::default();
 
-        assert_eq!(pane.desired_height_for_width(58), 4);
+        assert_eq!(pane.desired_height_for_width(58), 2);
     }
 
     #[test]
@@ -597,8 +599,8 @@ mod tests {
         let mut pane = BottomPane::default();
         pane.paste("这是一段很长的中文输入用于验证窄终端自动换行高度不会覆盖底部提示");
 
-        assert!(pane.desired_height_for_width(58) > 4);
-        assert!(pane.desired_height_for_width(58) <= 9);
+        assert!(pane.desired_height_for_width(58) > 2);
+        assert!(pane.desired_height_for_width(58) <= 7);
     }
 
     #[test]

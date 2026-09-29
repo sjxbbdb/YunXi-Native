@@ -7,7 +7,8 @@ use crate::bottom_pane::{
 use crate::frame::{DEFAULT_MIN_FRAME_INTERVAL, RedrawPriority, RedrawReason, RedrawScheduler};
 use crate::input_map::{FocusTarget, TuiAction, resolve_event, resolve_key};
 use crate::layout::{compute_layout, rect_contains};
-use crate::render::render_tui_frame;
+use crate::onboarding::{OnboardingOutcome, OnboardingStep, OnboardingWizard};
+use crate::render::{render_onboarding_screen, render_tui_frame};
 use crate::scrollbar::{ScrollbarHit, TranscriptScrollbarGeometry};
 use crate::transcript_layout::{WrappedTranscript, build_wrapped_transcript};
 use anyhow::Result;
@@ -48,6 +49,10 @@ pub enum TuiTickAction {
 /// 直接复用 `RedrawScheduler` 的最小帧间隔：这样每次超时都刚好越过合并阈值，
 /// 不会出现"动画推进了一帧、重绘却被节流丢掉"的空转。
 const IDLE_ANIMATION_TICK: Duration = DEFAULT_MIN_FRAME_INTERVAL;
+
+/// 向导等待按键的节拍。比动画节拍宽，因为向导期间屏幕是静止的，
+/// 只需要在窗口 resize 后有机会重画。
+const ONBOARDING_POLL_TIMEOUT: Duration = Duration::from_millis(120);
 
 impl YunxiTui {
     pub fn enter() -> Result<Self> {
@@ -273,6 +278,78 @@ impl YunxiTui {
         }
     }
 
+    /// 播一次开场动画；任意键跳过。返回是否被跳过。
+    ///
+    /// 用户要求：已配置完成时，每次 Super+T 都先播约 4-5 秒的开场动画，然后直接进会话界面。
+    ///
+    /// 语义：
+    /// - 进入后按 `IDLE_ANIMATION_TICK`（`RedrawScheduler` 的最小帧间隔 33.334ms）推进动画帧
+    ///   并重绘，直到**帧数用完**（总预算见 `WELCOME_ANIMATION_FRAMES`，120 帧 ≈ 4.0s；
+    ///   `budget_frames` 只是宿主的追加上限，两者取小）或**用户按任意键**；
+    /// - 返回 `Ok(true)` = 被跳过，`Ok(false)` = 正常播完（也包含"本来就没有开场可播"：
+    ///   `YUNXI_TUI_BANNER=0`、已有对话、或开场已经结束，此时立刻返回，不空转 4 秒）；
+    /// - **不吞用户的按键**：用于跳过的那次按键被这里消费掉，不会当成输入框内容
+    ///   （判据见 `is_intro_skip_key()`，纯修饰键与 Release 不算跳过）；
+    /// - 播完后不残留欢迎卡：`finish_welcome_intro()` 置位「开场已结束」，
+    ///   `render.rs` 随即改画干净的会话区 + 输入框。
+    ///
+    /// 与空闲路径的关系：`read_prompt()` 的超时轮询走的是同一个帧预算与同一个
+    /// `tick_welcome()`。所以谁先跑都行 —— 宿主不调用 `play_intro` 时，
+    /// 空闲等待那段时间自然把开场播完（并同样在播完后撤下欢迎卡）；
+    /// 宿主调用了 `play_intro`，`read_prompt()` 里的轮询就无事可做，直接阻塞读。
+    /// 跑一次配置向导，返回用户是走完了还是跳过了。
+    ///
+    /// 向导**不经过 `YunxiTuiApp`**：它没有会话、没有输入框、没有底部面板，
+    /// 而且必须在**任何会话开始之前**跑完，所以这里是自己一条「渲染 → 等键 →
+    /// 交给向导」的循环，借用的只是终端的 draw 通道与调度器的节流记录。
+    ///
+    /// 为什么不复用 `read_prompt`：那是「读一行文本」，而向导要的是**逐键**
+    /// 处理（选项要按方向键切、密码要逐字符编辑）。两者的事件粒度不同。
+    ///
+    /// 返回值就是向导的结论，宿主据此决定落盘与否；这里不碰文件系统。
+    pub fn run_onboarding(&mut self, steps: Vec<OnboardingStep>) -> Result<OnboardingOutcome> {
+        let mut wizard = OnboardingWizard::new(steps);
+        loop {
+            self.terminal
+                .draw(|frame| render_onboarding_screen(frame, &wizard))
+                .map(|_| ())?;
+            self.frame.record_draw(Instant::now());
+            // 超时只是回头重画一帧（窗口可能被 resize），不推进任何状态。
+            if poll(ONBOARDING_POLL_TIMEOUT)? {
+                let event = read()?;
+                if let Event::Key(key) = event
+                    && let Some(outcome) = wizard.handle_key(key)
+                {
+                    return Ok(outcome);
+                }
+            }
+        }
+    }
+
+    pub fn play_intro(&mut self, budget_frames: usize) -> Result<bool> {
+        if !self.app.welcome_animation_pending() {
+            // 没有开场可播：立刻收尾并重绘一次，保证屏幕是会话界面而不是残留的欢迎卡。
+            if self.app.finish_welcome_intro() {
+                self.request_draw_now()?;
+            }
+            return Ok(false);
+        }
+        self.windows_input_burst.reset();
+        // 先画第一帧：进入 `play_intro()` 之前屏幕可能还是上一次的旧画面。
+        self.request_redraw(RedrawReason::StatusChanged)?;
+        self.flush_frame(Instant::now())?;
+        let mut next_event = |timeout: Duration| -> Result<Option<Event>> {
+            if poll(timeout)? {
+                Ok(Some(read()?))
+            } else {
+                Ok(None)
+            }
+        };
+        // `YunxiTui` 自己实现 `IntroPlayback`，这样 `self` 只被借出一次，
+        // 循环里既能推进动画也能重绘，不需要把 `app` / `terminal` / `frame` 拆开借。
+        run_intro_loop(self, budget_frames, &mut next_event)
+    }
+
     /// 空闲等待输入时推进一帧欢迎动画，动画还想继续时立刻重绘。
     ///
     /// 重绘走的是回合内 `tick()` 的同一条 `RedrawReason::StatusChanged` 通道
@@ -280,7 +357,14 @@ impl YunxiTui {
     /// 就不会再产生任何重绘请求。
     fn tick_idle_welcome(&mut self) -> Result<()> {
         if self.app.tick_welcome() {
-            self.frame.request(RedrawReason::StatusChanged);
+            // 花掉最后一帧时 `intro_finished` 会置位，画面要从欢迎卡换成会话界面：
+            // 这一帧必须画出去，不能只挂一个会被节流合并的请求就回去继续等输入。
+            let reason = if self.app.intro_finished() {
+                RedrawReason::InputChanged
+            } else {
+                RedrawReason::StatusChanged
+            };
+            self.frame.request(reason);
             self.flush_frame(Instant::now())?;
         }
         Ok(())
@@ -455,6 +539,143 @@ impl YunxiTui {
 fn idle_animation_poll_timeout(app: &YunxiTuiApp) -> Option<Duration> {
     app.welcome_animation_pending()
         .then_some(IDLE_ANIMATION_TICK)
+}
+
+/// 开场动画里"任意键跳过"的判据：这次按键该不该算成跳过信号。
+///
+/// 只把**非修饰键的按下**当作跳过信号，理由是纯修饰键（按 Shift / Ctrl / Alt /
+/// Super 本身）在终端里会先来一个独立的 `KeyCode`，用户按下 `Ctrl+Shift+A` 时
+/// 中途经过的那一下修饰键不该提前结束开场。
+///
+/// - `KeyCode::Char(ch)` 只在 `SHIFT` 之外的修饰键全空、且字符是大写 ASCII 时才算修饰键
+///   （crossterm 把大写字母表示成 `Char('A') + SHIFT`，不能把它误判成"按了 Shift"）；
+/// - `KeyEventKind::Release` 用来配对 `Press`，不重复触发跳过。
+///
+/// **不吞按键**：跳过用的这次按键被 `play_intro()` 直接消费掉，不会转给输入框，
+/// 所以"按下去的那一下"只用来结束开场，不会在 composer 里留下一个字符。
+fn is_intro_skip_key(key: &KeyEvent) -> bool {
+    if key.kind == KeyEventKind::Release {
+        return false;
+    }
+    let modifier_only = match key.code {
+        KeyCode::Char(ch) => {
+            // 终端把"单独按 Shift"报成 `Char('A') + SHIFT`，就这一个组合要排掉；
+            // 任何别的组合都是用户在主动敲键（包括 `Ctrl+Shift+A`）。
+            key.modifiers == KeyModifiers::SHIFT && ch.is_ascii_uppercase()
+        }
+        KeyCode::BackTab => true,
+        KeyCode::Null
+        | KeyCode::CapsLock
+        | KeyCode::ScrollLock
+        | KeyCode::NumLock
+        | KeyCode::PrintScreen
+        | KeyCode::Pause
+        | KeyCode::Menu
+        | KeyCode::KeypadBegin
+        | KeyCode::Media(_)
+        | KeyCode::Modifier(_) => true,
+        _ => false,
+    };
+    !modifier_only
+}
+
+/// `run_intro_loop` 需要的宿主能力：推进一帧、观察事件、收尾那一帧。
+///
+/// 抽成 trait 之后开场循环可以脱离真实终端单测（见 `host.rs` 的测试与
+/// `YunxiTui` 的实现），也避免把 `app` / `frame` / `terminal` 三个字段拆开借。
+trait IntroPlayback {
+    fn app_mut(&mut self) -> &mut YunxiTuiApp;
+    /// 推进动画的**一帧**：`tick_welcome()` 返回 `false` 就说明预算已尽，
+    /// 此时不重绘、返回 `false`。返回 `true` 表示这一帧已经画出去。
+    fn advance_one_frame(&mut self) -> Result<bool>;
+    /// 把等到的原始事件喂给输入突发检测（粘贴换行的判定靠它）。
+    fn observe_event(&mut self, event: &Event);
+    /// 只请求重绘、不推进动画（开场期间收到的非按键事件，比如窗口缩放）。
+    fn redraw_only(&mut self) -> Result<()>;
+    /// 开场结束时会话界面那一帧（不占动画预算）。
+    fn finish_intro(&mut self) -> Result<()>;
+}
+
+impl IntroPlayback for YunxiTui {
+    fn app_mut(&mut self) -> &mut YunxiTuiApp {
+        &mut self.app
+    }
+
+    /// 与回合内的 `tick()` 走同一条 `RedrawReason::StatusChanged` 通道与同一个
+    /// `RedrawScheduler` 节流，所以不会出现"动画推进了一帧、重绘却被节流丢掉"的空转。
+    /// 最后一帧（`tick_welcome()` 返回 `true` 但预算刚好花完）也照画，
+    /// 收尾的"撤下欢迎卡"由 `finish_intro()` 再补一帧。
+    fn advance_one_frame(&mut self) -> Result<bool> {
+        if !self.app.tick_welcome() {
+            return Ok(false);
+        }
+        self.frame.request(RedrawReason::StatusChanged);
+        self.flush_frame(Instant::now())?;
+        Ok(true)
+    }
+
+    fn observe_event(&mut self, event: &Event) {
+        let _ = self.windows_input_burst.observe(event, Instant::now());
+    }
+
+    fn redraw_only(&mut self) -> Result<()> {
+        self.request_redraw(RedrawReason::StatusChanged)
+    }
+
+    fn finish_intro(&mut self) -> Result<()> {
+        // `InputChanged` 是立即优先级：欢迎卡撤下这一帧必须真的画出去，
+        // 不能被"最近的绘制还没到 33ms"合并掉。
+        self.request_redraw(RedrawReason::InputChanged)
+    }
+}
+
+/// 开场动画的驱动循环：按节拍推进帧并重绘，直到帧数用完或用户按键。
+///
+/// 从 `YunxiTui::play_intro()` 里拆出来是为了能单测：`next_event` 就是"等下一个终端事件"
+/// （真实实现是 `crossterm::poll` 超时 + `read`），单测用闭包模拟"第 N 个节拍来了个按键"，
+/// 播放器换成记录用的假实现 —— 不需要真终端。
+///
+/// `budget_frames` 是宿主给的追加上限，与全局预算取小；`0` 也至少播一帧，
+/// 语义是"播一次"而不是"不播"。
+///
+/// 返回 `Ok(true)` = 被按键跳过，`Ok(false)` = 正常播完。
+fn run_intro_loop(
+    playback: &mut impl IntroPlayback,
+    budget_frames: usize,
+    next_event: &mut impl FnMut(Duration) -> Result<Option<Event>>,
+) -> Result<bool> {
+    let frame_limit = budget_frames
+        .max(1)
+        .min(playback.app_mut().welcome_intro_remaining_frames());
+    let mut frames_played = 0usize;
+    let mut skipped = false;
+    while frames_played < frame_limit {
+        match next_event(IDLE_ANIMATION_TICK)? {
+            // 等满一个节拍没人按键：推进一帧并重绘。
+            None => match playback.advance_one_frame() {
+                Ok(true) => frames_played += 1,
+                // 预算已经被别处花完（比如空闲路径先播过）：不再空转。
+                Ok(false) => break,
+                Err(error) => return Err(error),
+            },
+            Some(event) => {
+                playback.observe_event(&event);
+                if let Event::Key(key) = event
+                    && is_intro_skip_key(&key)
+                {
+                    skipped = true;
+                    break;
+                }
+                // 别的事件（窗口缩放等）只是顺手重绘一帧，不吃动画预算。
+                playback.redraw_only()?;
+            }
+        }
+    }
+    // 无论播完还是跳过，开场都到此为止：欢迎卡撤下，进会话界面。
+    if playback.app_mut().finish_welcome_intro() {
+        playback.finish_intro()?;
+    }
+    Ok(skipped)
 }
 
 fn should_render_submitted_user_prompt(value: &str) -> bool {
@@ -967,10 +1188,175 @@ impl Drop for TerminalGuard {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app::WELCOME_ANIMATION_FRAMES;
     use crate::bottom_pane::BottomPaneMode;
     use crossterm::Command;
     use crossterm::style::ResetColor;
     use crossterm::terminal::SetSize;
+
+    /// 开场动画的假播放器：不碰终端，只记录被画了几帧。
+    ///
+    /// 这样 `run_intro_loop()` 的"何时推进、何时被跳过、何时收尾"可以在单测里钉死 ——
+    /// 真机抓屏验证的是同一段状态机（见 T2 的 pyte 证据）。
+    #[derive(Default)]
+    struct FakeIntroPlayback {
+        app: YunxiTuiApp,
+        frames_drawn: usize,
+        events_observed: usize,
+        finish_frames: usize,
+    }
+
+    impl IntroPlayback for FakeIntroPlayback {
+        fn app_mut(&mut self) -> &mut YunxiTuiApp {
+            &mut self.app
+        }
+
+        fn advance_one_frame(&mut self) -> Result<bool> {
+            if !self.app.tick_welcome() {
+                return Ok(false);
+            }
+            self.frames_drawn += 1;
+            Ok(true)
+        }
+
+        fn observe_event(&mut self, _event: &Event) {
+            self.events_observed += 1;
+        }
+
+        fn redraw_only(&mut self) -> Result<()> {
+            Ok(())
+        }
+
+        fn finish_intro(&mut self) -> Result<()> {
+            self.finish_frames += 1;
+            Ok(())
+        }
+    }
+
+    /// 造一个"每 `key_at` 次 poll 超时后来了一个按键"的事件源；`None` 表示一直没人按键。
+    fn key_after_timeouts(
+        key_at: Option<usize>,
+        key: KeyEvent,
+    ) -> impl FnMut(Duration) -> Result<Option<Event>> {
+        let mut timeouts = 0usize;
+        move |_timeout: Duration| {
+            timeouts += 1;
+            match key_at {
+                Some(at) if timeouts == at => Ok(Some(Event::Key(key))),
+                _ => Ok(None),
+            }
+        }
+    }
+
+    fn press(code: KeyCode, modifiers: KeyModifiers) -> KeyEvent {
+        KeyEvent::new(code, modifiers)
+    }
+
+    #[test]
+    fn intro_plays_the_bounded_budget_when_nobody_presses_a_key() {
+        // 用户不按键 = 安静看完开场：帧数走满预算，然后**撤下欢迎卡**进会话界面。
+        let mut playback = FakeIntroPlayback::default();
+        let mut next_event =
+            key_after_timeouts(None, press(KeyCode::Char('a'), KeyModifiers::NONE));
+        let skipped =
+            run_intro_loop(&mut playback, usize::MAX, &mut next_event).expect("intro playback");
+
+        assert!(!skipped, "没人按键就不算跳过");
+        assert_eq!(playback.frames_drawn, WELCOME_ANIMATION_FRAMES);
+        assert_eq!(
+            playback.finish_frames, 0,
+            "自然播完时 `tick_welcome()` 已经置位并画了最后一帧，不需要补帧"
+        );
+        assert!(
+            playback.app.intro_finished(),
+            "播完必须置位「开场已结束」，否则欢迎卡会停在最后一帧"
+        );
+        assert!(!playback.app.welcome_animation_pending());
+    }
+
+    #[test]
+    fn intro_stops_on_the_first_ordinary_key_press_and_is_not_swallowed() {
+        // 用户敲键 = 立刻跳过：只画到那一刻为止，剩下的预算不再消耗，
+        // 并且那次按键不进输入框（它被 `play_intro()` 消费，只用于结束开场）。
+        let mut playback = FakeIntroPlayback::default();
+        let mut next_event =
+            key_after_timeouts(Some(5), press(KeyCode::Char('你'), KeyModifiers::NONE));
+        let skipped =
+            run_intro_loop(&mut playback, usize::MAX, &mut next_event).expect("intro playback");
+
+        assert!(skipped, "普通按键必须被当成跳过信号");
+        assert_eq!(playback.events_observed, 1);
+        assert_eq!(
+            playback.frames_drawn, 4,
+            "第 5 个节拍才按键，之前只画了 4 帧"
+        );
+        assert!(
+            playback.frames_drawn < WELCOME_ANIMATION_FRAMES,
+            "跳过要立刻生效"
+        );
+        assert_eq!(playback.finish_frames, 1);
+        assert!(playback.app.intro_finished());
+        assert!(
+            playback
+                .app
+                .bottom_pane()
+                .composer_buffer()
+                .text()
+                .is_empty(),
+            "跳过用的那次按键不能被当成输入框内容"
+        );
+    }
+
+    #[test]
+    fn intro_ignores_bare_modifier_keys_and_releases() {
+        // 纯修饰键不算跳过信号：`Ctrl+Shift+A` 中途经过的 Shift 不该结束开场。
+        // 终端把单独按下的 Shift 报成 `Char('A') + SHIFT`（大写字母就是这么来的），
+        // 这个特例必须排掉，否则"按 Shift 想输入大写"会被误判成跳过。
+        let mut shift_alone = press(KeyCode::Char('A'), KeyModifiers::SHIFT);
+        shift_alone.kind = KeyEventKind::Press;
+        assert!(!is_intro_skip_key(&shift_alone), "单独按 Shift 只是修饰键");
+        // 锁键 / 多媒体键 / 空键码同理：它们本身不产生字符。
+        for event in [
+            press(KeyCode::Null, KeyModifiers::NONE),
+            press(KeyCode::PrintScreen, KeyModifiers::NONE),
+            press(KeyCode::CapsLock, KeyModifiers::NONE),
+        ] {
+            assert!(!is_intro_skip_key(&event), "不该被当成跳过信号: {event:?}");
+        }
+        // 松键（Release）只是按下（Press）的配对，不该重复触发。
+        let mut release = press(KeyCode::Char('a'), KeyModifiers::NONE);
+        release.kind = KeyEventKind::Release;
+        assert!(!is_intro_skip_key(&release), "Release 只是 Press 的配对");
+
+        // 普通按键、Enter、Esc、Ctrl+C、方向键都算：用户想跳过时不该有"按了没反应"的键。
+        // 带修饰键的真实按键（`Ctrl+Shift+A`）也算 —— 它是用户的主动输入。
+        for event in [
+            press(KeyCode::Char('你'), KeyModifiers::NONE),
+            press(KeyCode::Char('A'), KeyModifiers::NONE),
+            press(
+                KeyCode::Char('A'),
+                KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+            ),
+            press(KeyCode::Enter, KeyModifiers::NONE),
+            press(KeyCode::Esc, KeyModifiers::NONE),
+            press(KeyCode::Char('c'), KeyModifiers::CONTROL),
+            press(KeyCode::Left, KeyModifiers::NONE),
+        ] {
+            assert!(is_intro_skip_key(&event), "应当算跳过信号: {event:?}");
+        }
+    }
+
+    #[test]
+    fn intro_does_nothing_when_there_is_no_welcome_card_to_play() {
+        // `YUNXI_TUI_BANNER=0`：没有欢迎卡就没有开场，不空转 4 秒。
+        let mut app = YunxiTuiApp::default();
+        app.set_welcome_enabled(false);
+        assert_eq!(
+            app.welcome_intro_remaining_frames(),
+            WELCOME_ANIMATION_FRAMES
+        );
+        assert_eq!(idle_animation_poll_timeout(&app), None);
+    }
 
     #[test]
     fn idle_prompt_polls_only_while_the_welcome_animation_is_on_screen() {
@@ -1162,7 +1548,7 @@ mod tests {
                 &app,
             )
             .visible_height,
-            10
+            13
         );
         assert_eq!(
             transcript_metrics_for_size(

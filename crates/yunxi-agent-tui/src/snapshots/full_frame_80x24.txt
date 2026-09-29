@@ -1,24 +1,24 @@
 00|云熙 | deepseek-chat-ultra-long-model-name | 运行中
 01|↓ 有新输出 · End 回到最新
-02|────────────────────────────────────────────────────────────────────────────────
-03|┌对话 29-43 / 51───────────────────────────────────────────────────────────────┐
-04|│[提示] history 28: stable transcript row for viewport evidence                ^
-05|│[提示] history 29: stable transcript row for viewport evidence                ║
-06|│[提示] history 30: stable transcript row for viewport evidence                ║
-07|│[提示] history 31: stable transcript row for viewport evidence                ║
-08|│[提示] history 32: stable transcript row for viewport evidence                ║
-09|│[提示] history 33: stable transcript row for viewport evidence                ║
-10|│[提示] history 34: stable transcript row for viewport evidence                ║
-11|│[提示] history 35: stable transcript row for viewport evidence                ║
-12|│[你] Keep the current history position while the answer streams.              █
-13|│[云熙·] 国際化 layout 中文かな keeps one active cell with emoji 👩‍💻 and é.     █
-14|│    URL https://very-long.example.test/api/v1/items?search=中文&sort=desc#    █
-15|│    results                                                                   █
-16|│    Windows C:\Users\24763\YunXi Agent\输出目录\very-long-file-name.txt       █
-17|│    ```rust                                                                   ║
-18|│        let greeting = "你好、世界"; // 日本語と中文                          v
-19|└──────────────────────────────────────────────────────────────────────────────┘
-20|┌输入──────────────────────────────────────────────────────────────────────────┐
-21|│yunxi> 入力 中文かな 👩‍💻 é                                                     │
-22|│End 回到最新 | 有新输出 | wheel/drag history                                  │
-23|└──────────────────────────────────────────────────────────────────────────────┘
+02|对话 33-51 / 59                                                                ^
+03|  history 24: stable transcript row for viewport evidence                      ║
+04|  history 25: stable transcript row for viewport evidence                      ║
+05|  history 26: stable transcript row for viewport evidence                      ║
+06|  history 27: stable transcript row for viewport evidence                      ║
+07|  history 28: stable transcript row for viewport evidence                      ║
+08|  history 29: stable transcript row for viewport evidence                      ║
+09|  history 30: stable transcript row for viewport evidence                      ║
+10|  history 31: stable transcript row for viewport evidence                      ║
+11|  history 32: stable transcript row for viewport evidence                      ║
+12|  history 33: stable transcript row for viewport evidence                      █
+13|  history 34: stable transcript row for viewport evidence                      █
+14|  history 35: stable transcript row for viewport evidence                      █
+15|› Keep the current history position while the answer streams.                  █
+16|▌ 国際化 layout 中文かな keeps one active cell with emoji 👩‍💻 and é.            █
+17|  URL https://very-long.example.test/api/v1/items?search=中文&sort=desc#       █
+18|    results                                                                    █
+19|  Windows C:\Users\24763\YunXi Agent\输出目录\very-long-file-name.txt          ║
+20|  ```rust                                                                      v
+21|yunxi> 入力 中文かな 👩‍💻 é
+22|End 回到最新 | 有新输出 | wheel/drag history
+23|

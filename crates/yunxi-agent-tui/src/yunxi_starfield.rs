@@ -13,14 +13,14 @@ use ratatui::style::{Color, Style};
 /// 云熙角色配色系统（从角色设定图提取）
 pub type Rgb = (u8, u8, u8);
 
-pub const YUNXI_SILVER: Rgb = (0xE0, 0xE0, 0xE8); // 发色：银白带蓝紫调
-pub const YUNXI_PURPLE: Rgb = (0xC8, 0xB0, 0xD8); // 主色：柔和紫色
-pub const YUNXI_LAVENDER: Rgb = (0xD8, 0xC8, 0xE0); // 浅紫/薰衣草
+pub const YUNXI_SILVER: Rgb = (0xDC, 0xDC, 0xF2); // 角色衣物高光（设定图 #d8d8f0）—— 冷白偏蓝
+pub const YUNXI_PURPLE: Rgb = (0x85, 0x85, 0xD6); // 强调色：取自角色眼睛/发丝高光，H=240° 更饱和
+pub const YUNXI_LAVENDER: Rgb = (0xA8, 0xA8, 0xC4); // 角色衣物中间调（设定图 #a8a8c0）
 pub const YUNXI_WHITE: Rgb = (0xF0, 0xF0, 0xF4); // 服饰白色
-pub const YUNXI_PINK: Rgb = (0xE0, 0xC0, 0xD0); // 紫粉色
-pub const YUNXI_TEXT: Rgb = (0x2C, 0x2C, 0x2C); // 主文字
-pub const YUNXI_DIM: Rgb = (0x88, 0x88, 0x88); // 次要文字
-pub const YUNXI_INK: Rgb = (0x18, 0x18, 0x18); // 深色背景
+pub const YUNXI_PINK: Rgb = (0x8E, 0x8E, 0xC8); // 角色配色的冷调强调变体（原 #e0c0d0 是粉红，与角色不符）
+pub const YUNXI_TEXT: Rgb = (0x2C, 0x2C, 0x3A); // 主文字：带 240° 蓝调，不用纯灰
+pub const YUNXI_DIM: Rgb = (0x88, 0x88, 0xA0); // 次要文字：同上
+pub const YUNXI_INK: Rgb = (0x18, 0x18, 0x30); // 角色发根/靴子的暗蓝黑（设定图 #181830），不是纯灰
 
 /// 文本片段（带样式）
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -44,12 +44,12 @@ impl Seg {
 
 /// 云熙艺术字（温柔圆润风格）
 pub const YUNXI_BANNER_UNICODE: [&str; 6] = [
-    "        🌸                    ",
-    "   ╭────────────────────╮    ",
-    "   │    云  熙  在  此    │   ",
-    "   │  YunXi · Companion  │   ",
-    "   ╰────────────────────╯    ",
-    "                              ",
+    "  ██╗   ██╗██╗   ██╗███╗   ██╗██╗  ██╗██╗ ",
+    "  ╚██╗ ██╔╝██║   ██║████╗  ██║╚██╗██╔╝██║ ",
+    "   ╚████╔╝ ██║   ██║██╔██╗ ██║ ╚███╔╝ ██║ ",
+    "    ╚██╔╝  ██║   ██║██║╚██╗██║ ██╔██╗ ██║ ",
+    "     ██║   ╚██████╔╝██║ ╚████║██╔╝ ██╗██║ ",
+    "     ╚═╝    ╚═════╝ ╚═╝  ╚═══╝╚═╝  ╚═╝╚═╝ ",
 ];
 
 /// ASCII 兜底版本
@@ -69,7 +69,14 @@ pub struct BannerArt {
 }
 
 impl BannerArt {
-    /// 创建云熙的内置艺术字
+    /// 创建云熙的内置艺术字。
+    ///
+    /// 设计规则来自 `yunxi-TUI视觉重设计.md`：
+    /// - **无框**：不用 `╭─╮` 圆角框，也不放 emoji；块字本身靠明度渐变获得层次
+    /// - **单色相**：渐变只在 `YUNXI_INK → YUNXI_SILVER` 的 240° 蓝紫梯上走
+    /// - 品牌行 `云熙` 由调用方在副标题位展示，艺术字只负责字形
+    ///
+    /// ASCII 兜底版保持原样（它本来就是无框的）。
     pub fn yunxi_builtin(ascii: bool) -> Self {
         let lines: &[&str] = if ascii {
             &YUNXI_BANNER_ASCII
@@ -79,7 +86,7 @@ impl BannerArt {
 
         Self {
             lines: lines.iter().map(|s| s.to_string()).collect(),
-            subtitle: "陪伴型终端助手 · Arch Linux".to_string(),
+            subtitle: "接管终端交互的陪伴型 Agent".to_string(),
         }
     }
 

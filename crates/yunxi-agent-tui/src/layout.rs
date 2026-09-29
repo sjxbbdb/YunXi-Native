@@ -11,7 +11,9 @@ pub(crate) struct TuiLayout {
 
 pub(crate) fn compute_layout(area: Rect, bottom_pane_height: u16) -> TuiLayout {
     let (header_height, transcript_height, bottom_height) = if area.height >= 7 {
-        let header_height = 3;
+        // 视觉重设计：状态行不再用 `───` 分隔线隔开，靠明度差与留白分层，
+        // 所以这里从 3 行（状态 + 副状态 + 分隔线）减到 2 行。
+        let header_height = 2;
         let bottom_height = bottom_pane_height
             .max(3)
             .min(area.height.saturating_sub(header_height + 1));
@@ -48,17 +50,19 @@ pub(crate) fn compute_layout(area: Rect, bottom_pane_height: u16) -> TuiLayout {
         area.width,
         bottom_height,
     );
+    // 去框之后不再需要纵向内边距（原本那 1 行上下是边框）；横向保留 1 列留白，
+    // 让正文不贴着屏幕左缘 —— 这是新设计里唯一的「边距」。
     let transcript_inner = transcript.inner(Margin {
-        vertical: 1,
+        vertical: 0,
         horizontal: 1,
     });
     let transcript_scrollbar = Rect {
         x: transcript
             .x
             .saturating_add(transcript.width.saturating_sub(1)),
-        y: transcript.y.saturating_add(1),
+        y: transcript.y,
         width: transcript.width.min(1),
-        height: transcript.height.saturating_sub(2),
+        height: transcript.height,
     };
 
     TuiLayout {
@@ -85,11 +89,12 @@ mod tests {
     fn computes_shared_transcript_inner_height() {
         let layout = compute_layout(Rect::new(0, 0, 100, 18), 3);
 
-        assert_eq!(layout.header.height, 3);
+        assert_eq!(layout.header.height, 2);
         assert_eq!(layout.bottom_pane.height, 3);
-        assert_eq!(layout.transcript.height, 12);
-        assert_eq!(layout.transcript_inner.height, 10);
-        assert_eq!(layout.transcript_scrollbar.height, 10);
+        assert_eq!(layout.transcript.height, 13);
+        assert_eq!(layout.transcript_inner.height, 13);
+        // 去框：滚动条不再内缩上下各 1 行，跟随对话区全高。
+        assert_eq!(layout.transcript_scrollbar.height, 13);
     }
 
     #[test]
@@ -124,22 +129,22 @@ mod tests {
     #[test]
     fn snapshot_dimensions_have_stable_non_overlapping_regions() {
         for (width, height, transcript_height, inner_height) in [
-            (80, 24, 17, 15),
-            (100, 30, 23, 21),
-            (120, 40, 33, 31),
-            (200, 50, 43, 41),
+            (80, 24, 18, 18),
+            (100, 30, 24, 24),
+            (120, 40, 34, 34),
+            (200, 50, 44, 44),
         ] {
             let layout = compute_layout(Rect::new(0, 0, width, height), 4);
 
-            assert_eq!(layout.header, Rect::new(0, 0, width, 3));
-            assert_eq!(layout.transcript, Rect::new(0, 3, width, transcript_height));
+            assert_eq!(layout.header, Rect::new(0, 0, width, 2));
+            assert_eq!(layout.transcript, Rect::new(0, 2, width, transcript_height));
             assert_eq!(
                 layout.transcript_inner,
-                Rect::new(1, 4, width - 2, inner_height)
+                Rect::new(1, 2, width - 2, inner_height)
             );
             assert_eq!(
                 layout.transcript_scrollbar,
-                Rect::new(width - 1, 4, 1, inner_height)
+                Rect::new(width - 1, 2, 1, inner_height)
             );
             assert_eq!(layout.bottom_pane, Rect::new(0, height - 4, width, 4));
             assert_eq!(
@@ -148,7 +153,7 @@ mod tests {
             );
             assert_eq!(
                 layout.transcript_scrollbar.y + layout.transcript_scrollbar.height,
-                layout.transcript.y + layout.transcript.height - 1
+                layout.transcript.y + layout.transcript.height
             );
         }
     }
