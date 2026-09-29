@@ -156,13 +156,13 @@ impl YunxiTuiApp {
     /// 而欢迎界面属于空闲态。这个判据就是给空闲态用的闸门 —— 只有返回 `true`
     /// 时 `host.rs::read_prompt()` 才会带超时轮询并重绘，返回 `false` 就退回纯阻塞读。
     ///
-    /// 四个条件缺一不可：
+    /// 三个条件缺一不可：
     /// - `welcome_enabled`：`YUNXI_TUI_BANNER=0` 时压根没有欢迎卡；
     /// - `!has_user_round()`：首轮真实对话之后 `render.rs` 用 transcript 替掉欢迎卡；
-    /// - `welcome_checklist` 为空：首次启动渲染的是**静态**检查卡
-    ///   （`render.rs::render_transcript` 只在 checklist 为空时才用动画卡），
-    ///   此时推进动画没有任何像素会变，属于纯浪费；
     /// - 帧数预算没花完：动画是有限时长的开场动效，播完就停，不再空转。
+    ///
+    /// 首启（`welcome_checklist` 非空）一样要供帧：`render.rs` 现在只有一条渲染路径，
+    /// 检查清单是接在动画下方渲染的，首启用户看到的星空同样得会动。
     pub(crate) fn welcome_animation_pending(&self) -> bool {
         self.welcome_enabled
             && self.welcome_scene.is_some()
