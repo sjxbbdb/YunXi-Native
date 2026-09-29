@@ -471,7 +471,7 @@ impl ApprovalRequestView {
                 "shutdown",
             ],
         ) {
-            "risk: destructive".to_string()
+            "risk: 破坏性操作".to_string()
         } else if contains_any(
             &command,
             &[
@@ -482,7 +482,7 @@ impl ApprovalRequestView {
                 "irm ",
             ],
         ) {
-            "risk: network".to_string()
+            "risk: 网络访问".to_string()
         } else if contains_any(
             &command,
             &[
@@ -496,14 +496,14 @@ impl ApprovalRequestView {
                 "apply_patch",
             ],
         ) {
-            "risk: writes workspace".to_string()
+            "risk: 写入工作区".to_string()
         } else if contains_any(
             &command,
             &["get-content", "type ", "cat ", "rg ", "findstr "],
         ) {
-            "risk: reads workspace".to_string()
+            "risk: 读取工作区".to_string()
         } else {
-            "risk: low".to_string()
+            "risk: 低风险".to_string()
         }
     }
 }
@@ -734,8 +734,8 @@ mod tests {
             ..destructive.clone()
         };
 
-        assert_eq!(destructive.risk_label(), "risk: destructive");
-        assert_eq!(network.risk_label(), "risk: network");
+        assert_eq!(destructive.risk_label(), "risk: 破坏性操作");
+        assert_eq!(network.risk_label(), "risk: 网络访问");
         assert_eq!(explicit.risk_label(), "risk: custom");
     }
 }

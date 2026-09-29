@@ -367,11 +367,11 @@ impl YunxiTuiApp {
             _ => {
                 let context_label = self.context_status_label();
                 let mut segments = vec![
-                    PrioritySegment::new("Enter submit", ClipPriority::MustKeep),
-                    PrioritySegment::new("Ctrl+C exit", ClipPriority::Important),
-                    PrioritySegment::new("/help commands", ClipPriority::Optional),
-                    PrioritySegment::new("Alt+Enter newline", ClipPriority::Optional),
-                    PrioritySegment::new("wheel/drag scroll", ClipPriority::DebugOnly),
+                    PrioritySegment::new("Enter 发送", ClipPriority::MustKeep),
+                    PrioritySegment::new("Ctrl+C 退出", ClipPriority::Important),
+                    PrioritySegment::new("/help 命令", ClipPriority::Optional),
+                    PrioritySegment::new("Alt+Enter 换行", ClipPriority::Optional),
+                    PrioritySegment::new("滚轮/拖拽 滚动", ClipPriority::DebugOnly),
                 ];
                 if self.banner.is_some() && !self.has_user_round() {
                     segments.insert(
@@ -693,8 +693,8 @@ mod tests {
         assert!(!header.contains("yunxi-agent-cli"));
         assert!(!header.contains(".../"));
         assert!(subheader.is_empty());
-        assert!(footer.contains("Enter submit"));
-        assert!(footer.contains("Ctrl+C exit"));
+        assert!(footer.contains("Enter 发送"));
+        assert!(footer.contains("Ctrl+C 退出"));
     }
 
     #[test]
@@ -871,7 +871,7 @@ mod tests {
             assert!(!header.contains("model="), "width={width}");
             assert!(!header.contains("deepseek live"), "width={width}");
             assert!(subheader.is_empty(), "width={width}");
-            assert!(footer.contains("Enter submit"), "width={width}");
+            assert!(footer.contains("Enter 发送"), "width={width}");
         }
         let narrow = app.header_for_width(80);
         assert!(!narrow.contains("model="));
@@ -992,8 +992,8 @@ mod tests {
     fn focus_footers_only_advertise_available_actions() {
         let mut app = YunxiTuiApp::default();
         let composer = app.footer_for_width(100);
-        assert!(composer.contains("Enter submit"));
-        assert!(composer.contains("wheel/drag scroll"));
+        assert!(composer.contains("Enter 发送"));
+        assert!(composer.contains("滚轮/拖拽 滚动"));
 
         app.focus_next();
         let history = app.footer_for_width(100);
@@ -1008,10 +1008,10 @@ mod tests {
             risk_label: None,
         });
         let approval = app.footer_for_width(100);
-        assert!(approval.contains("Enter confirm selected"));
-        assert!(approval.contains("Tab/Shift+Tab select"));
-        assert!(approval.contains("Esc decline"));
-        assert!(approval.contains("Y approve"));
+        assert!(approval.contains("Enter 确认选中项"));
+        assert!(approval.contains("Tab/Shift+Tab 选择"));
+        assert!(approval.contains("Esc 拒绝"));
+        assert!(approval.contains("Y 批准"));
         assert!(!approval.contains("wheel"));
 
         app.show_details(None);

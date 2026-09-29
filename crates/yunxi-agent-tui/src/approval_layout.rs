@@ -7,10 +7,45 @@ const RISK_LINES: usize = 1;
 
 /// Approval key semantics are intentionally spelled out in the approval pane.
 /// Enter confirms the highlighted action, so the safe default remains a decline.
-pub(crate) const APPROVAL_HINT_PRIMARY: &str =
-    "Tab/Shift+Tab select | Enter confirm selected | Esc decline";
-pub(crate) const APPROVAL_HINT_SECONDARY: &str = "Ctrl+C cancel | Y approve | N decline";
-const APPROVAL_HINT_NARROW: &str = "Tab/Shift+Tab select | Enter selected | Esc/N decline";
+///
+/// Labels stay in the same language as the transcript: the conversation area is
+/// fully localized, so an all-English pane sitting directly beneath it reads as
+/// a different product.  Column padding is measured with `TextLayout::measure`
+/// (display width), so the CJK labels below align on the same 9-column rail as
+/// the ASCII ones they replace.
+pub(crate) const APPROVAL_HINT_PRIMARY: &str = "Tab/Shift+Tab 选择 | Enter 确认选中项 | Esc 拒绝";
+pub(crate) const APPROVAL_HINT_SECONDARY: &str = "Ctrl+C 取消 | Y 批准 | N 拒绝";
+const APPROVAL_HINT_NARROW: &str = "Tab/Shift+Tab 选择 | Enter 确认 | Esc/N 拒绝";
+
+/// Label column: every entry is padded to 9 display columns so wrapped
+/// continuations line up under the value, not under the label.
+const LABEL_TOOL: &str = "工具     ";
+const LABEL_REASON: &str = "原因     ";
+const LABEL_RISK: &str = "风险     ";
+const LABEL_COMMAND: &str = "命令     ";
+
+/// Risk values arrive prefixed with their own field name (`risk: destructive`),
+/// which duplicated the label column.  The label already says 风险, so strip the
+/// redundant prefix when rendering.
+fn strip_field_prefix(value: &str) -> &str {
+    for prefix in ["risk:", "risk：", "风险:"] {
+        if let Some(rest) = value.strip_prefix(prefix) {
+            return rest.trim_start();
+        }
+    }
+    value
+}
+
+/// Policy reasons are stable identifiers: the sandbox compares against
+/// `tool execution requires approval` internally, so the value is not translated
+/// at its source.  Map the ones that reach the approval pane, and leave anything
+/// else verbatim — upstream reasons often carry detail worth reading as-is.
+fn localized_reason(reason: &str) -> String {
+    match reason {
+        "tool execution requires approval" => "该工具需要你的批准才能执行".to_string(),
+        other => other.to_string(),
+    }
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct ApprovalLayout {
@@ -61,7 +96,7 @@ pub(crate) fn approval_layout_for_width(
     push_labeled(
         &mut lines,
         ApprovalLineKind::Header,
-        "approval ",
+        LABEL_TOOL,
         &format!("{} in {}", request.tool_name, request.cwd),
         inner_width,
         HEADER_LINES,
@@ -70,8 +105,8 @@ pub(crate) fn approval_layout_for_width(
     push_labeled(
         &mut lines,
         ApprovalLineKind::Reason,
-        "reason   ",
-        &request.reason,
+        LABEL_REASON,
+        &localized_reason(&request.reason),
         inner_width,
         REASON_LINES,
         WrapPolicy::NaturalText,
@@ -79,8 +114,8 @@ pub(crate) fn approval_layout_for_width(
     push_labeled(
         &mut lines,
         ApprovalLineKind::Risk,
-        "risk     ",
-        &request.risk_label(),
+        LABEL_RISK,
+        strip_field_prefix(&request.risk_label()),
         inner_width,
         RISK_LINES,
         WrapPolicy::NaturalText,
@@ -96,7 +131,7 @@ pub(crate) fn approval_layout_for_width(
         push_labeled(
             &mut lines,
             ApprovalLineKind::Command,
-            "command  ",
+            LABEL_COMMAND,
             command,
             inner_width,
             command_lines,
@@ -106,11 +141,11 @@ pub(crate) fn approval_layout_for_width(
 
     lines.push(ApprovalLayoutLine::Blank);
     lines.push(ApprovalLayoutLine::Action {
-        label: "Approve",
+        label: "批准",
         selected: selected == 0,
     });
     lines.push(ApprovalLayoutLine::Action {
-        label: "Decline (safe default)",
+        label: "拒绝（安全默认）",
         selected: selected == 1,
     });
     if width < 80 {
@@ -225,7 +260,7 @@ mod tests {
             })
             .collect::<Vec<_>>();
 
-        assert_eq!(labels, vec!["Approve", "Decline (safe default)"]);
+        assert_eq!(labels, vec!["批准", "拒绝（安全默认）"]);
         assert!(
             layout
                 .lines
@@ -258,13 +293,16 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
 
-        assert!(rendered.contains("risk: destructive"));
+        // The `risk:` prefix is stripped because the label column already reads
+        // 风险; the value itself must survive verbatim.
+        assert!(rendered.contains("destructive"));
+        assert!(!rendered.contains("risk: destructive"));
         assert!(rendered.contains("Remove-Item"));
         assert!(rendered.contains("C:\\"));
-        assert!(rendered.contains("Approve"));
-        assert!(rendered.contains("Decline"));
-        assert!(rendered.contains("safe default"));
-        assert!(rendered.contains("Tab/Shift+Tab select"));
-        assert!(rendered.contains("Esc/N decline"));
+        assert!(rendered.contains("批准"));
+        assert!(rendered.contains("拒绝"));
+        assert!(rendered.contains("安全默认"));
+        assert!(rendered.contains("Tab/Shift+Tab 选择"));
+        assert!(rendered.contains("Esc/N 拒绝"));
     }
 }
