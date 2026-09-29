@@ -15,11 +15,11 @@ use std::hash::{Hash, Hasher};
 /// 云汐角色配色系统（从角色设定图提取）
 pub type Rgb = (u8, u8, u8);
 
-pub const YUNXI_GOLD: Rgb = (0xE8, 0xD4, 0xB8);       // 发色：柔和暖金
-pub const YUNXI_LAVENDER: Rgb = (0xD4, 0xC8, 0xE0);   // 服饰装饰：淡薰衣草
-pub const YUNXI_CREAM: Rgb = (0xF4, 0xF0, 0xE8);      // 服饰主色：奶白
-pub const YUNXI_CYAN: Rgb = (0xB8, 0xD8, 0xD8);       // 眼色：清澈青蓝
-pub const YUNXI_PINK: Rgb = (0xE8, 0xC8, 0xD0);       // 柔和粉色
+pub const YUNXI_SILVER: Rgb = (0xE0, 0xE0, 0xE8);     // 发色：银白带蓝紫调
+pub const YUNXI_PURPLE: Rgb = (0xC8, 0xB0, 0xD8);     // 主色：柔和紫色
+pub const YUNXI_LAVENDER: Rgb = (0xD8, 0xC8, 0xE0);   // 浅紫/薰衣草
+pub const YUNXI_WHITE: Rgb = (0xF0, 0xF0, 0xF4);      // 服饰白色
+pub const YUNXI_PINK: Rgb = (0xE0, 0xC0, 0xD0);       // 紫粉色
 pub const YUNXI_TEXT: Rgb = (0x2C, 0x2C, 0x2C);       // 主文字
 pub const YUNXI_DIM: Rgb = (0x88, 0x88, 0x88);        // 次要文字
 pub const YUNXI_INK: Rgb = (0x18, 0x18, 0x18);        // 深色背景
@@ -155,13 +155,13 @@ pub fn star_seg(
 ) -> Seg {
     match star_at(x as u32, y as u32, frame as u32, false, sparsity) {
         Some((glyph, bright)) => {
-            // 云汐配色轮换：金色、薰衣草、青蓝
+            // 云汐配色轮换：银白、紫色、薰衣草
             let color = if x % 3 == 0 {
-                YUNXI_GOLD      // 暖金色
+                YUNXI_SILVER    // 银白色
             } else if x % 3 == 1 {
-                YUNXI_LAVENDER  // 薰衣草
+                YUNXI_PURPLE    // 柔和紫色
             } else {
-                YUNXI_CYAN      // 清澈青蓝
+                YUNXI_LAVENDER  // 薰衣草
             };
 
             let final_bright = (bright * scale).clamp(0.0, 1.0);
