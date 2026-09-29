@@ -146,6 +146,9 @@ impl YunxiTui {
         if self.app.advance_spinner() {
             self.frame.request(RedrawReason::StatusChanged);
         }
+        if self.app.tick_welcome() {
+            self.frame.request(RedrawReason::StatusChanged);
+        }
         self.flush_frame(Instant::now())?;
         Ok(action)
     }

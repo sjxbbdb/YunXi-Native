@@ -231,6 +231,41 @@ fn render_transcript(
     }
 }
 
+fn render_welcome_animated(
+    frame: &mut Frame<'_>,
+    app: &YunxiTuiApp,
+    _area: Rect,
+    inner: Rect,
+    _styles: TuiStyleSet,
+) {
+    if let Some(scene) = app.welcome_scene() {
+        let output = scene.render(inner.width as usize, inner.height as usize);
+
+        for (y, line) in output.iter().enumerate() {
+            if y >= inner.height as usize {
+                break;
+            }
+
+            let mut spans = Vec::new();
+            for seg in line {
+                spans.push(Span::styled(&seg.text, seg.style));
+            }
+
+            let line = Line::from(spans);
+            let paragraph = Paragraph::new(line);
+
+            let row_area = Rect {
+                x: inner.x,
+                y: inner.y + y as u16,
+                width: inner.width,
+                height: 1,
+            };
+
+            frame.render_widget(paragraph, row_area);
+        }
+    }
+}
+
 fn render_welcome(
     frame: &mut Frame<'_>,
     app: &YunxiTuiApp,

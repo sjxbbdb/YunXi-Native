@@ -8,7 +8,7 @@
 
 use crate::yunxi_starfield::{
     BannerArt, Seg, gradient_t, lerp_color, star_seg,
-    YUNXI_SILVER, YUNXI_PURPLE, YUNXI_LAVENDER, YUNXI_INK, YUNXI_WHITE,
+    YUNXI_SILVER, YUNXI_PURPLE, YUNXI_LAVENDER, YUNXI_INK,
 };
 use ratatui::style::{Modifier, Style};
 
@@ -18,6 +18,7 @@ const STAR_SPARSITY: u32 = 9;
 const STAR_PAD_X: usize = 14;
 
 /// 欢迎场景状态
+#[derive(Clone, Debug)]
 pub struct WelcomeScene {
     art: BannerArt,
     tick: usize,

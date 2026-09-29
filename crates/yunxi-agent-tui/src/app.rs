@@ -7,6 +7,7 @@ use crate::text_layout::{ClipPriority, PrioritySegment, TextLayout};
 use crate::timeline_store::TimelineStore;
 use crate::transcript_layout::WrappedTranscript;
 use crate::viewport::TranscriptViewport;
+use crate::welcome::WelcomeScene;
 use std::time::Instant;
 use yunxi_agent_core::{AgentEvent, ControlSnapshot, TokenUsage};
 
@@ -22,12 +23,13 @@ pub struct YunxiTuiBanner {
     pub provider: String,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug)]
 pub(crate) struct YunxiTuiApp {
     version: String,
     banner: Option<YunxiTuiBanner>,
     welcome_enabled: bool,
     welcome_checklist: Vec<String>,
+    welcome_scene: Option<WelcomeScene>,
     presentation: TuiPresentation,
     timeline: TimelineStore,
     transcript: Transcript,
@@ -56,6 +58,7 @@ impl Default for YunxiTuiApp {
             banner: None,
             welcome_enabled: true,
             welcome_checklist: Vec::new(),
+            welcome_scene: Some(WelcomeScene::new()),
             presentation: TuiPresentation::default(),
             timeline: TimelineStore::default(),
             transcript: Transcript::default(),
@@ -125,6 +128,19 @@ impl YunxiTuiApp {
         }
         self.spinner_frame = (self.spinner_frame + 1) % SPINNER_FRAMES.len();
         true
+    }
+
+    pub(crate) fn tick_welcome(&mut self) -> bool {
+        if let Some(scene) = &mut self.welcome_scene {
+            scene.tick();
+            true
+        } else {
+            false
+        }
+    }
+
+    pub(crate) fn welcome_scene(&self) -> Option<&WelcomeScene> {
+        self.welcome_scene.as_ref()
     }
 
     pub(crate) fn record_agent_status(&mut self, event: &AgentEvent) {
