@@ -1,6 +1,10 @@
 //! 云熙完整欢迎界面演示
 //!
 //! 运行: cargo run -p yunxi-agent-tui --example welcome_demo
+//!       cargo run -p yunxi-agent-tui --example welcome_demo -- --first-run
+//!
+//! `--first-run` 演示首启路径：同一个动画界面在下方追加“首次启动检查”清单，
+//! 运行中按 c 可以来回切换，确认带清单时动画依然完整可见。
 
 use crossterm::{
     cursor::{Hide, MoveTo, Show},
@@ -18,7 +22,14 @@ use yunxi_agent_tui::welcome::WelcomeScene;
 use yunxi_agent_tui::yunxi_starfield::Seg;
 
 fn main() -> io::Result<()> {
+    let first_run = std::env::args().any(|arg| arg == "--first-run");
+
     println!("🌸 云熙欢迎界面演示");
+    if first_run {
+        println!("已启用首启检查清单（运行中按 c 切换）");
+    } else {
+        println!("提示：加 --first-run 可预览带首启检查清单的界面");
+    }
     println!("按任意键进入全屏演示，按 q 退出...\n");
 
     // 等待按键
@@ -31,7 +42,7 @@ fn main() -> io::Result<()> {
     execute!(stdout, EnterAlternateScreen, Hide, Clear(ClearType::All))?;
     terminal::enable_raw_mode()?;
 
-    let result = run_demo(&mut stdout);
+    let result = run_demo(&mut stdout, first_run);
 
     // 恢复终端
     let _ = execute!(stdout, Show, LeaveAlternateScreen);
@@ -40,13 +51,19 @@ fn main() -> io::Result<()> {
     result
 }
 
-fn run_demo(stdout: &mut io::Stdout) -> io::Result<()> {
+fn run_demo(stdout: &mut io::Stdout, first_run: bool) -> io::Result<()> {
     let mut scene = WelcomeScene::new();
     let mut painted: Vec<String> = Vec::new();
+    let mut show_checklist = first_run;
 
     loop {
         let (cols, rows) = terminal::size().unwrap_or((80, 24));
-        let output = scene.render(cols as usize, rows as usize);
+        let checklist = if show_checklist {
+            demo_checklist()
+        } else {
+            Vec::new()
+        };
+        let output = scene.render_with_checklist(cols as usize, rows as usize, &checklist);
 
         // 确保 painted 数组大小匹配
         if painted.len() != output.len() {
@@ -77,6 +94,11 @@ fn run_demo(stdout: &mut io::Stdout) -> io::Result<()> {
             match read()? {
                 Event::Key(key) => match key.code {
                     KeyCode::Char('q') | KeyCode::Esc => return Ok(()),
+                    KeyCode::Char('c') => {
+                        show_checklist = !show_checklist;
+                        painted.clear();
+                        execute!(stdout, Clear(ClearType::All))?;
+                    }
                     _ => {}
                 },
                 Event::Resize(_, _) => {
@@ -89,6 +111,18 @@ fn run_demo(stdout: &mut io::Stdout) -> io::Result<()> {
 
         scene.tick();
     }
+}
+
+/// 与 `yunxi-agent-linux/src/main.rs::claim_first_run_checklist` 同构的演示数据
+fn demo_checklist() -> Vec<String> {
+    vec![
+        "  工作区                 ✓ /tmp/yunxi".to_string(),
+        "  YunXi 状态目录         ✓ /home/yunxi/.local/state/yunxi".to_string(),
+        "  Provider / 模型        ✓ deepseek / static".to_string(),
+        "  会话与记忆目录         ✓ 已初始化".to_string(),
+        "  默认知识库             - 未配置，稍后可接入".to_string(),
+        "  完成。直接输入目标即可开始，/help 查看帮助".to_string(),
+    ]
 }
 
 fn segs_to_string(segs: &[Seg]) -> String {

@@ -11,7 +11,7 @@ use crate::text_layout::{TextLayout, WrapPolicy};
 use crate::transcript_layout::build_wrapped_transcript;
 use crate::transcript_layout::build_wrapped_transcript_with_styles;
 use ratatui::Frame;
-use ratatui::layout::{Alignment, Position, Rect};
+use ratatui::layout::{Position, Rect};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 
@@ -190,12 +190,10 @@ fn render_transcript(
     styles: TuiStyleSet,
 ) {
     if !app.has_user_round() && app.welcome_enabled() {
-        // 使用动画版本（当没有 checklist 时），否则使用旧版以保持兼容性
-        if app.welcome_checklist().is_empty() {
-            render_welcome_animated(frame, app, area, inner, styles);
-        } else {
-            render_welcome(frame, app, area, inner, styles);
-        }
+        // 首次启动曾经走的是另一张静态检查卡：新做的动画欢迎界面反而在**最重要的
+        // 首次进入时刻**看不到。现在两条路径合一 —— `render_welcome_animated` 把
+        // 清单接在动画下方渲染，空清单时输出与原来的纯动画逐片段相同。
+        render_welcome_animated(frame, app, area, inner, styles);
         return;
     }
     let wrapped = build_wrapped_transcript_with_styles(
@@ -244,7 +242,13 @@ fn render_welcome_animated(
     _styles: TuiStyleSet,
 ) {
     if let Some(scene) = app.welcome_scene() {
-        let output = scene.render(inner.width as usize, inner.height as usize);
+        // 清单（首次启动检查）接在动画下方渲染。清单为空时 `render_with_checklist`
+        // 的输出与纯动画逐片段相同，所以这里可以无条件透传。
+        let output = scene.render_with_checklist(
+            inner.width as usize,
+            inner.height as usize,
+            app.welcome_checklist(),
+        );
 
         for (y, line) in output.iter().enumerate() {
             if y >= inner.height as usize {
@@ -269,140 +273,6 @@ fn render_welcome_animated(
             frame.render_widget(paragraph, row_area);
         }
     }
-}
-
-fn render_welcome(
-    frame: &mut Frame<'_>,
-    app: &YunxiTuiApp,
-    area: Rect,
-    inner: Rect,
-    styles: TuiStyleSet,
-) {
-    let content_width = inner.width as usize;
-    let mode = app
-        .provider_live()
-        .map(|provider_live| if provider_live { "live" } else { "offline" })
-        .unwrap_or("starting");
-    let centered_line = |text: String, style: TuiSemanticStyle| {
-        let text = TextLayout::truncate(&text, content_width);
-        let padding = content_width
-            .saturating_sub(TextLayout::measure(&text))
-            .saturating_div(2);
-        Line::from(vec![
-            Span::raw(" ".repeat(padding)),
-            Span::styled(text, styles.style(style)),
-        ])
-    };
-    let mut lines = vec![
-        centered_line("YUNXI".to_string(), TuiSemanticStyle::Header),
-        centered_line("自然语言终端".to_string(), TuiSemanticStyle::Subheader),
-        Line::from(""),
-        centered_line(
-            "把目标交给云熙，直接开始。".to_string(),
-            TuiSemanticStyle::Muted,
-        ),
-        centered_line(
-            format!("{mode} · /help  /capabilities  /status"),
-            TuiSemanticStyle::Footer,
-        ),
-    ];
-    if !app.welcome_checklist().is_empty() {
-        lines.push(Line::from(""));
-        lines.push(Line::from(Span::styled(
-            TextLayout::truncate("  首次启动检查", content_width),
-            styles.style(TuiSemanticStyle::Subheader),
-        )));
-        let mut checklist = Vec::new();
-        let mut completion = None;
-        for item in app.welcome_checklist() {
-            let item = item.trim();
-            if item.starts_with("完成。") {
-                completion = Some(item.to_string());
-                continue;
-            }
-            let Some((marker_offset, marker)) = item
-                .find('✓')
-                .map(|offset| (offset, '✓'))
-                .or_else(|| item.find('-').map(|offset| (offset, '-')))
-            else {
-                checklist.push((item.to_string(), ' ', String::new()));
-                continue;
-            };
-            checklist.push((
-                item[..marker_offset].trim().to_string(),
-                marker,
-                item[marker_offset + marker.len_utf8()..].trim().to_string(),
-            ));
-        }
-        let label_width = checklist
-            .iter()
-            .map(|(label, _, _)| TextLayout::measure(label))
-            .max()
-            .unwrap_or_default();
-        for (label, marker, value) in checklist {
-            let line = if marker == ' ' {
-                format!("  {label}")
-            } else {
-                let padding = " ".repeat(label_width.saturating_sub(TextLayout::measure(&label)));
-                format!("  {label}{padding} {marker} {value}")
-            };
-            lines.push(Line::from(Span::styled(
-                TextLayout::truncate(&line, content_width),
-                styles.style(TuiSemanticStyle::Muted),
-            )));
-        }
-        if let Some(completion) = completion {
-            lines.push(Line::from(""));
-            lines.push(Line::from(Span::styled(
-                TextLayout::truncate(&format!("  {completion}"), content_width),
-                styles.style(TuiSemanticStyle::Muted),
-            )));
-        }
-    }
-    // The card keeps ownership of the empty session, but it must not swallow what
-    // lands in the transcript meanwhile.  `/help`, `/capabilities` and `/status`
-    // are advertised on the card itself, and their notices were previously pushed
-    // into a transcript that was never drawn: the card invited a command and the
-    // answer was invisible.  Render the card first and append the transcript rows
-    // beneath it so both stay readable.
-    if !app.transcript().cells().is_empty() {
-        let appended =
-            build_wrapped_transcript_with_styles(app.transcript().cells(), content_width, styles);
-        if !appended.rows.is_empty() {
-            lines.push(Line::from(""));
-            lines.extend(appended.rows);
-        }
-    }
-    // The composer can leave only a few transcript rows on a short terminal.
-    // Keep the card's leading title/content and only render checklist rows that
-    // fit inside the transcript viewport, rather than letting them reach the
-    // bottom pane.
-    lines.truncate(inner.height as usize);
-    // An empty session used to stretch the border across the whole transcript
-    // viewport, so a six-line welcome sat inside a twenty-six-line box.  Size the
-    // card to its content instead and let the remaining rows stay empty.
-    let card_height = (lines.len() as u16)
-        .saturating_add(2)
-        .min(area.height)
-        .max(3);
-    let card_area = Rect {
-        height: card_height,
-        ..area
-    };
-    let welcome = Paragraph::new(lines).alignment(Alignment::Left).block(
-        Block::default()
-            .title(Span::styled(
-                "云熙 · 就绪",
-                styles.style(TuiSemanticStyle::Subheader),
-            ))
-            .borders(Borders::ALL)
-            .border_style(if app.focus_target() == FocusTarget::History {
-                styles.style(TuiSemanticStyle::Focus)
-            } else {
-                styles.style(TuiSemanticStyle::Border)
-            }),
-    );
-    frame.render_widget(welcome, card_area);
 }
 
 fn render_transcript_scrollbar(
@@ -734,24 +604,26 @@ mod tests {
         ]);
 
         let welcome = render_app(&app, 80, 24);
-        assert!(welcome.contains("YUNXI"));
-        assert!(welcome.contains("自然语言终端"));
-        assert!(welcome.contains("/capabilities"));
-        assert!(welcome.contains("首次启动检查"));
-        assert!(welcome.contains("连接到云熙"));
-        assert!(welcome.contains("了解这台机器能做什么"));
-        assert!(welcome.contains("说出你的第一个目标"));
+        assert!(welcome.contains("YunXi"));
+        assert!(welcome.contains("陪伴型终端助手"));
+        // 动画界面的提示行只挂 /help 与 /status；/capabilities 曾在旧卡片的提示行里。
+        assert!(welcome.contains("/status"));
+        // 80x24 下动画界面占满了可用行，清单整块让位（见 welcome.rs 的空间策略），
+        // 所以这里不断言清单内容 —— 清单在更宽的终端上由
+        // `welcome_checklist_is_rendered_without_becoming_transcript_content` 覆盖。
+        assert!(welcome.contains("陪同") || welcome.contains("陪伴型终端助手"));
+        // 清单条目同样因为空间让位不在这里断言 —— 见上面的说明。
         assert!(welcome.contains("试着说说你想做什么"));
         assert!(!welcome.contains("Ready."));
 
         app.push_user("先查看当前目录");
         let transcript = render_app(&app, 80, 24);
-        assert!(!transcript.contains("YUNXI"));
+        assert!(!transcript.contains("YunXi · Companion"));
         assert!(transcript.contains("[你] 先查看当前目录"));
 
         app.clear_transcript();
         let cleared = render_app(&app, 80, 24);
-        assert!(cleared.contains("YUNXI"));
+        assert!(cleared.contains("YunXi"));
     }
 
     #[test]
@@ -814,11 +686,9 @@ mod tests {
 
         let rendered = render_full_frame_snapshot(&app, 24, 18);
 
-        assert!(rendered.contains("YUNXI"));
-        assert!(rendered.contains("首次启动检查"));
-        assert!(rendered.contains("连接到云熙"));
-        assert!(rendered.contains("了解这台机器能做"));
-        assert!(!rendered.contains("说出你的第一个目标"));
+        // 24x18 太窄：清单整块让位，先保证动画界面的骨架在、且不溢出宽度。
+        assert!(rendered.contains("YunXi"));
+        assert!(rendered.contains("陪伴型终端助手"));
         assert!(rendered.lines().all(|row| {
             row.split_once('|')
                 .map(|(_, content)| UnicodeWidthStr::width(content) <= 24)
@@ -835,7 +705,7 @@ mod tests {
         let rendered = render_app(&app, 80, 24);
 
         assert!(!rendered.contains("自然语言终端"));
-        assert!(!rendered.contains("YUNXI"));
+        assert!(!rendered.contains("YunXi"));
         assert!(app.transcript().cells().is_empty());
     }
 

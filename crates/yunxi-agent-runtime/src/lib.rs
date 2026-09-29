@@ -7243,6 +7243,11 @@ mod linux_knowledge_tests {
 
     #[test]
     fn runtime_loads_vector_evidence_from_the_isolated_knowledge_store() {
+        // The fixture is deliberately a semantic paraphrase of the query below.
+        // Neither the title nor the chunk may contain a literal query token:
+        // `search_versioned` retries "a AND b" as "a OR b" when the precise
+        // query misses, so a single shared term would make this keyword
+        // evidence and the duplicate filter would then drop the vector match.
         let directory = tempfile::tempdir().expect("tempdir");
         let store = yunxi_agent_storage::SqliteKnowledgeStore::for_workspace(directory.path());
         let source_version = detect_linux_source_version().unwrap_or_else(|| "unknown".to_string());
@@ -7260,7 +7265,7 @@ mod linux_knowledge_tests {
         let document = yunxi_agent_storage::KnowledgeDocument {
             document_id: "vector-runtime-fixture".to_string(),
             space_id: "system-linux".to_string(),
-            title: "service recovery reference".to_string(),
+            title: "operations note".to_string(),
             source: "local-linux".to_string(),
             version: source_version.clone(),
             generation: 7,
@@ -7274,7 +7279,7 @@ mod linux_knowledge_tests {
             chunk_id: "vector-runtime-fixture#chunk-0".to_string(),
             document_id: document.document_id.clone(),
             ordinal: 0,
-            content: "service recovery restart state".to_string(),
+            content: "services recover their previous state on restart".to_string(),
             source: "local-linux".to_string(),
             version: document.version.clone(),
             generation: 7,
@@ -7320,11 +7325,11 @@ mod linux_knowledge_tests {
         assert_eq!(provenance.risk_class, "mutating");
         assert!(provenance.score.is_some());
         let provenance_json = serde_json::to_string(&context.diagnostic.provenance).expect("json");
-        assert!(!provenance_json.contains("service recovery restart state"));
+        assert!(!provenance_json.contains("services recover their previous state on restart"));
         let content = context.content.as_deref().expect("content");
         assert!(content.contains("[Linux planning evidence | active_generation=7"));
         assert!(content.contains("Vector evidence 1"));
-        assert!(content.contains("service recovery restart state"));
+        assert!(content.contains("services recover their previous state on restart"));
         assert!(content.contains("collector=linux.fixture"));
     }
 }

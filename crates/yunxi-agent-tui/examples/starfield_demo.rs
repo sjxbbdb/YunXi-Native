@@ -8,7 +8,7 @@ fn main() {
     println!("🌸 云熙星空动效演示\n");
 
     // 显示配色
-    println!("【云汐角色配色】");
+    println!("【云熙角色配色】");
     println!(
         "银白色:     #{:02X}{:02X}{:02X}",
         YUNXI_SILVER.0, YUNXI_SILVER.1, YUNXI_SILVER.2

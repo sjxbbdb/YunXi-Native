@@ -10,7 +10,7 @@
 
 use ratatui::style::{Color, Style};
 
-/// 云汐角色配色系统（从角色设定图提取）
+/// 云熙角色配色系统（从角色设定图提取）
 pub type Rgb = (u8, u8, u8);
 
 pub const YUNXI_SILVER: Rgb = (0xE0, 0xE0, 0xE8); // 发色：银白带蓝紫调
@@ -146,7 +146,7 @@ pub fn star_at(
 pub fn star_seg(x: usize, y: usize, frame: usize, scale: f32, sparsity: u32) -> Seg {
     match star_at(x as u32, y as u32, frame as u32, false, sparsity) {
         Some((glyph, bright)) => {
-            // 云汐配色轮换：银白、紫色、薰衣草
+            // 云熙配色轮换：银白、紫色、薰衣草
             let color = if x % 3 == 0 {
                 YUNXI_SILVER // 银白色
             } else if x % 3 == 1 {

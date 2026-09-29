@@ -22,7 +22,7 @@ struct IntegratedFixture {
 
 fn banner(provider_live: bool) -> YunxiTuiBanner {
     YunxiTuiBanner {
-        cwd: "C:/Workspace/云汐/集成回归".to_string(),
+        cwd: "C:/Workspace/云熙/集成回归".to_string(),
         backend: "yunxi".to_string(),
         provider_live,
         provider_source: if provider_live {
@@ -86,7 +86,7 @@ fn long_stream_fixture() -> IntegratedFixture {
     let content = (0..18)
         .map(|index| {
             format!(
-                "## 阶段 {index:02}\n- 状态：稳定 ✅\n- 路径：`C:/Workspace/云汐/阶段-{index:02}`\n- 说明：流式 Markdown 保持单一消息单元，Emoji 👩‍💻 与组合字符 é 不破坏布局。"
+                "## 阶段 {index:02}\n- 状态：稳定 ✅\n- 路径：`C:/Workspace/云熙/阶段-{index:02}`\n- 说明：流式 Markdown 保持单一消息单元，Emoji 👩‍💻 与组合字符 é 不破坏布局。"
             )
         })
         .collect::<Vec<_>>()
@@ -124,8 +124,8 @@ fn tool_approval_failure_fixture() -> IntegratedFixture {
     app.start_approval(ApprovalRequestView {
         id: Some("fixture-approval".to_string()),
         tool_name: "shell".to_string(),
-        cwd: "C:/Workspace/云汐".to_string(),
-        command: Some("Remove-Item -Recurse C:/Workspace/云汐/generated".to_string()),
+        cwd: "C:/Workspace/云熙".to_string(),
+        command: Some("Remove-Item -Recurse C:/Workspace/云熙/generated".to_string()),
         reason: "删除生成目录前需要明确批准".to_string(),
         risk_label: Some("risk: destructive".to_string()),
     });
@@ -208,7 +208,7 @@ fn low_color_fixture() -> IntegratedFixture {
     app.start_approval(ApprovalRequestView {
         id: None,
         tool_name: "shell".to_string(),
-        cwd: "C:/Workspace/云汐".to_string(),
+        cwd: "C:/Workspace/云熙".to_string(),
         command: Some("echo safe".to_string()),
         reason: "低色终端也必须保留动作语义".to_string(),
         risk_label: Some("risk: review".to_string()),

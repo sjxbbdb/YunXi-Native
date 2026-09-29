@@ -13,6 +13,23 @@ use yunxi_agent_core::{AgentEvent, ControlSnapshot, TokenUsage};
 
 const SPINNER_FRAMES: [&str; 8] = ["⣾", "⣽", "⣻", "⢿", "⡿", "⣟", "⣯", "⣷"];
 
+/// 欢迎界面的淡入帧数，与 `WelcomeScene::tick()` 内部那个 24 帧淡入保持一致。
+const WELCOME_FADE_IN_FRAMES: usize = 24;
+
+/// 星空一次完整闪烁的帧数。
+///
+/// `star_at()` 里每颗星的相位周期是 `8 * speed`，`speed ∈ 2..=4`，也就是
+/// 16 / 24 / 32 帧；三者的最小公倍数是 96 —— 走满 96 帧后整片星域精确回到同一图案。
+const STARFIELD_CYCLE_FRAMES: usize = 96;
+
+/// 欢迎动画的总帧数预算：淡入 24 帧 + 3 轮星移（3 × 96）≈ 10.4s（33ms/帧）。
+///
+/// 动画被刻意定义为**有限时长**的开场动效（对应 issue #38 的方案 C 思路）：
+/// 播完就停在最后一帧，空闲等待输入时不再每 33ms 重绘一次全屏，
+/// 这样用户盯着欢迎界面思考时 CPU 和终端写入都归零。
+/// 想让它像壁纸一样一直闪，把这个预算调大即可 —— 代价就是空闲态持续 30fps 重绘。
+const WELCOME_ANIMATION_FRAMES: usize = WELCOME_FADE_IN_FRAMES + 3 * STARFIELD_CYCLE_FRAMES;
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct YunxiTuiBanner {
     pub cwd: String,
@@ -30,6 +47,8 @@ pub(crate) struct YunxiTuiApp {
     welcome_enabled: bool,
     welcome_checklist: Vec<String>,
     welcome_scene: Option<WelcomeScene>,
+    /// 欢迎动画已经推进过的帧数，用于给空闲态的开场动效封顶（见 `WELCOME_ANIMATION_FRAMES`）。
+    welcome_animation_frames: usize,
     presentation: TuiPresentation,
     timeline: TimelineStore,
     transcript: Transcript,
@@ -59,6 +78,7 @@ impl Default for YunxiTuiApp {
             welcome_enabled: true,
             welcome_checklist: Vec::new(),
             welcome_scene: Some(WelcomeScene::new()),
+            welcome_animation_frames: 0,
             presentation: TuiPresentation::default(),
             timeline: TimelineStore::default(),
             transcript: Transcript::default(),
@@ -130,13 +150,45 @@ impl YunxiTuiApp {
         true
     }
 
+    /// 欢迎动画此刻是否还需要供帧。
+    ///
+    /// issue #38 的根因是"欢迎动画没有 tick 供给"：`tick()` 只在回合里被调用，
+    /// 而欢迎界面属于空闲态。这个判据就是给空闲态用的闸门 —— 只有返回 `true`
+    /// 时 `host.rs::read_prompt()` 才会带超时轮询并重绘，返回 `false` 就退回纯阻塞读。
+    ///
+    /// 四个条件缺一不可：
+    /// - `welcome_enabled`：`YUNXI_TUI_BANNER=0` 时压根没有欢迎卡；
+    /// - `!has_user_round()`：首轮真实对话之后 `render.rs` 用 transcript 替掉欢迎卡；
+    /// - `welcome_checklist` 为空：首次启动渲染的是**静态**检查卡
+    ///   （`render.rs::render_transcript` 只在 checklist 为空时才用动画卡），
+    ///   此时推进动画没有任何像素会变，属于纯浪费；
+    /// - 帧数预算没花完：动画是有限时长的开场动效，播完就停，不再空转。
+    pub(crate) fn welcome_animation_pending(&self) -> bool {
+        self.welcome_enabled
+            && self.welcome_scene.is_some()
+            && !self.has_user_round()
+            && self.welcome_animation_frames < WELCOME_ANIMATION_FRAMES
+    }
+
+    /// 推进一帧欢迎动画。
+    ///
+    /// 返回值从"有没有欢迎场景"改成了"**还要不要重绘**"：
+    /// `true` = 动画还有后续帧，调用方应请求重绘；`false` = 不必重绘。
+    /// 注释见 `welcome_animation_pending()`。
+    ///
+    /// 调用点只有 `host.rs` 两处，两处都按这个返回值决定要不要 `frame.request(...)`：
+    /// - `tick()`：回合中的 33ms tick（回合里欢迎卡通常已经撤下，于是不再产生重绘）；
+    /// - `read_prompt()`：空闲等待输入时 poll 超时的分支（issue #38 的修复点）。
     pub(crate) fn tick_welcome(&mut self) -> bool {
-        if let Some(scene) = &mut self.welcome_scene {
-            scene.tick();
-            true
-        } else {
-            false
+        if !self.welcome_animation_pending() {
+            return false;
         }
+        let Some(scene) = &mut self.welcome_scene else {
+            return false;
+        };
+        scene.tick();
+        self.welcome_animation_frames = self.welcome_animation_frames.saturating_add(1);
+        true
     }
 
     pub(crate) fn welcome_scene(&self) -> Option<&WelcomeScene> {
@@ -568,6 +620,9 @@ impl YunxiTuiApp {
         self.timeline.clear();
         self.transcript.clear();
         self.viewport.reset();
+        // `/clear` 会把空会话的欢迎卡请回来，所以动画预算也要还回去，
+        // 否则重开的欢迎界面会是一张静止的星空图。
+        self.welcome_animation_frames = 0;
     }
 
     pub(crate) fn scroll_up(
@@ -705,6 +760,69 @@ mod tests {
         app.set_welcome_enabled(false);
         assert!(!app.welcome_enabled());
         assert!(!app.has_user_round());
+    }
+
+    #[test]
+    fn idle_welcome_animation_advances_frames_and_then_stops_for_good() {
+        let mut app = YunxiTuiApp::default();
+        app.set_banner(banner());
+        assert!(app.welcome_animation_pending());
+
+        // 空闲路径上推进的第一帧必须真的改变画面：
+        // issue #38 里测试全绿而实机静止，就是因为单测只验证了 `tick()` 本身，
+        // 没人验证"谁在什么时机调用它"。
+        let before = app.welcome_scene().expect("welcome scene").render(80, 24);
+        assert!(app.tick_welcome());
+        let after = app.welcome_scene().expect("welcome scene").render(80, 24);
+        assert_ne!(before, after, "空闲态推进一帧后欢迎界面必须改变");
+
+        // 预算是有限的：动画播完就不再供帧，空闲态不会永远 30fps 重绘。
+        let mut frames = 1;
+        while app.tick_welcome() {
+            frames += 1;
+            assert!(frames <= WELCOME_ANIMATION_FRAMES, "欢迎动画帧数必须封顶");
+        }
+        assert_eq!(frames, WELCOME_ANIMATION_FRAMES);
+        assert!(!app.welcome_animation_pending());
+        assert!(!app.tick_welcome(), "预算花完后不应再要求重绘");
+    }
+
+    #[test]
+    fn welcome_animation_only_runs_while_its_card_is_on_screen() {
+        // 首启**也**走动画界面：清单现在接在动画下方渲染（render.rs 不再按
+        // checklist 是否为空二选一），所以首启同样需要供帧，否则用户看到的是
+        // 一张静止的第一帧。
+        let mut app = YunxiTuiApp::default();
+        app.set_welcome_checklist(vec!["  工作区                 ✓ /tmp".to_string()]);
+        assert!(app.welcome_animation_pending());
+        assert!(app.tick_welcome());
+
+        // YUNXI_TUI_BANNER=0：没有欢迎卡。
+        let mut app = YunxiTuiApp::default();
+        app.set_welcome_enabled(false);
+        assert!(!app.welcome_animation_pending());
+        assert!(!app.tick_welcome());
+
+        // 首轮真实对话之后，欢迎卡被 transcript 取代。
+        let mut app = YunxiTuiApp::default();
+        app.push_user("你好");
+        assert!(!app.welcome_animation_pending());
+        assert!(!app.tick_welcome());
+    }
+
+    #[test]
+    fn clear_transcript_gives_the_welcome_animation_its_budget_back() {
+        let mut app = YunxiTuiApp::default();
+        app.set_banner(banner());
+        while app.tick_welcome() {}
+        assert!(!app.welcome_animation_pending());
+
+        app.push_user("你好");
+        app.clear_transcript();
+
+        assert!(!app.has_user_round());
+        assert!(app.welcome_animation_pending());
+        assert!(app.tick_welcome());
     }
 
     #[test]

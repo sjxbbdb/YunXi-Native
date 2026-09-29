@@ -4,7 +4,7 @@ use crate::bottom_pane::{
     ApprovalAction, ApprovalDecision, ApprovalRequestView, ComposerAction, UserInputAction,
     UserInputRequestView, UserInputResponse,
 };
-use crate::frame::{RedrawPriority, RedrawReason, RedrawScheduler};
+use crate::frame::{DEFAULT_MIN_FRAME_INTERVAL, RedrawPriority, RedrawReason, RedrawScheduler};
 use crate::input_map::{FocusTarget, TuiAction, resolve_event, resolve_key};
 use crate::layout::{compute_layout, rect_contains};
 use crate::render::render_tui_frame;
@@ -42,6 +42,12 @@ pub enum TuiTickAction {
     None,
     CancelCurrentTurn,
 }
+
+/// 空闲等待输入时推进欢迎动画的节拍。
+///
+/// 直接复用 `RedrawScheduler` 的最小帧间隔：这样每次超时都刚好越过合并阈值，
+/// 不会出现"动画推进了一帧、重绘却被节流丢掉"的空转。
+const IDLE_ANIMATION_TICK: Duration = DEFAULT_MIN_FRAME_INTERVAL;
 
 impl YunxiTui {
     pub fn enter() -> Result<Self> {
@@ -146,6 +152,8 @@ impl YunxiTui {
         if self.app.advance_spinner() {
             self.frame.request(RedrawReason::StatusChanged);
         }
+        // `tick_welcome()` 的返回值是"动画还要不要重绘"：回合里欢迎卡通常已经撤下，
+        // 于是这里不会产生多余的重绘请求；空闲态的供帧在 `read_prompt()` 里。
         if self.app.tick_welcome() {
             self.frame.request(RedrawReason::StatusChanged);
         }
@@ -200,11 +208,36 @@ impl YunxiTui {
         self.request_draw_now()
     }
 
+    /// 等待用户输入。
+    ///
+    /// 除了"读一行输入"，这里还负责**空闲态的动画供帧** —— issue #38 的根因就是
+    /// `tick()` 只挂在 `run_turn()` 的 33ms 循环上，而欢迎界面属于空闲态，
+    /// 于是星空永远停在第一帧。
+    ///
+    /// 做法（issue 里的方案 A）：把唯一的阻塞 `read()` 换成 `poll(节拍)` + `read()`；
+    /// 超时说明用户还在发呆，就推进一帧欢迎动画并重绘。其余语义一律不动：
+    /// - 仍然只有用户输入（或 Ctrl+C / Ctrl+D）才会让这个函数返回，
+    ///   Linux/Windows 前端和测试看到的还是原来那个"一直等到有输入"的阻塞接口；
+    /// - 只有 `welcome_animation_pending()`（真的画在屏幕上、而且还没播完）时才轮询，
+    ///   会话回合中、动画播完、欢迎卡被关掉之后直接走阻塞 `read()`，
+    ///   一次多余的唤醒都不产生 —— 空闲 CPU 与修复前一致（修复前是 0%）；
+    /// - 动画本身是有限时长的开场动效，见 `YunxiTuiApp::WELCOME_ANIMATION_FRAMES`。
+    ///
+    /// 没选方案 B（把 tick 从 `run_turn` 提到主循环）：`read_prompt` 是公共入口，
+    /// 让它"每次只处理一个事件就返回"会把非阻塞状态机推给每个调用点（含 Windows 前端
+    /// 与现有测试），而且主循环里那条 tick 通道最终仍旧要在阻塞读上超时，绕一圈回到同一处。
     pub fn read_prompt(&mut self, prompt: &str) -> Result<Option<String>> {
         self.app.prepare_prompt(prompt);
         self.windows_input_burst.reset();
         self.request_draw_now()?;
         loop {
+            if let Some(tick) = idle_animation_poll_timeout(&self.app)
+                && !poll(tick)?
+            {
+                // 超时 = 用户在空闲等待，趁机推进欢迎动画。
+                self.tick_idle_welcome()?;
+                continue;
+            }
             let event = read()?;
             let paste_newline = self.windows_input_burst.observe(&event, Instant::now());
             if self.handle_navigation_event(&event)? {
@@ -238,6 +271,19 @@ impl YunxiTui {
             }
             self.request_draw_now()?;
         }
+    }
+
+    /// 空闲等待输入时推进一帧欢迎动画，动画还想继续时立刻重绘。
+    ///
+    /// 重绘走的是回合内 `tick()` 的同一条 `RedrawReason::StatusChanged` 通道
+    /// （合并到调度器的最小帧间隔），动画播完 `tick_welcome()` 返回 `false`，
+    /// 就不会再产生任何重绘请求。
+    fn tick_idle_welcome(&mut self) -> Result<()> {
+        if self.app.tick_welcome() {
+            self.frame.request(RedrawReason::StatusChanged);
+            self.flush_frame(Instant::now())?;
+        }
+        Ok(())
     }
 
     pub fn request_approval(&mut self, request: ApprovalRequestView) -> Result<ApprovalDecision> {
@@ -399,6 +445,16 @@ impl YunxiTui {
             &self.app,
         ))
     }
+}
+
+/// 空闲等待输入时该不该带超时轮询。
+///
+/// `Some(节拍)` = 欢迎动画还需要供帧，`read_prompt()` 用 `poll(节拍)` 等输入，
+/// 超时就推进一帧；`None` = 没有动画要播，`read_prompt()` 直接阻塞 `read()`，
+/// 保持"等到用户输入才返回、期间零唤醒"的原始语义。
+fn idle_animation_poll_timeout(app: &YunxiTuiApp) -> Option<Duration> {
+    app.welcome_animation_pending()
+        .then_some(IDLE_ANIMATION_TICK)
 }
 
 fn should_render_submitted_user_prompt(value: &str) -> bool {
@@ -915,6 +971,22 @@ mod tests {
     use crossterm::Command;
     use crossterm::style::ResetColor;
     use crossterm::terminal::SetSize;
+
+    #[test]
+    fn idle_prompt_polls_only_while_the_welcome_animation_is_on_screen() {
+        // issue #38：欢迎界面属于空闲态，`read_prompt` 却只会阻塞读，
+        // 没有任何人推进动画。这里钉住宿主侧的契约：
+        // 动画在播 -> 带超时轮询（能推进动画）；其余情况 -> 纯阻塞读。
+        let mut app = YunxiTuiApp::default();
+        assert_eq!(idle_animation_poll_timeout(&app), Some(IDLE_ANIMATION_TICK));
+
+        while app.tick_welcome() {}
+        assert_eq!(idle_animation_poll_timeout(&app), None);
+
+        let mut app = YunxiTuiApp::default();
+        app.push_user("你好");
+        assert_eq!(idle_animation_poll_timeout(&app), None);
+    }
 
     #[test]
     fn slash_commands_are_not_rendered_as_user_messages() {
