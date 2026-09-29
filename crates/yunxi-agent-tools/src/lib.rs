@@ -226,7 +226,7 @@ impl ToolRequestKind {
     fn policy_command(&self) -> Option<String> {
         match self {
             Self::Shell { command } => Some(command.clone()),
-            Self::Patch { .. } => Some("apply_patch > workspace".to_string()),
+            Self::Patch { .. } => Some("patch · 应用到工作区".to_string()),
             Self::Mcp { server, tool, .. } => Some(format!("mcp {server} {tool}")),
             Self::Skill { name, .. } => Some(format!("skill {name}")),
             Self::MultiAgent { action, .. } => Some(format!("multi_agent {action}")),

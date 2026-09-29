@@ -9,7 +9,7 @@ use yunxi_agent_core::{
     Agent, AgentConfig, AgentEvent, AgentInput, AgentRunApprovalDecision, AgentRunControl,
     AgentRunResult, AgentRunStatus, AgentRunUserInputResponse,
 };
-use yunxi_agent_persona::yunxi_home_dir;
+use yunxi_agent_persona::{PersonaSettings, yunxi_home_dir};
 use yunxi_agent_provider::ProviderBootstrap;
 use yunxi_agent_runtime::YunXiRuntimeBackend;
 use yunxi_agent_tui::{
@@ -162,18 +162,28 @@ async fn main() -> Result<()> {
     })?;
     let banner_enabled = tui_banner_enabled();
     tui.set_welcome_enabled(banner_enabled)?;
-    if banner_enabled {
-        if let Some(checklist) = claim_first_run_checklist(&paths, &cwd, &selection)? {
-            tui.set_welcome_checklist(checklist)?;
-        }
+    // The checklist is rendered inside the welcome card, so it is only handed to
+    // the TUI when the card is on.  "First run" itself is independent of the card:
+    // with YUNXI_TUI_BANNER=0 there is no card, and the orientation notice below
+    // is then the only thing introducing the scoped surface.
+    let checklist = claim_first_run_checklist(&paths, &cwd, &selection)?;
+    let first_run = checklist.is_some();
+    if let (true, Some(checklist)) = (banner_enabled, checklist) {
+        tui.set_welcome_checklist(checklist)?;
     }
     if !selection.live {
         tui.push_warning("[offline] 未找到在线凭证，当前使用本地静态 Runtime；不会调用模型")?;
     }
-    tui.push_notice(
-        "linux",
-        "Linux 原生 TUI：/help 查看命令，/capabilities 查看能力，/exit 退出；不包含 Web、语音和微信模块",
-    )?;
+    // The host scope note is onboarding, not a per-session banner: on a 100-column
+    // terminal it used to wrap onto two rows at the top of every conversation.
+    // Introduce the scoped surface once, then leave the transcript to the user.
+    // The same facts stay reachable through /help and /capabilities.
+    if first_run {
+        tui.push_notice(
+            "linux",
+            "本机为 Linux 原生 TUI · /help 查看命令 · 不含 Web / 语音 / 微信模块",
+        )?;
+    }
 
     let mut session_id: Option<String> = None;
     let mut turn_count = 0usize;
@@ -213,15 +223,12 @@ async fn main() -> Result<()> {
                     .unwrap_or_else(|_| "unknown".to_string());
                 tui.push_notice(
                     "status",
-                    &format!(
-                        "version=v{} cwd={} provider={} source={} model={} turns={} session={}",
-                        env!("CARGO_PKG_VERSION"),
-                        cwd,
-                        selection.provider,
-                        selection.source,
-                        selection.model,
+                    &render_status_panel(
+                        &cwd,
+                        &selection,
+                        &base_config,
                         turn_count,
-                        session_id.as_deref().unwrap_or("new")
+                        session_id.as_deref(),
                     ),
                 )?;
                 continue;
@@ -338,6 +345,108 @@ fn claim_first_run_checklist(
         "  默认知识库             - 未配置，稍后可接入".to_string(),
         "  完成。直接输入目标即可开始，/help 查看帮助".to_string(),
     ]))
+}
+
+/// `/status` answers two different questions, so it renders two blocks.
+///
+/// The first block is diagnosis: which binary, which workspace, which provider,
+/// and how the current session is identified.  The second block is the feature
+/// panel — the one place a user can see which optional subsystems are actually
+/// on, and what to set to turn the rest on.
+///
+/// Every switch is read from the same source the runtime reads: `PersonaSettings`
+/// for the persona switches, and the already-resolved `AgentConfig` for what
+/// reached the companion subsystem.  Reporting the parsed configuration instead
+/// of the raw environment is deliberate — it is what revealed that the Linux host
+/// never bridged `YUNXI_COMPANION_ENABLED` into `AgentConfig.companion`, and a
+/// status panel that reads the environment again would have hidden that.
+fn render_status_panel(
+    cwd: &str,
+    selection: &ProviderSelection,
+    config: &AgentConfig,
+    turn_count: usize,
+    session_id: Option<&str>,
+) -> String {
+    let settings = PersonaSettings::load();
+    let soul_path = yunxi_home_dir().join("persona").join("soul.txt");
+
+    // "on" is stated plainly; "off" carries its own enablement instructions so the
+    // panel doubles as the entry point for every optional subsystem.
+    let enabled = |on: bool, hint: &str| -> String {
+        if on {
+            "● 已开启".to_string()
+        } else {
+            format!("○ 未开启   {hint}")
+        }
+    };
+
+    let mut lines = vec![
+        format!(
+            "版本       v{} · turns={} · session={}",
+            env!("CARGO_PKG_VERSION"),
+            turn_count,
+            session_id.unwrap_or("new")
+        ),
+        format!("工作区     {cwd}"),
+        format!(
+            "Provider   {} · {} · {}",
+            selection.provider, selection.model, selection.source
+        ),
+        String::new(),
+        "功能".to_string(),
+        format!(
+            "  人格     {}",
+            enabled(
+                settings.persona_enabled,
+                "设 YUNXI_PERSONA_ENABLED=true 开启"
+            )
+        ),
+        format!(
+            "  灵魂     ● 内置   profile 内建；{} 可整体覆盖",
+            soul_path.display()
+        ),
+        format!(
+            "  记忆     {}",
+            enabled(
+                settings.memory_enabled,
+                "设 YUNXI_MEMORY_ENABLED=true 开启；开启后 /status 之外的 memory-pending 可查看候选"
+            )
+        ),
+        format!(
+            "  陪伴     {}",
+            enabled(
+                config.companion.enabled,
+                "设 YUNXI_COMPANION_ENABLED=true 开启"
+            )
+        ),
+        format!(
+            "  情书     {}",
+            enabled(
+                config.companion.love_letters.enabled,
+                "需先开启陪伴；再设 YUNXI_LOVE_LETTERS_ENABLED=true（信箱密钥缺失时会在工作区自动生成）"
+            )
+        ),
+        format!(
+            "  云端控制 {}",
+            enabled(
+                config.companion.cloud_control_enabled,
+                "设 YUNXI_CLOUD_CONTROL_ENABLED=true 开启"
+            )
+        ),
+    ];
+
+    let window = config
+        .context_window_tokens
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| "未设定".to_string());
+    let compact = config
+        .auto_compact_threshold_tokens
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| "未设定（不自动压缩）".to_string());
+    lines.push(String::new());
+    lines.push(format!("上下文     窗口={window} · 压缩阈值={compact}"));
+
+    lines.join("\n")
 }
 
 async fn run_turn(

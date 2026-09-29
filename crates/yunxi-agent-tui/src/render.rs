@@ -359,15 +359,40 @@ fn render_welcome(
             )));
         }
     }
+    // The card keeps ownership of the empty session, but it must not swallow what
+    // lands in the transcript meanwhile.  `/help`, `/capabilities` and `/status`
+    // are advertised on the card itself, and their notices were previously pushed
+    // into a transcript that was never drawn: the card invited a command and the
+    // answer was invisible.  Render the card first and append the transcript rows
+    // beneath it so both stay readable.
+    if !app.transcript().cells().is_empty() {
+        let appended =
+            build_wrapped_transcript_with_styles(app.transcript().cells(), content_width, styles);
+        if !appended.rows.is_empty() {
+            lines.push(Line::from(""));
+            lines.extend(appended.rows);
+        }
+    }
     // The composer can leave only a few transcript rows on a short terminal.
     // Keep the card's leading title/content and only render checklist rows that
     // fit inside the transcript viewport, rather than letting them reach the
     // bottom pane.
     lines.truncate(inner.height as usize);
+    // An empty session used to stretch the border across the whole transcript
+    // viewport, so a six-line welcome sat inside a twenty-six-line box.  Size the
+    // card to its content instead and let the remaining rows stay empty.
+    let card_height = (lines.len() as u16)
+        .saturating_add(2)
+        .min(area.height)
+        .max(3);
+    let card_area = Rect {
+        height: card_height,
+        ..area
+    };
     let welcome = Paragraph::new(lines).alignment(Alignment::Left).block(
         Block::default()
             .title(Span::styled(
-                "YunXi | ready",
+                "云熙 · 就绪",
                 styles.style(TuiSemanticStyle::Subheader),
             ))
             .borders(Borders::ALL)
@@ -377,7 +402,7 @@ fn render_welcome(
                 styles.style(TuiSemanticStyle::Border)
             }),
     );
-    frame.render_widget(welcome, area);
+    frame.render_widget(welcome, card_area);
 }
 
 fn render_transcript_scrollbar(
@@ -425,7 +450,7 @@ fn render_bottom_pane(frame: &mut Frame<'_>, app: &YunxiTuiApp, area: Rect, styl
             frame,
             area,
             app.footer_for_width(area.width as usize),
-            "Composer",
+            "输入",
             app.bottom_pane().composer_prompt(),
             app.bottom_pane().composer_buffer(),
             Some("试着说说你想做什么…"),
@@ -443,7 +468,7 @@ fn render_bottom_pane(frame: &mut Frame<'_>, app: &YunxiTuiApp, area: Rect, styl
             let pane = Paragraph::new(lines).block(
                 Block::default()
                     .title(Span::styled(
-                        "Approval required | default: Decline",
+                        "需要批准 · 默认拒绝",
                         styles.style(TuiSemanticStyle::ActionRequired),
                     ))
                     .borders(Borders::ALL)
@@ -456,8 +481,8 @@ fn render_bottom_pane(frame: &mut Frame<'_>, app: &YunxiTuiApp, area: Rect, styl
             render_composer(
                 frame,
                 area,
-                "Enter submit | Esc cancel".to_string(),
-                "Input",
+                "Enter 发送 | Esc 取消".to_string(),
+                "输入",
                 &prompt,
                 buffer,
                 None,
@@ -955,7 +980,7 @@ mod tests {
             "有新输出",
             "^",
             "v",
-            "Composer",
+            "输入",
             "yunxi> 入力 中文かな 👩‍💻 e\u{301}",
             "End 回到最新",
             "国際化",
@@ -1112,8 +1137,8 @@ mod tests {
             let snapshot = render_full_frame_snapshot(&app, width, height);
 
             assert_eq!(pane_height, 9, "width={width}");
-            assert!(snapshot.contains("Composer"), "width={width}");
-            assert!(snapshot.contains("Enter submit"), "width={width}");
+            assert!(snapshot.contains("输入"), "width={width}");
+            assert!(snapshot.contains("Enter 发送"), "width={width}");
             assert!(snapshot.lines().all(|row| {
                 UnicodeWidthStr::width(row.split_once('|').unwrap().1) <= width as usize
             }));
@@ -1131,7 +1156,7 @@ mod tests {
         app.bottom_pane_mut().paste("第一行\r\nsecond");
 
         let snapshot = render_full_frame_snapshot(&app, 80, 24);
-        assert!(snapshot.contains("Input"));
+        assert!(snapshot.contains("输入"));
         assert!(snapshot.contains("Required input 第一行"));
         assert!(snapshot.contains("second"));
         assert!(!snapshot.contains("┌Composer"));
@@ -1181,14 +1206,14 @@ mod tests {
 
         let rendered = render_app(&app, 100, 18);
 
-        assert!(rendered.contains("Approval"));
-        assert!(rendered.contains("default: Decline"));
-        assert!(rendered.contains("Approve"));
-        assert!(rendered.contains("Decline"));
-        assert!(rendered.contains("Tab/Shift+Tab select"));
-        assert!(rendered.contains("Esc decline"));
-        assert!(rendered.contains("risk"));
-        assert!(rendered.contains("risk: low"));
+        assert!(rendered.contains("需要批准"));
+        assert!(rendered.contains("默认拒绝"));
+        assert!(rendered.contains("批准"));
+        assert!(rendered.contains("拒绝"));
+        assert!(rendered.contains("Tab/Shift+Tab 选择"));
+        assert!(rendered.contains("Esc 拒绝"));
+        assert!(rendered.contains("风险"));
+        assert!(rendered.contains("低风险"));
         assert!(!rendered.contains("approve? y/N"));
     }
 
@@ -1215,21 +1240,21 @@ mod tests {
     fn approval_actions_stay_visible_on_58_column_terminal() {
         let rendered = render_app(&approval_app(), 58, 22);
 
-        assert!(rendered.contains("Approval"));
-        assert!(rendered.contains("Approve"));
-        assert!(rendered.contains("Decline"));
-        assert!(rendered.contains("safe default"));
-        assert!(rendered.contains("Tab/Shift+Tab select"));
-        assert!(rendered.contains("risk: destructive"));
+        assert!(rendered.contains("需要批准"));
+        assert!(rendered.contains("批准"));
+        assert!(rendered.contains("拒绝"));
+        assert!(rendered.contains("安全默认"));
+        assert!(rendered.contains("Tab/Shift+Tab 选择"));
+        assert!(rendered.contains("destructive"));
     }
 
     #[test]
     fn approval_actions_stay_visible_on_tight_58_column_terminal() {
         let rendered = render_app(&approval_app(), 58, 18);
 
-        assert!(rendered.contains("Approve"));
-        assert!(rendered.contains("Decline"));
-        assert!(rendered.contains("Tab select"));
+        assert!(rendered.contains("批准"));
+        assert!(rendered.contains("拒绝"));
+        assert!(rendered.contains("Tab"));
     }
 
     #[test]
@@ -1237,10 +1262,10 @@ mod tests {
         for (width, height) in [(80, 22), (100, 24)] {
             let rendered = render_app(&approval_app(), width, height);
 
-            assert!(rendered.contains("Approve"));
-            assert!(rendered.contains("Decline"));
-            assert!(rendered.contains("Tab/Shift+Tab select"));
-            assert!(rendered.contains("risk: destructive"));
+            assert!(rendered.contains("批准"));
+            assert!(rendered.contains("拒绝"));
+            assert!(rendered.contains("Tab/Shift+Tab 选择"));
+            assert!(rendered.contains("destructive"));
         }
     }
 
@@ -1249,11 +1274,11 @@ mod tests {
         let app = approval_app();
         for (width, height) in [(80, 24), (100, 30), (120, 40), (200, 50)] {
             let snapshot = render_full_frame_snapshot(&app, width, height);
-            assert!(snapshot.contains("risk: destructive"), "width={width}");
+            assert!(snapshot.contains("destructive"), "width={width}");
             assert!(snapshot.contains("Remove-Item"), "width={width}");
-            assert!(snapshot.contains("Approve"), "width={width}");
-            assert!(snapshot.contains("Decline"), "width={width}");
-            assert!(snapshot.contains("Tab/Shift+Tab select"), "width={width}");
+            assert!(snapshot.contains("批准"), "width={width}");
+            assert!(snapshot.contains("拒绝"), "width={width}");
+            assert!(snapshot.contains("Tab/Shift+Tab 选择"), "width={width}");
             assert!(snapshot.lines().all(|row| {
                 UnicodeWidthStr::width(row.split_once('|').unwrap().1) <= width as usize
             }));
@@ -1264,9 +1289,9 @@ mod tests {
     fn monochrome_keeps_approval_error_warning_and_cancel_text_visible() {
         let monochrome = TuiStyleSet::new(crate::styles::TuiColorCapability::Monochrome);
         let approval = render_app_with_styles(&approval_app(), 58, 18, monochrome);
-        assert!(approval.contains("Approval required"));
-        assert!(approval.contains("default: Decline"));
-        assert!(approval.contains("risk: destructive"));
+        assert!(approval.contains("需要批准"));
+        assert!(approval.contains("默认拒绝"));
+        assert!(approval.contains("destructive"));
 
         let mut app = YunxiTuiApp::default();
         app.set_banner(banner());
