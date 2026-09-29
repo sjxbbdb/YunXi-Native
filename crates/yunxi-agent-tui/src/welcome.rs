@@ -10,7 +10,7 @@ use crate::yunxi_starfield::{
     BannerArt, Seg, gradient_t, lerp_color, star_seg,
     YUNXI_SILVER, YUNXI_PURPLE, YUNXI_LAVENDER, YUNXI_INK,
 };
-use ratatui::style::{Modifier, Style};
+use ratatui::style::Modifier;
 
 /// 星空密度（值越大越稀）
 const STAR_SPARSITY: u32 = 9;

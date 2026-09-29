@@ -190,7 +190,12 @@ fn render_transcript(
     styles: TuiStyleSet,
 ) {
     if !app.has_user_round() && app.welcome_enabled() {
-        render_welcome(frame, app, area, inner, styles);
+        // 使用动画版本（当没有 checklist 时），否则使用旧版以保持兼容性
+        if app.welcome_checklist().is_empty() {
+            render_welcome_animated(frame, app, area, inner, styles);
+        } else {
+            render_welcome(frame, app, area, inner, styles);
+        }
         return;
     }
     let wrapped = build_wrapped_transcript_with_styles(
