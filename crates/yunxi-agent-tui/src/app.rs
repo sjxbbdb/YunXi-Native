@@ -22,13 +22,54 @@ const WELCOME_FADE_IN_FRAMES: usize = 24;
 /// 16 / 24 / 32 帧；三者的最小公倍数是 96 —— 走满 96 帧后整片星域精确回到同一图案。
 const STARFIELD_CYCLE_FRAMES: usize = 96;
 
-/// 欢迎动画的总帧数预算：淡入 24 帧 + 3 轮星移（3 × 96）≈ 10.4s（33ms/帧）。
+/// 开场动画的目标时长上限：5 秒。见 [`WELCOME_ANIMATION_MIN_SECONDS`]。
+const WELCOME_ANIMATION_MAX_SECONDS: usize = 5;
+
+/// 开场动画的目标时长下限：4 秒。
+///
+/// 用户要求「开场动画约 4-5 秒」，这两个常量把要求变成**可编译期检查**的约束，
+/// 越界直接编译失败（见下面的 `const _: () = assert!(..)`）。
+const WELCOME_ANIMATION_MIN_SECONDS: usize = 4;
+
+/// 每帧节拍，单位微秒。
+///
+/// 就是 `RedrawScheduler::DEFAULT_MIN_FRAME_INTERVAL = Duration::from_micros(33_334)` ——
+/// 空闲供帧（`read_prompt` 的 poll 超时）与 `play_intro()` 都按它走。
+/// 用微秒而不是毫秒是为了让下面的时长换算能整数比较，不引入取整误差。
+const WELCOME_ANIMATION_FRAME_MICROS: usize = 33_334;
+
+/// 欢迎动画的总帧数预算。
+///
+/// **算法**：`帧数 × 每帧节拍 = 时长`。
+///
+/// ```text
+/// 24（淡入）+ 96（星空一整轮）= 120 帧
+/// 120 帧 × 33.334ms/帧 ≈ 4.00s   → 落在「4-5 秒」区间内
+/// ```
+///
+/// 为什么整轮收尾：`star_at()` 里每颗星的相位周期是 `8 * speed`（`speed ∈ 2..=4`），
+/// 即 16 / 24 / 32 帧，三者最小公倍数是 96；再叠加 24 帧淡入（`born` 到 24 封顶后
+/// 不再变化），整块画面在 120 帧后回到同一图案。于是动画的**最后一帧就是终态**，
+/// 不会停在一个半明半暗的中间相位上。
 ///
 /// 动画被刻意定义为**有限时长**的开场动效（对应 issue #38 的方案 C 思路）：
-/// 播完就停在最后一帧，空闲等待输入时不再每 33ms 重绘一次全屏，
-/// 这样用户盯着欢迎界面思考时 CPU 和终端写入都归零。
+/// 播完就停，空闲等待输入时不再每 33ms 重绘一次全屏，这样用户在会话界面思考时
+/// CPU 和终端写入都归零（实测静默窗口 0.0% CPU / 0.0 KiB/s）。
 /// 想让它像壁纸一样一直闪，把这个预算调大即可 —— 代价就是空闲态持续 30fps 重绘。
-const WELCOME_ANIMATION_FRAMES: usize = WELCOME_FADE_IN_FRAMES + 3 * STARFIELD_CYCLE_FRAMES;
+pub(crate) const WELCOME_ANIMATION_FRAMES: usize = WELCOME_FADE_IN_FRAMES + STARFIELD_CYCLE_FRAMES;
+
+/// 把「4-5 秒」写成编译期断言：120 帧 × 33.334ms/帧 ≈ 4.00s。
+/// 一旦有人改动上面的帧数常量（比如为了好看加长），这里会在**编译期**而不是交付后才发现。
+const _: () = {
+    assert!(
+        WELCOME_ANIMATION_FRAMES * WELCOME_ANIMATION_FRAME_MICROS
+            >= WELCOME_ANIMATION_MIN_SECONDS * 1_000_000
+    );
+    assert!(
+        WELCOME_ANIMATION_FRAMES * WELCOME_ANIMATION_FRAME_MICROS
+            <= WELCOME_ANIMATION_MAX_SECONDS * 1_000_000
+    );
+};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct YunxiTuiBanner {
@@ -49,6 +90,12 @@ pub(crate) struct YunxiTuiApp {
     welcome_scene: Option<WelcomeScene>,
     /// 欢迎动画已经推进过的帧数，用于给空闲态的开场动效封顶（见 `WELCOME_ANIMATION_FRAMES`）。
     welcome_animation_frames: usize,
+    /// 开场是否已经结束（播完或被任意键跳过）。
+    ///
+    /// 用户要求「开场动画播完就撤下、直接进会话界面」，这个标志就是那条撤下条件：
+    /// 一旦置位，`render.rs` 不再渲染欢迎卡，`welcome_animation_pending()` 也不再供帧，
+    /// 屏幕交给干净的会话区 + 输入框。`/clear` 会把它复位（见 `rearm_welcome_intro()`）。
+    intro_finished: bool,
     presentation: TuiPresentation,
     timeline: TimelineStore,
     transcript: Transcript,
@@ -79,6 +126,7 @@ impl Default for YunxiTuiApp {
             welcome_checklist: Vec::new(),
             welcome_scene: Some(WelcomeScene::new()),
             welcome_animation_frames: 0,
+            intro_finished: false,
             presentation: TuiPresentation::default(),
             timeline: TimelineStore::default(),
             transcript: Transcript::default(),
@@ -159,7 +207,8 @@ impl YunxiTuiApp {
     /// 三个条件缺一不可：
     /// - `welcome_enabled`：`YUNXI_TUI_BANNER=0` 时压根没有欢迎卡；
     /// - `!has_user_round()`：首轮真实对话之后 `render.rs` 用 transcript 替掉欢迎卡；
-    /// - 帧数预算没花完：动画是有限时长的开场动效，播完就停，不再空转。
+    /// - 帧数预算没花完，且开场还没结束：动画是有限时长的开场动效，播完就停，
+    ///   不再空转（`intro_finished` 由 `finish_welcome_intro()` 置位）。
     ///
     /// 首启（`welcome_checklist` 非空）一样要供帧：`render.rs` 现在只有一条渲染路径，
     /// 检查清单是接在动画下方渲染的，首启用户看到的星空同样得会动。
@@ -167,7 +216,45 @@ impl YunxiTuiApp {
         self.welcome_enabled
             && self.welcome_scene.is_some()
             && !self.has_user_round()
+            && !self.intro_finished
             && self.welcome_animation_frames < WELCOME_ANIMATION_FRAMES
+    }
+
+    /// 开场（欢迎动画）是否已经结束：播完预算或被任意键跳过。
+    ///
+    /// `render.rs` 用 `!intro_finished` 决定要不要画欢迎卡 —— 置位之后欢迎卡撤下，
+    /// 会话区变成干净的对话区 + 输入框。
+    pub(crate) fn intro_finished(&self) -> bool {
+        self.intro_finished
+    }
+
+    /// 开场动画还可以再推进几帧（总预算减去已用帧数）。
+    ///
+    /// `host.rs::play_intro()` 用它把宿主传入的 `budget_frames` 与全局预算取小值：
+    /// 宿主催得再急，也不会把开场动画拖过 `WELCOME_ANIMATION_FRAMES`。
+    pub(crate) fn welcome_intro_remaining_frames(&self) -> usize {
+        WELCOME_ANIMATION_FRAMES.saturating_sub(self.welcome_animation_frames)
+    }
+
+    /// 收尾开场：置位「开场已结束」，此后欢迎卡不再渲染、也不再供帧。
+    ///
+    /// 返回**是否需要重绘**。已经结束过就返回 `false`，避免重复请求重绘
+    /// （`read_prompt()` 会在第一次置位时立刻重绘一次，把欢迎卡换成会话界面）。
+    pub(crate) fn finish_welcome_intro(&mut self) -> bool {
+        if self.intro_finished {
+            return false;
+        }
+        self.intro_finished = true;
+        true
+    }
+
+    /// 把开场复位：`/clear` 之后空会话的欢迎界面要能重新播一遍。
+    ///
+    /// 帧数与「开场已结束」标志一起复位 —— 只复位帧数会让欢迎卡回来后停在终态
+    /// （`intro_finished` 仍为真，`render.rs` 直接不画），看起来像卡住了。
+    pub(crate) fn rearm_welcome_intro(&mut self) {
+        self.welcome_animation_frames = 0;
+        self.intro_finished = false;
     }
 
     /// 推进一帧欢迎动画。
@@ -179,6 +266,10 @@ impl YunxiTuiApp {
     /// 调用点只有 `host.rs` 两处，两处都按这个返回值决定要不要 `frame.request(...)`：
     /// - `tick()`：回合中的 33ms tick（回合里欢迎卡通常已经撤下，于是不再产生重绘）；
     /// - `read_prompt()`：空闲等待输入时 poll 超时的分支（issue #38 的修复点）。
+    ///
+    /// 花掉最后一帧时顺手收尾（`finish_welcome_intro()`）：空闲路径也是一条完整的开场 ——
+    /// 用户不按键就是"安静看完"，播完同样要撤下欢迎卡进会话界面。
+    /// 返回值此时仍为 `true`，让调用方把这最后一帧重绘出去（那一帧画的是终态画面）。
     pub(crate) fn tick_welcome(&mut self) -> bool {
         if !self.welcome_animation_pending() {
             return false;
@@ -188,6 +279,9 @@ impl YunxiTuiApp {
         };
         scene.tick();
         self.welcome_animation_frames = self.welcome_animation_frames.saturating_add(1);
+        if self.welcome_animation_frames >= WELCOME_ANIMATION_FRAMES {
+            self.finish_welcome_intro();
+        }
         true
     }
 
@@ -620,9 +714,9 @@ impl YunxiTuiApp {
         self.timeline.clear();
         self.transcript.clear();
         self.viewport.reset();
-        // `/clear` 会把空会话的欢迎卡请回来，所以动画预算也要还回去，
-        // 否则重开的欢迎界面会是一张静止的星空图。
-        self.welcome_animation_frames = 0;
+        // `/clear` 会把空会话的欢迎卡请回来，所以动画预算和「开场已结束」标志
+        // 都要还回去，否则重开的欢迎界面会是空的（标志仍为真、render.rs 不再画卡）。
+        self.rearm_welcome_intro();
     }
 
     pub(crate) fn scroll_up(

@@ -1,18 +1,18 @@
 00|云熙 | deepseek-chat-ultra-long-model-name | 运行中
 01|↓ 有新输出 · End 回到最新
-02|──────────────────────────────────────────────────────────
-03|┌对话 74-82 / 93─────────────────────────────────────────┐
-04|│    streams.                                            ^
-05|│[云熙·] 国際化 layout 中文かな keeps one active cell    ║
-06|│    with emoji 👩‍💻 and é.                                ║
-07|│    URL https://very-long.example.test/api/v1/items?    ║
-08|│    search=中文&sort=desc#results                       ║
-09|│    Windows C:\Users\24763\YunXi Agent\输出目录\very-   ║
-10|│    long-file-name.txt                                  ║
-11|│    ```rust                                             █
-12|│        let greeting = "你好、世界"; // 日本語と中文    v
-13|└────────────────────────────────────────────────────────┘
-14|┌输入────────────────────────────────────────────────────┐
-15|│yunxi> 入力 中文かな 👩‍💻 é                               │
-16|│End 回到最新 | 有新输出 | wheel/drag history            │
-17|└────────────────────────────────────────────────────────┘
+02|对话 78-90 / 101                                         ^
+03|    evidence                                             ║
+04|  history 35: stable transcript row for viewport         ║
+05|    evidence                                             ║
+06|› Keep the current history position while the answer     ║
+07|    streams.                                             ║
+08|▌ 国際化 layout 中文かな keeps one active cell with      ║
+09|    emoji 👩‍💻 and é.                                      ║
+10|  URL https://very-long.example.test/api/v1/items?       ║
+11|    search=中文&sort=desc#results                        ║
+12|  Windows C:\Users\24763\YunXi Agent\输出目录\very-long- █
+13|    file-name.txt                                        █
+14|  ```rust                                                v
+15|yunxi> 入力 中文かな 👩‍💻 é
+16|End 回到最新 | 有新输出 | wheel/drag history
+17|

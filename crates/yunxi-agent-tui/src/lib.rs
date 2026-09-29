@@ -12,6 +12,7 @@ mod input_map;
 #[cfg(test)]
 mod integrated_regression;
 mod layout;
+pub mod onboarding;
 mod output_summary;
 mod presentation;
 mod render;
@@ -31,6 +32,10 @@ pub use bottom_pane::{
     ApprovalDecision, ApprovalRequestView, UserInputRequestView, UserInputResponse,
 };
 pub use host::{TuiTickAction, YunxiTui};
+pub use onboarding::{
+    ChoiceOption, OnboardingAnswers, OnboardingOutcome, OnboardingStep, OnboardingStepId,
+    OnboardingWizard, StepKind,
+};
 pub use presentation::{
     PresentationDetail, TuiCellId, TuiCellKind, TuiEvent, TuiSourceSequence, TuiStreamIdentity,
     TuiStreamPhase, TuiStreamState,

@@ -84,48 +84,65 @@ fn push_cell_rows(
     width: usize,
     styles: TuiStyleSet,
 ) {
+    // 视觉重设计（方向 A，用户已确认）：
+    //   - 用户说的用 `›` 开头，云熙说的用**缩进**，其余元信息也缩进，
+    //     靠**明度**而不是色相区分（旧设计是 `[你]`/`[云熙]`/`[工具]` 六种彩色前缀）。
+    //   - 前缀都是 2 显示列，所以用户文字与云熙文字**左对齐**，
+    //     续行 gutter 也取 2 列，换行后不会错位。
+    //   - 流式中的回复用 ACCENT（`Focus`）而不是换一个标签，
+    //     因为「正在说」是状态，不该占用结构化位置。
     match cell.kind() {
-        HistoryCellKind::User(content) => {
-            push_labeled(rows, "你", TuiSemanticStyle::User, content, width, styles)
-        }
-        HistoryCellKind::Assistant { content, active } => {
-            let label = if *active { "云熙·" } else { "云熙" };
-            push_labeled(
-                rows,
-                label,
-                TuiSemanticStyle::Assistant,
-                content,
-                width,
-                styles,
-            );
-        }
-        HistoryCellKind::Tool(entry) => push_labeled(
+        HistoryCellKind::User(content) => push_prefixed(
             rows,
-            "工具",
+            USER_PROMPT,
+            TuiSemanticStyle::User,
+            content,
+            width,
+            styles,
+        ),
+        HistoryCellKind::Assistant { content, active } => push_prefixed(
+            rows,
+            if *active {
+                STREAMING_PROMPT
+            } else {
+                INFO_INDENT
+            },
+            if *active {
+                TuiSemanticStyle::Focus
+            } else {
+                TuiSemanticStyle::Assistant
+            },
+            content,
+            width,
+            styles,
+        ),
+        HistoryCellKind::Tool(entry) => push_prefixed(
+            rows,
+            INFO_INDENT,
             tool_semantic(entry.phase),
             &entry.display_text(),
             width,
             styles,
         ),
-        HistoryCellKind::Event { kind, message } => push_labeled(
+        HistoryCellKind::Event { kind, message } => push_prefixed(
             rows,
-            event_display_label(kind, message),
+            INFO_INDENT,
             event_semantic(kind, message),
             message,
             width,
             styles,
         ),
-        HistoryCellKind::Debug { id, label, message } => push_labeled(
+        HistoryCellKind::Debug { id, label, message } => push_prefixed(
             rows,
-            "调试",
+            INFO_INDENT,
             TuiSemanticStyle::Muted,
             &format!("#{id} {label}: {message}"),
             width,
             styles,
         ),
-        HistoryCellKind::Error(message) => push_labeled(
+        HistoryCellKind::Error(message) => push_prefixed(
             rows,
-            "错误",
+            INFO_INDENT,
             TuiSemanticStyle::Error,
             message,
             width,
@@ -134,23 +151,35 @@ fn push_cell_rows(
     }
 }
 
-fn push_labeled(
+/// 用户行的提示符。选 `›` 而不是 `>`：前者是全角感的单字形，
+/// 在等宽字体里不会与 shell 的 `$`/`>` 混淆。
+const USER_PROMPT: &str = "› ";
+/// 其余行的缩进。与 [`USER_PROMPT`] 同为 2 显示列，保证用户与云熙的文字左对齐。
+const INFO_INDENT: &str = "  ";
+/// 流式回复的标记，与输入框的光标同一个字形。
+///
+/// 为什么不能只用颜色：新设计用 ACCENT 表达「正在生成」，但**单色终端上
+/// 颜色没有载体**，那样就分不出「正在说」和「说完了」。所以补一个 2 列宽的
+/// 字形标记 —— 宽度与 [`INFO_INDENT`] 相同，换行与对齐都不受影响。
+const STREAMING_PROMPT: &str = "▌ ";
+
+fn push_prefixed(
     rows: &mut Vec<Line<'static>>,
-    label: &str,
+    prefix: &str,
     semantic: TuiSemanticStyle,
     content: &str,
     width: usize,
     styles: TuiStyleSet,
 ) {
-    let label_prefix = format!("[{label}] ");
     let label_style = styles.style(semantic);
     let gutter_style = styles.style(TuiSemanticStyle::Muted);
+    let gutter = " ".repeat(TextLayout::measure(prefix));
 
     let mut line_iter = content.lines();
     let first = line_iter.next().unwrap_or("");
     push_wrapped_text(
         rows,
-        StyledPrefix::new(label_prefix.clone(), label_style),
+        StyledPrefix::new(prefix.to_string(), label_style),
         first,
         width,
         styles,
@@ -159,7 +188,7 @@ fn push_labeled(
     for rest in line_iter {
         push_wrapped_text(
             rows,
-            StyledPrefix::new(CONTINUATION_GUTTER.to_string(), gutter_style),
+            StyledPrefix::new(gutter.clone(), gutter_style),
             rest,
             width,
             styles,
@@ -264,35 +293,6 @@ fn event_semantic(label: &str, message: &str) -> TuiSemanticStyle {
     }
 }
 
-fn event_label(label: &str) -> &str {
-    match label {
-        "notice" => "提示",
-        "warning" => "注意",
-        "progress" => "进展",
-        "approval" => "需要确认",
-        "escalation" => "需要升级",
-        "cancelled" => "已取消",
-        "provider" => "服务错误",
-        "file" => "文件",
-        "patch" => "修改",
-        "context" => "上下文",
-        "session" => "会话",
-        "usage" => "用量",
-        "debug" => "调试",
-        "details" => "详情",
-        "linux" => "系统",
-        other => other,
-    }
-}
-
-fn event_display_label<'a>(label: &'a str, message: &str) -> &'a str {
-    if label == "notice" && message.to_ascii_lowercase().starts_with("warning") {
-        "注意"
-    } else {
-        event_label(label)
-    }
-}
-
 fn tool_semantic(phase: ToolPhase) -> TuiSemanticStyle {
     match phase {
         ToolPhase::ApprovalRequired => TuiSemanticStyle::ActionRequired,
@@ -335,7 +335,7 @@ mod tests {
         let wrapped = build_wrapped_transcript(&cells, 12);
 
         assert!(wrapped.rows.len() > 1);
-        assert!(row_text(&wrapped.rows[0]).starts_with("[云熙] "));
+        assert!(row_text(&wrapped.rows[0]).starts_with("  "));
         assert!(row_text(&wrapped.rows[1]).starts_with(CONTINUATION_GUTTER));
     }
 
@@ -348,7 +348,7 @@ mod tests {
         let wrapped = build_wrapped_transcript(&cells, 14);
 
         assert!(wrapped.rows.len() > 1);
-        assert!(row_text(&wrapped.rows[0]).contains("[你] "));
+        assert!(row_text(&wrapped.rows[0]).contains("› "));
         assert!(row_text(&wrapped.rows[1]).starts_with(CONTINUATION_GUTTER));
     }
 
@@ -361,8 +361,10 @@ mod tests {
 
         let wrapped = build_wrapped_transcript(&cells, 80);
 
-        assert_eq!(row_text(&wrapped.rows[0]), "[进展] first");
-        assert_eq!(row_text(&wrapped.rows[1]), "    second");
+        // 前缀现在是 2 列的 `  `（视觉重设计：不再有 `[进展] ` 这种 6 列标签），
+        // 续行 gutter 按前缀宽度对齐，所以也是 2 列。
+        assert_eq!(row_text(&wrapped.rows[0]), "  first");
+        assert_eq!(row_text(&wrapped.rows[1]), "  second");
     }
 
     #[test]
@@ -437,7 +439,11 @@ mod tests {
     }
 
     #[test]
-    fn important_states_keep_text_labels_in_monochrome() {
+    fn important_states_stay_distinguishable_in_monochrome() {
+        // 新设计去掉了 `[注意]`/`[错误]` 这类彩色标签，语义改由**明度档**承担。
+        // 单色终端上明度没有载体，所以必须在修饰符上活下来 —— 这个测试锁的就是
+        // 这件事：四种状态在单色下两两可区分，而不是变成四行一样的普通文字。
+        use ratatui::style::Modifier;
         let cells = vec![
             cell(HistoryCellKind::Event {
                 kind: "warning".to_string(),
@@ -459,15 +465,48 @@ mod tests {
             80,
             TuiStyleSet::new(crate::styles::TuiColorCapability::Monochrome),
         );
+
+        // 四行内容都在
         let rendered = wrapped
             .rows
             .iter()
             .map(row_text)
             .collect::<Vec<_>>()
             .join("\n");
-
-        for marker in ["[注意]", "[需要确认]", "[已取消]", "[错误]"] {
-            assert!(rendered.contains(marker));
+        for needle in [
+            "check configuration",
+            "action required",
+            "turn stopped",
+            "provider failed",
+        ] {
+            assert!(rendered.contains(needle), "缺少内容：{needle}\n{rendered}");
         }
+
+        // 四种状态的修饰符组合两两不同
+        let mods: Vec<(String, Modifier)> = wrapped
+            .rows
+            .iter()
+            .filter_map(|row| {
+                let text = row_text(row);
+                let style = row.spans.first()?.style;
+                (!text.trim().is_empty()).then(|| (text, style.add_modifier))
+            })
+            .collect();
+        let unique: std::collections::HashSet<String> =
+            mods.iter().map(|(_, m)| format!("{m:?}")).collect();
+        assert!(
+            unique.len() >= 3,
+            "单色下状态应当靠修饰符区分，实际只有 {} 种：{mods:?}",
+            unique.len()
+        );
+
+        // 错误必须落在「粗体 + 反白」上 —— 它是最需要跳出来的那一个
+        let error_row = wrapped
+            .rows
+            .iter()
+            .find(|row| row_text(row).contains("provider failed"))
+            .expect("error row");
+        let m = error_row.spans.first().expect("span").style.add_modifier;
+        assert!(m.contains(Modifier::REVERSED), "错误行必须反白：{m:?}");
     }
 }

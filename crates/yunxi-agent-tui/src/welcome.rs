@@ -217,8 +217,11 @@ impl WelcomeScene {
             Vec::new(), // 空行
             self.center(vec![Seg::new(&self.art.subtitle, dim_style)], cols),
             Vec::new(), // 空行
-            self.center(vec![Seg::new("直接说出你的想法就好", dim_style)], cols),
-            self.center(vec![Seg::new("不需要记住任何命令", dim_style)], cols),
+            self.center(
+                vec![Seg::new("用自然语言直接说你想做什么", dim_style)],
+                cols,
+            ),
+            self.center(vec![Seg::new("shell 命令照常可用", dim_style)], cols),
             Vec::new(), // 空行
             self.center(
                 vec![
@@ -458,7 +461,8 @@ mod tests {
                 .position(|line| line.contains(needle))
                 .unwrap_or_else(|| panic!("missing row: {needle}"))
         };
-        let banner = position("云  熙  在  此");
+        // 艺术字已改成无框块字，不再有 "云  熙" 这行；改认副标题。
+        let banner = position("接管终端交互的陪伴型 Agent");
         let hint = position("/help");
         let title = position("首次启动检查");
         let completion = position("完成。");
@@ -497,7 +501,7 @@ mod tests {
             .collect();
         assert_eq!(clipped.len(), 17);
         let text = clipped.join("\n");
-        assert!(text.contains("云  熙  在  此"));
+        assert!(text.contains("接管终端交互的陪伴型 Agent"));
         assert!(text.contains("首次启动检查"));
         assert!(!text.contains("完成。"));
 
@@ -509,7 +513,7 @@ mod tests {
             .collect();
         assert_eq!(tiny.len(), 13);
         let text = tiny.join("\n");
-        assert!(text.contains("云  熙  在  此"));
+        assert!(text.contains("接管终端交互的陪伴型 Agent"));
         assert!(text.contains("/help"));
         assert!(!text.contains("首次启动检查"));
     }

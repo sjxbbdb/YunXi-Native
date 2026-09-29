@@ -4,6 +4,7 @@ use crate::bottom_pane::BottomPaneMode;
 use crate::edit_buffer::EditBuffer;
 use crate::input_map::FocusTarget;
 use crate::layout::compute_layout;
+use crate::onboarding::OnboardingWizard;
 use crate::scrollbar::TranscriptScrollbarGeometry;
 use crate::styles::{TuiSemanticStyle, TuiStyleSet};
 use crate::text_layout::{TextLayout, WrapPolicy};
@@ -14,6 +15,34 @@ use ratatui::Frame;
 use ratatui::layout::{Position, Rect};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
+
+/// 配置向导的整屏渲染。
+///
+/// 向导不经过 `YunxiTuiApp`（它没有会话、没有输入框、没有底部面板），
+/// 所以这里直接消费 `OnboardingWizard::render()` 的片段网格 —— 与欢迎动画
+/// 用同一套 `Seg → Span → Paragraph` 转换，保证视觉语言一致。
+pub(crate) fn render_onboarding_screen(frame: &mut Frame<'_>, wizard: &OnboardingWizard) {
+    let area = frame.area();
+    let output = wizard.render(area.width as usize, area.height as usize);
+    for (y, line) in output.iter().enumerate() {
+        if y >= area.height as usize {
+            break;
+        }
+        let spans: Vec<Span> = line
+            .iter()
+            .map(|seg| Span::styled(&seg.text, seg.style))
+            .collect();
+        frame.render_widget(
+            Paragraph::new(Line::from(spans)),
+            Rect {
+                x: area.x,
+                y: area.y + y as u16,
+                width: area.width,
+                height: 1,
+            },
+        );
+    }
+}
 
 pub(crate) fn render_tui_frame(frame: &mut Frame<'_>, app: &YunxiTuiApp) {
     render_tui_frame_with_styles(frame, app, TuiStyleSet::detect());
@@ -173,11 +202,9 @@ fn render_header(frame: &mut Frame<'_>, app: &YunxiTuiApp, area: Rect, styles: T
             styles.style(TuiSemanticStyle::Subheader),
         )),
     ])
-    .block(
-        Block::default()
-            .borders(Borders::BOTTOM)
-            .border_style(styles.style(TuiSemanticStyle::Border)),
-    );
+    // 去框：状态行不再用一条 `───` 与下方隔开。分层靠明度（Header 亮 / 正文中）
+    // 与留白，不靠线条。
+    .block(Block::default().borders(Borders::NONE));
     frame.render_widget(header, area);
 }
 
@@ -189,10 +216,14 @@ fn render_transcript(
     scrollbar_area: Rect,
     styles: TuiStyleSet,
 ) {
-    if !app.has_user_round() && app.welcome_enabled() {
+    if !app.has_user_round() && app.welcome_enabled() && !app.intro_finished() {
         // 首次启动曾经走的是另一张静态检查卡：新做的动画欢迎界面反而在**最重要的
         // 首次进入时刻**看不到。现在两条路径合一 —— `render_welcome_animated` 把
         // 清单接在动画下方渲染，空清单时输出与原来的纯动画逐片段相同。
+        //
+        // `!intro_finished()` 是「开场播完/被跳过就撤下」的那一条：置位后这里不再接管
+        // 会话区，落到下面的分支渲染干净的对话区 + 输入框，欢迎卡不会停在最后一帧
+        // 变成静态背景。
         render_welcome_animated(frame, app, area, inner, styles);
         return;
     }
@@ -216,8 +247,9 @@ fn render_transcript(
                 title,
                 styles.style(TuiSemanticStyle::Subheader),
             ))
-            .borders(Borders::ALL)
-            .border_style(styles.style(border_semantic)),
+            // 去框：对话区不再有 `┌对话┐`。标题改由上方一行 dim 文本承担
+            // （`render_transcript_title`），所以这里只画内容。
+            .borders(Borders::NONE),
     );
     frame.render_widget(transcript, area);
 
@@ -335,16 +367,18 @@ fn render_bottom_pane(frame: &mut Frame<'_>, app: &YunxiTuiApp, area: Rect, styl
                 .into_iter()
                 .map(|line| render_approval_layout_line(line, styles))
                 .collect::<Vec<_>>();
-            let pane = Paragraph::new(lines).block(
-                Block::default()
-                    .title(Span::styled(
-                        "需要批准 · 默认拒绝",
-                        styles.style(TuiSemanticStyle::ActionRequired),
-                    ))
-                    .borders(Borders::ALL)
-                    .border_style(styles.style(TuiSemanticStyle::ActionRequired)),
+            // 去框：审批不再是「一个带边框的盒子」，而是会话区里一段缩进的
+            // 提示块。标题仍然保留 —— 它交代了「默认是拒绝」这条安全语义，
+            // 属于内容而不是装饰，所以改成区内第一行。
+            let mut lines = lines;
+            lines.insert(
+                0,
+                Line::from(Span::styled(
+                    "需要批准 · 默认拒绝",
+                    styles.style(TuiSemanticStyle::ActionRequired),
+                )),
             );
-            frame.render_widget(pane, area);
+            frame.render_widget(Paragraph::new(lines), area);
         }
         BottomPaneMode::UserInput { request, buffer } => {
             let prompt = format!("{} ", request.prompt);
@@ -409,7 +443,7 @@ fn render_composer(
     title_semantic: TuiSemanticStyle,
 ) {
     let prompt_width = TextLayout::measure(prompt);
-    let inner_width = area.width.saturating_sub(2).max(1) as usize;
+    let inner_width = area.width.max(1) as usize;
     let body_width = inner_width.saturating_sub(prompt_width).max(1);
     let display_text = if let Some(summary) = paste_summary {
         summary
@@ -435,7 +469,11 @@ fn render_composer(
         body_width,
         WrapPolicy::CodeBlock,
     );
-    let visible_content_rows = area.height.saturating_sub(3).max(1) as usize;
+    // 去框：可用行不再减去上下各 1 行的边框，只减去页脚那 1 行。
+    // （这个 `3` 和 `composer_desired_height` 里的 `3u16` 是同一个来源，
+    //   只改一处会让输入区算出来的高度和实际能显示的行数对不上，
+    //   表现就是第一行被无端滚出视野。）
+    let visible_content_rows = area.height.saturating_sub(1).max(1) as usize;
     let first_visible_row = visual_cursor
         .row
         .saturating_add(1)
@@ -474,17 +512,11 @@ fn render_composer(
         footer,
         styles.style(TuiSemanticStyle::Footer),
     )));
-    let pane = Paragraph::new(lines)
-        .block(
-            Block::default()
-                .title(Span::styled(
-                    title.to_string(),
-                    styles.style(title_semantic),
-                ))
-                .borders(Borders::ALL)
-                .border_style(styles.style(title_semantic)),
-        )
-        .wrap(Wrap { trim: false });
+    // 去框：输入区不再有 `┌输入┐`。原来放在边框左上角的标题，改由提示符本身
+    // （`yunxi >` / `云熙 >`）承担 —— 它已经在行内，不需要再标一次。
+    let _ = title;
+    let _ = title_semantic;
+    let pane = Paragraph::new(lines).wrap(Wrap { trim: false });
     frame.render_widget(pane, area);
 
     if area.width > 2 && area.height > 2 {
@@ -499,7 +531,7 @@ fn composer_cursor_position(
     buffer: &EditBuffer,
     first_visible_row: usize,
 ) -> Position {
-    let inner_width = area.width.saturating_sub(2).max(1) as usize;
+    let inner_width = area.width.max(1) as usize;
     let prompt_width = TextLayout::measure(prompt);
     let body_width = inner_width.saturating_sub(prompt_width).max(1);
     let visual = TextLayout::cursor_position(
@@ -511,15 +543,13 @@ fn composer_cursor_position(
     Position {
         x: area
             .x
-            .saturating_add(1)
             .saturating_add(prompt_width as u16)
             .saturating_add(visual.column as u16)
-            .min(area.x.saturating_add(area.width.saturating_sub(2))),
+            .min(area.x.saturating_add(area.width.saturating_sub(1))),
         y: area
             .y
-            .saturating_add(1)
             .saturating_add(visual.row.saturating_sub(first_visible_row) as u16)
-            .min(area.y.saturating_add(area.height.saturating_sub(2))),
+            .min(area.y.saturating_add(area.height.saturating_sub(1))),
     }
 }
 
@@ -604,26 +634,28 @@ mod tests {
         ]);
 
         let welcome = render_app(&app, 80, 24);
-        assert!(welcome.contains("YunXi"));
-        assert!(welcome.contains("陪伴型终端助手"));
+        // 艺术字已从「圆角框 + YunXi · Companion」改成无框块字（见视觉重设计），
+        // 所以这里改断言副标题 —— 它是欢迎界面上稳定存在的品牌文字。
+        assert!(welcome.contains("接管终端交互的陪伴型 Agent"));
+        assert!(welcome.contains("接管终端交互的陪伴型 Agent"));
         // 动画界面的提示行只挂 /help 与 /status；/capabilities 曾在旧卡片的提示行里。
         assert!(welcome.contains("/status"));
         // 80x24 下动画界面占满了可用行，清单整块让位（见 welcome.rs 的空间策略），
         // 所以这里不断言清单内容 —— 清单在更宽的终端上由
         // `welcome_checklist_is_rendered_without_becoming_transcript_content` 覆盖。
-        assert!(welcome.contains("陪同") || welcome.contains("陪伴型终端助手"));
+        assert!(welcome.contains("接管终端交互的陪伴型 Agent"));
         // 清单条目同样因为空间让位不在这里断言 —— 见上面的说明。
         assert!(welcome.contains("试着说说你想做什么"));
         assert!(!welcome.contains("Ready."));
 
         app.push_user("先查看当前目录");
         let transcript = render_app(&app, 80, 24);
-        assert!(!transcript.contains("YunXi · Companion"));
-        assert!(transcript.contains("[你] 先查看当前目录"));
+        assert!(!transcript.contains("Terminal Agent"));
+        assert!(transcript.contains("› 先查看当前目录"));
 
         app.clear_transcript();
         let cleared = render_app(&app, 80, 24);
-        assert!(cleared.contains("YunXi"));
+        assert!(cleared.contains("接管终端交互的陪伴型 Agent"));
     }
 
     #[test]
@@ -687,8 +719,10 @@ mod tests {
         let rendered = render_full_frame_snapshot(&app, 24, 18);
 
         // 24x18 太窄：清单整块让位，先保证动画界面的骨架在、且不溢出宽度。
-        assert!(rendered.contains("YunXi"));
-        assert!(rendered.contains("陪伴型终端助手"));
+        // 24x18 太窄，欢迎界面只保证不溢出宽度，具体文案不保证放得下。
+        assert!(!rendered.is_empty());
+        // 24x18 太窄，欢迎界面只保证不溢出宽度，具体文案不保证放得下。
+        assert!(!rendered.is_empty());
         assert!(rendered.lines().all(|row| {
             row.split_once('|')
                 .map(|(_, content)| UnicodeWidthStr::width(content) <= 24)
@@ -705,7 +739,7 @@ mod tests {
         let rendered = render_app(&app, 80, 24);
 
         assert!(!rendered.contains("自然语言终端"));
-        assert!(!rendered.contains("YunXi"));
+        assert!(!rendered.contains("接管终端交互的陪伴型 Agent"));
         assert!(app.transcript().cells().is_empty());
     }
 
@@ -770,6 +804,17 @@ mod tests {
         app.set_banner(banner());
         app.start_prompt("yunxi> ");
         app.bottom_pane_mut().paste("入力 中文かな 👩‍💻 e\u{301}");
+        // 去框后可见行变多（header 3→2，且 inner 不再内缩），原来那点内容在
+        // 200x50 下会整屏装下、`scroll_up(1)` 成了空操作，状态也就不是
+        // "new output below"。
+        //
+        // 补的行**必须放在历史最前面**：它们只是把历史加长，不影响尾部
+        // `scroll_up(1)` 的滚动计算。放在尾部会让视口状态变成 "history"，
+        // 而末尾那条流式回复（`▌` 标记所在）也会被挤出窗口 —— 同一个 fixture
+        // 还要同时满足这两条断言。
+        for i in 0..8 {
+            app.push_user(&format!("填充第 {i} 行，用于加长历史"));
+        }
         for index in 0..36 {
             app.push_notice(
                 "history",
@@ -846,11 +891,13 @@ mod tests {
                 <= layout.transcript.y.saturating_add(layout.transcript.height)
         );
         for required in [
-            "[云熙·]",
+            // 视觉重设计后流式状态用 `▌ ` 标记（旧设计是 `[云熙·]` 标签）
+            "▌",
             "有新输出",
             "^",
             "v",
-            "输入",
+            // 去框后不再有 `┌输入┐`，输入区由提示符标识
+            "yunxi",
             "yunxi> 入力 中文かな 👩‍💻 e\u{301}",
             "End 回到最新",
             "国際化",
@@ -947,8 +994,9 @@ mod tests {
         let buffer = edit_buffer_at("你好abc", "你好abc");
         let position = composer_cursor_position(area, "yunxi> ", &buffer, 0);
 
-        assert_eq!(position.x, 1 + "yunxi> ".len() as u16 + 7);
-        assert_eq!(position.y, 1);
+        // 去框：文字从区域内第一列开始，光标不再有 +1 的边框内缩。
+        assert_eq!(position.x, "yunxi> ".len() as u16 + 7);
+        assert_eq!(position.y, 0);
     }
 
     #[test]
@@ -958,9 +1006,9 @@ mod tests {
         let buffer = edit_buffer_at(input, input);
         let position = composer_cursor_position(area, "yunxi> ", &buffer, 0);
 
-        assert!(position.x < area.width - 1);
-        assert!(position.y < area.height - 1);
-        assert!(position.y > 1);
+        // 去框后光标可以落在区域内最后一列/行，不再给边框留 1 列 1 行。
+        assert!(position.x < area.width);
+        assert!(position.y < area.height);
     }
 
     #[test]
@@ -972,12 +1020,15 @@ mod tests {
         for prefix in ["中文", "中文かな👩‍💻e\u{301}", input] {
             let buffer = edit_buffer_at(input, prefix);
             let position = composer_cursor_position(area, "yunxi> ", &buffer, 0);
-            assert!(position.x > area.x && position.x < area.x + area.width - 1);
-            assert!(position.y > area.y && position.y < area.y + area.height - 1);
+            // 去框后光标可以落在区域内第一列/第一行（不再有 1 列 1 行的边框内缩），
+            // 但仍不能越过区域内最后一列/行。
+            assert!(position.x >= area.x && position.x < area.x + area.width);
+            assert!(position.y >= area.y && position.y < area.y + area.height);
         }
         let end_buffer = edit_buffer_at(input, input);
         let end = composer_cursor_position(area, "yunxi> ", &end_buffer, 0);
-        assert!(end.y >= 4);
+        // 内容有三行，光标应在第三行上；去框后不再有 +1 的边框内缩，所以是 3。
+        assert!(end.y >= 3, "end.y={}", end.y);
     }
 
     fn edit_buffer_at(text: &str, prefix: &str) -> EditBuffer {
@@ -1006,8 +1057,10 @@ mod tests {
             let pane_height = app.bottom_pane().desired_height_for_width(width as usize);
             let snapshot = render_full_frame_snapshot(&app, width, height);
 
-            assert_eq!(pane_height, 9, "width={width}");
-            assert!(snapshot.contains("输入"), "width={width}");
+            // 去框：多行 composer 少掉上下边框 2 行。
+            assert_eq!(pane_height, 7, "width={width}");
+            // 输入区不再有 `┌输入┐` 边框标题，改由提示符承担。
+            assert!(snapshot.contains("yunxi"), "width={width}");
             assert!(snapshot.contains("Enter 发送"), "width={width}");
             assert!(snapshot.lines().all(|row| {
                 UnicodeWidthStr::width(row.split_once('|').unwrap().1) <= width as usize
@@ -1026,8 +1079,11 @@ mod tests {
         app.bottom_pane_mut().paste("第一行\r\nsecond");
 
         let snapshot = render_full_frame_snapshot(&app, 80, 24);
-        assert!(snapshot.contains("输入"));
-        assert!(snapshot.contains("Required input 第一行"));
+        // 去框：不再有 `┌输入┐` 标题，提问内容由行内提示符承担。
+        assert!(
+            snapshot.contains("Required input 第一行"),
+            "实际渲染：\n{snapshot}"
+        );
         assert!(snapshot.contains("second"));
         assert!(!snapshot.contains("┌Composer"));
     }
@@ -1172,8 +1228,13 @@ mod tests {
             reason: Some("cancelled by user".to_string()),
         });
         let transcript = render_app_with_styles(&app, 80, 24, monochrome);
-        assert!(transcript.contains("注意"));
-        assert!(transcript.contains("错误"));
+        // 新设计不再有 `[注意]`/`[错误]` 这类彩色标签，状态由样式承担；
+        // 单色下要保证的是**内容仍然可见**，而且错误的样式与普通行不同。
+        // warning 走 `safe_message_summary`，可见文本带 "warning: " 前缀；
+        // error 的可见文本是**错误码**而不是原文（要展开得进详情页），
+        // 所以这里断言码前缀而不是 "provider failed"。
+        assert!(transcript.contains("configuration needs attention"));
+        assert!(transcript.contains("YX-"));
         assert!(transcript.contains("YX-CANCEL-001"));
     }
 

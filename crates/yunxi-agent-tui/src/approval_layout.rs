@@ -54,7 +54,9 @@ pub(crate) struct ApprovalLayout {
 
 impl ApprovalLayout {
     pub(crate) fn desired_height(&self) -> u16 {
-        (self.lines.len() as u16).saturating_add(2)
+        // 去框：不再有上下边框的 2 行；调用方会额外插入一行标题，
+        // 那 1 行由 `render.rs` 自己算进去。
+        (self.lines.len() as u16).saturating_add(1)
     }
 }
 
@@ -90,7 +92,8 @@ pub(crate) fn approval_layout_for_width(
     selected: usize,
     width: usize,
 ) -> ApprovalLayout {
-    let inner_width = width.saturating_sub(2).max(20);
+    // 去框：不再给左右边框各留 1 列。
+    let inner_width = width.max(20);
     let mut lines = Vec::new();
 
     push_labeled(
