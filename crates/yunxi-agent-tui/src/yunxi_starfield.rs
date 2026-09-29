@@ -9,8 +9,6 @@
 //! - 40ms 一帧的流畅动画
 
 use ratatui::style::{Color, Style};
-use std::collections::hash_map::DefaultHasher;
-use std::hash::{Hash, Hasher};
 
 /// 云汐角色配色系统（从角色设定图提取）
 pub type Rgb = (u8, u8, u8);
